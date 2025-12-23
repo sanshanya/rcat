@@ -1,0 +1,8 @@
+/* src/styles/index.css */
+/* Main entry point - imports all component styles */
+
+@import './base.css';
+@import './capsule.css';
+@import './chat-input.css';
+@import './message-list.css';
+@import './markdown.css';
