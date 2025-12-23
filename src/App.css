@@ -1,0 +1,151 @@
+/* src/App.css */
+
+/* =========================================
+   1. 全局重置 (核心基础)
+   ========================================= */
+:root, html, body, #root {
+  background-color: transparent !important; /* 强制透明，防止白底 */
+  margin: 0;
+  padding: 0;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden; /* 禁止滚动 */
+  user-select: none; /* 禁止选中文本 */
+  cursor: default;
+}
+
+/* 更稳定的布局计算 */
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+/* 防止某些环境出现滚动条 */
+::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+/* =========================================
+   2. 主容器 (布局层)
+   ========================================= */
+.container {
+  display: flex;
+  flex-direction: column; /* 垂直排列：上条下胶囊 */
+  justify-content: center;
+  align-items: center;
+  width: 100%;
+  height: 100%;
+  gap: 4px; /* 拖拽条和胶囊的间距 */
+  
+  /* 状态过渡动画 */
+  transition: opacity 0.3s ease, filter 0.3s ease;
+}
+
+/* =========================================
+   3. 拖拽条 (交互层 & 视觉层)
+   ========================================= */
+.drag-handle {
+  width: 100%;
+  height: 20px; /* 热区高度 */
+  display: flex;
+  justify-content: center;
+  align-items: flex-end; /* 白条靠下 */
+
+  /* 默认隐藏状态 */
+  opacity: 0;
+  transform: translateY(-8px);
+  pointer-events: none; /* 隐藏时穿透鼠标 */
+
+  transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
+  cursor: grab;
+  touch-action: none;
+}
+
+/* 交互：鼠标移入容器时显示拖拽条 */
+.container:hover .drag-handle {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+/* 交互：拖拽中 */
+.drag-handle:active {
+  cursor: grabbing;
+}
+
+/* 视觉：内部的小白条 */
+.handle-bar {
+  width: 36px;
+  height: 4px;
+  background-color: rgba(255, 255, 255, 0.9);
+  border-radius: 10px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+  backdrop-filter: blur(2px);
+}
+
+/* =========================================
+   4. 胶囊本体 (内容层)
+   ========================================= */
+.capsule {
+  height: 54px;
+  width: 94%;
+  border-radius: 27px;
+
+  /* 背景：深色磨砂 */
+  background-color: rgba(22, 22, 22, 0.95);
+
+  color: #f6f6f6;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  font-family: "Segoe UI", system-ui, sans-serif;
+  font-weight: 600;
+  font-size: 15px;
+  letter-spacing: 0.5px;
+
+  /* 🚫 移除物理边框，解决白背景下的脏边问题 */
+  border: none;
+
+  /* ✨ 核心光影：使用 inset 模拟内发光 + 柔和投影 */
+  cursor: default;
+  pointer-events: auto;
+
+  transition: background-color 0.2s, transform 0.1s, box-shadow 0.3s;
+}
+
+.capsule:hover {
+  background-color: rgba(30, 30, 30, 1);
+}
+
+.capsule:active {
+  transform: scale(0.99);
+}
+
+/* =========================================
+   5. 点击穿透 / 幽灵模式 (New!)
+   ========================================= */
+
+/* 进入穿透模式时，整体变淡变灰 */
+.container.click-through-mode {
+  opacity: 0.6; 
+  filter: grayscale(0.5);
+}
+
+/* 穿透模式下：彻底隐藏拖拽条 (防止误导用户) */
+.container.click-through-mode .drag-handle {
+  display: none !important;
+  pointer-events: none;
+}
+
+/* 穿透模式下：胶囊样式降级 */
+.container.click-through-mode .capsule {
+  /* 移除投影，变成“贴纸”感 */
+  box-shadow: none; 
+  /* 背景更淡 */
+  background-color: rgba(20, 20, 20, 0.8);
+  /* 加一个微弱的描边维持轮廓 */
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  
+  /* 鼠标变成禁止符号 (虽然实际上系统层已经穿透了，用户点不到) */
+  cursor: not-allowed; 
+}
