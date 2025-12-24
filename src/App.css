@@ -1,121 +1,91 @@
-/* src/App.css */
+:root {
+  --bg-primary: rgba(22, 22, 22, 0.95);
+  --bg-secondary: rgba(30, 30, 30, 0.85);
+  --bg-tertiary: rgba(50, 50, 50, 0.5);
+  --text-primary: #f6f6f6;
+  --text-secondary: rgba(255, 255, 255, 0.7);
+  --text-muted: rgba(255, 255, 255, 0.5);
+  --accent-blue: rgba(100, 180, 255, 0.8);
+  --accent-green: rgba(100, 255, 150, 0.8);
+  --border-soft: rgba(255, 255, 255, 0.12);
+  --border-subtle: rgba(255, 255, 255, 0.08);
+  --shadow-soft: 0 4px 12px rgba(0, 0, 0, 0.3);
+  --capsule-width: 210px;
+  --sd-foreground: rgba(245, 245, 245, 0.96);
+  --sd-muted: rgba(255, 255, 255, 0.07);
+  --sd-muted-foreground: rgba(255, 255, 255, 0.6);
+  --sd-border: rgba(255, 255, 255, 0.14);
+  --sd-border-soft: rgba(255, 255, 255, 0.08);
+  --sd-link: #8bb8ff;
+  --sd-link-hover: #b4d0ff;
+  --sd-code-bg: #1f1f1f;
+}
 
-/* =========================================
-   1. 全局重置 (核心基础)
-   ========================================= */
 :root,
 html,
 body,
 #root {
   background-color: transparent !important;
-  /* 强制透明，防止白底 */
   margin: 0;
   padding: 0;
   width: 100vw;
   height: 100vh;
   overflow: hidden;
-  /* 禁止滚动 */
   user-select: none;
-  /* 禁止选中文本 */
   cursor: default;
+  font-family: "Segoe UI", system-ui, sans-serif;
+  color: var(--text-primary);
 }
 
-/* 更稳定的布局计算 */
 *,
 *::before,
 *::after {
   box-sizing: border-box;
 }
 
-/* 防止某些环境出现滚动条 */
 ::-webkit-scrollbar {
   width: 0;
   height: 0;
 }
 
-/* =========================================
-   2. 主容器 (布局层)
-   ========================================= */
-/* =========================================
-   2. 主容器 (布局层)
-   ========================================= */
 .container {
   display: flex;
   flex-direction: column;
-  /* 垂直排列：上条下胶囊 */
-
-  /* ❌ 原来的：justify-content: center; (会导致展开时胶囊乱跳) */
-  /* ✅ 现在的：flex-start (顶对齐) */
   justify-content: flex-start;
-
-  /* ❌ 原原来的：align-items: center; (会导致宽度变化时胶囊水平移动) */
-  /* ✅ 现在的：flex-start (左对齐) + padding-left */
   align-items: flex-start;
-
   width: 100%;
   height: 100%;
-
-  /* ✅ 优化 1：大幅减小顶部留白 */
-  /* 从 14px 减小到 6px (这就足够防止阴影被切了) */
   padding-top: 6px;
-  /* ✅ 新增：左侧留白，让胶囊不贴边 */
   padding-left: 6px;
-
-  gap: 2px;
-  /* 稍微拉近拖拽条和胶囊的距离 (原为 4px) */
-
-  /* 状态过渡动画 */
-  /* 优化：移除 filter 动画，因为它在 resize 时非常消耗 GPU，容易导致闪烁 */
+  gap: 4px;
   transition: opacity 0.3s ease;
 }
 
-/* =========================================
-   3. 拖拽条 (交互层 & 视觉层)
-   ========================================= */
 .drag-handle {
-  width: 100%;
-
-  /* ✅ 优化 2：减小热区高度 */
-  /* 从 20px 减小到 12px (足够鼠标点中，但不占太多地) */
+  width: var(--capsule-width);
   height: 12px;
-
   display: flex;
   justify-content: center;
   align-items: flex-end;
-  /* 白条靠下 */
-
-  /* 默认隐藏状态 */
   opacity: 0;
-
-  /* ✅ 优化 3：改变动画逻辑 */
-  /* 原来是 translateY(-8px) (飞得很高) */
-  /* 现在改为 translateY(4px) (平时藏在下面一点，靠近胶囊) */
-  /* 这样出现时是“向上浮出”，视觉上不需要顶部预留空间 */
   transform: translateY(4px);
-
   pointer-events: none;
-
   transition: all 0.25s cubic-bezier(0.25, 0.8, 0.25, 1);
   cursor: grab;
   touch-action: none;
-
-  /* ✅哪怕窗口变小，也不要压缩拖拽条的高度 */
   flex-shrink: 0;
 }
 
-/* 交互：鼠标移入容器时显示拖拽条 */
 .container:hover .drag-handle {
   opacity: 1;
   transform: translateY(0);
   pointer-events: auto;
 }
 
-/* 交互：拖拽中 */
 .drag-handle:active {
   cursor: grabbing;
 }
 
-/* 视觉：内部的小白条 */
 .handle-bar {
   width: 36px;
   height: 4px;
@@ -125,39 +95,22 @@ body,
   backdrop-filter: blur(2px);
 }
 
-/* =========================================
-   4. 胶囊本体 (内容层)
-   ========================================= */
 .capsule {
   height: 54px;
-
-  /* ❌ 原来的：width: 94%; (会随窗口拉伸) */
-  /* ✅ 修改为：固定宽度 210px */
-  /* 这样无论窗口变多宽 (Result模式)，胶囊永远保持 Mini 模式的大小 */
-  width: 210px;
-
+  width: var(--capsule-width);
   border-radius: 27px;
-  background-color: rgba(22, 22, 22, 0.95);
-  color: #f6f6f6;
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
   display: flex;
   justify-content: center;
   align-items: center;
-  font-family: "Segoe UI", system-ui, sans-serif;
   font-weight: 600;
   font-size: 15px;
   letter-spacing: 0.5px;
   border: none;
-  /* 绝对不要做的事情，我超级不喜欢
-  box-shadow: 
-    inset 0 0 0 1px rgba(255, 255, 255, 0.12),
-    0 2px 4px rgba(0, 0, 0, 0.2),
-    0 8px 20px rgba(0, 0, 0, 0.35);
-  */
   cursor: default;
   pointer-events: auto;
   transition: background-color 0.2s, transform 0.1s, box-shadow 0.3s;
-
-  /* 禁止压缩 */
   flex-shrink: 0;
 }
 
@@ -169,162 +122,226 @@ body,
   transform: scale(0.99);
 }
 
-/* =========================================
-   5. 点击穿透 / 幽灵模式 (New!)
-   ========================================= */
+.capsule.active {
+  background-color: rgba(40, 40, 40, 1);
+  border-color: rgba(255, 255, 255, 0.3);
+}
 
-/* 进入穿透模式时，整体变淡变灰 */
 .container.click-through-mode {
   opacity: 0.6;
   filter: grayscale(0.5);
 }
 
-/* 穿透模式下：彻底隐藏拖拽条 (防止误导用户) */
 .container.click-through-mode .drag-handle {
   display: none !important;
   pointer-events: none;
 }
 
-/* 穿透模式下：胶囊样式降级 */
 .container.click-through-mode .capsule {
-  /* 移除投影，变成“贴纸”感 */
   box-shadow: none;
-  /* 背景更淡 */
   background-color: rgba(20, 20, 20, 0.8);
-  /* 加一个微弱的描边维持轮廓 */
   border: 1px solid rgba(255, 255, 255, 0.1);
-
-  /* 鼠标变成禁止符号 (虽然实际上系统层已经穿透了，用户点不到) */
   cursor: not-allowed;
 }
 
-/* 胶囊激活态 (展开时) */
-.capsule.active {
-  /* 展开时，胶囊底部圆角变直，或者保持圆润做分离式设计？
-     我们采用分离式设计，更有悬浮感
-  */
-  background-color: rgba(40, 40, 40, 1);
-  border-color: rgba(255, 255, 255, 0.3);
-}
-
-/* --- 输入框区域 --- */
 .input-area {
-  /* 稍微收窄一点，让它看起来比胶囊宽，但比结果窄，或者保持一致 */
   width: 94%;
   flex-shrink: 0;
-  /* 防止被挤压 */
-
   display: flex;
-  justify-content: flex-start;
-  /* 跟随整体左对齐 */
-
-  /* ❌ 原来 padding-top: 8px */
-  /* ✅ 改为 4px，拉近与胶囊的距离 */
+  align-items: center;
+  gap: 8px;
   padding-top: 4px;
-
   animation: slideIn 0.3s cubic-bezier(0.2, 0.8, 0.2, 1) forwards;
 }
 
-/* 修正动画：让它是从“胶囊后面”滑出来的感觉 */
-@keyframes slideIn {
-  from {
-    opacity: 0;
-    transform: translateY(-20px);
-    /* 从上面一点滑下来 */
-  }
-
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-/* --- 输入框本体 --- */
 .chat-input {
-  width: 100%;
+  flex: 1;
   height: 44px;
   padding: 0 16px;
-
-  /* 样式：深色玻璃 */
-  background-color: rgba(30, 30, 30, 0.85);
-  border: 1px solid rgba(255, 255, 255, 0.15);
+  background-color: var(--bg-secondary);
+  border: 1px solid var(--border-soft);
   border-radius: 22px;
-  /* 圆角 */
-
-  color: white;
+  color: var(--text-primary);
   font-size: 14px;
   font-family: inherit;
-
   outline: none;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
-
+  user-select: text;
+  box-shadow: var(--shadow-soft);
   transition: all 0.2s;
 }
 
 .chat-input:focus {
   background-color: rgba(45, 45, 45, 0.95);
   border-color: rgba(100, 200, 255, 0.5);
-  /* 聚焦时高亮蓝边 */
   box-shadow: 0 4px 16px rgba(0, 100, 255, 0.15);
 }
 
+.chat-input:disabled {
+  opacity: 0.6;
+}
 
-/* 1. 结果区域容器 */
-.result-area {
+.send-button {
+  height: 44px;
+  padding: 0 14px;
+  border-radius: 22px;
+  background-color: rgba(40, 40, 40, 0.9);
+  border: 1px solid var(--border-soft);
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.send-button:hover:not(:disabled) {
+  background-color: rgba(60, 60, 60, 0.95);
+}
+
+.send-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.chat-panel {
   width: 94%;
-  /* Removed fixed max-height so it fills the window */
   flex: 1;
   min-height: 0;
-  /* Critical for scroll inside flex item */
   overflow-y: auto;
-
   margin-top: 4px;
   margin-bottom: 10px;
-
   background-color: rgba(30, 30, 30, 0.6);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--border-subtle);
   border-radius: 12px;
-
   padding: 12px;
-
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
   color: rgba(255, 255, 255, 0.9);
   font-size: 14px;
   line-height: 1.5;
-  font-family: 'Menlo', 'Consolas', monospace;
-  white-space: pre-wrap;
-
-  /* ✅ 修复：长单词强制换行 */
   word-break: break-word;
   overflow-wrap: anywhere;
-
   animation: fadeIn 0.3s ease;
 }
 
-/* 2. 思考中的三个点动画 */
-.loading-dots {
+.chat-panel::-webkit-scrollbar {
+  width: 4px;
+}
+
+.chat-panel::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 2px;
+}
+
+.chat-panel::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.chat-message {
   display: flex;
-  justify-content: center;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  animation: fadeIn 0.2s ease;
+}
+
+.chat-message.user {
+  align-self: flex-end;
+  background-color: rgba(60, 120, 200, 0.3);
+  border-left: 3px solid var(--accent-blue);
+}
+
+.chat-message.assistant {
+  align-self: flex-start;
+  background-color: var(--bg-tertiary);
+  border-left: 3px solid var(--accent-green);
+}
+
+.chat-role {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.chat-message.user .chat-role {
+  color: var(--accent-blue);
+}
+
+.chat-message.assistant .chat-role {
+  color: var(--accent-green);
+}
+
+.chat-content {
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
+}
+
+.chat-reasoning {
+  margin-top: 8px;
+  border-top: 1px dashed rgba(255, 255, 255, 0.15);
+  padding-top: 6px;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.chat-reasoning summary {
+  cursor: pointer;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.chat-reasoning-body {
+  margin-top: 6px;
+}
+
+.chat-source a,
+.chat-attachment a {
+  color: #58a6ff;
+  text-decoration: none;
+}
+
+.chat-source a:hover,
+.chat-attachment a:hover {
+  text-decoration: underline;
+}
+
+.thinking-dots {
+  display: inline-flex;
+  gap: 4px;
   align-items: center;
-  height: 100%;
-  color: rgba(255, 255, 255, 0.5);
-  font-size: 24px;
+  color: var(--text-muted);
+  font-size: 20px;
 }
 
-.loading-dots span {
-  animation: bounce 1.4s infinite ease-in-out both;
-  margin: 0 2px;
+.thinking-dots span {
+  animation: bounce 1.2s infinite ease-in-out both;
 }
 
-.loading-dots span:nth-child(1) {
+.thinking-dots span:nth-child(1) {
   animation-delay: -0.32s;
 }
 
-.loading-dots span:nth-child(2) {
+.thinking-dots span:nth-child(2) {
   animation-delay: -0.16s;
 }
 
-@keyframes bounce {
+.chat-error {
+  width: 94%;
+  margin-top: 6px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: rgba(160, 30, 30, 0.25);
+  border: 1px solid rgba(255, 100, 100, 0.3);
+  color: rgba(255, 200, 200, 0.95);
+  font-size: 12px;
+}
 
+@keyframes bounce {
   0%,
   80%,
   100% {
@@ -334,38 +351,6 @@ body,
   40% {
     transform: scale(1);
   }
-}
-
-/* 3. 打字机光标闪烁 */
-.cursor-blink {
-  display: inline-block;
-  width: 2px;
-  height: 14px;
-  background-color: #00ff88;
-  /* 赛博朋克绿 */
-  margin-left: 2px;
-  vertical-align: middle;
-  animation: blink 1s step-end infinite;
-}
-
-@keyframes blink {
-  50% {
-    opacity: 0;
-  }
-}
-
-/* 4. 滚动条美化 (针对 WebKit) */
-.result-area::-webkit-scrollbar {
-  width: 4px;
-}
-
-.result-area::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.2);
-  border-radius: 2px;
-}
-
-.result-area::-webkit-scrollbar-track {
-  background: transparent;
 }
 
 @keyframes fadeIn {
@@ -380,258 +365,14 @@ body,
   }
 }
 
-/* =========================================
-   消息样式 (多轮对话)
-   ========================================= */
-.message {
-  display: flex;
-  flex-direction: column;
-  margin-bottom: 12px;
-  padding: 8px 12px;
-  border-radius: 10px;
-  animation: fadeIn 0.2s ease;
-}
+@keyframes slideIn {
+  from {
+    opacity: 0;
+    transform: translateY(-20px);
+  }
 
-.message.user {
-  background-color: rgba(60, 120, 200, 0.3);
-  border-left: 3px solid rgba(100, 180, 255, 0.8);
-}
-
-.message.ai {
-  background-color: rgba(50, 50, 50, 0.5);
-  border-left: 3px solid rgba(100, 255, 150, 0.6);
-}
-
-.message-role {
-  font-size: 11px;
-  font-weight: 600;
-  color: rgba(255, 255, 255, 0.5);
-  margin-bottom: 4px;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
-
-.message.user .message-role {
-  color: rgba(100, 180, 255, 0.8);
-}
-
-.message.ai .message-role {
-  color: rgba(100, 255, 150, 0.8);
-}
-
-/* ✅ 允许文本选择 */
-.message-content {
-  user-select: text;
-  /* Windows 默认 */
-  -webkit-user-select: text;
-  cursor: text;
-}
-
-/* --- 消息操作栏 (Copy / Retry) --- */
-.message-actions {
-  display: flex;
-  gap: 8px;
-  margin-top: 8px;
-  opacity: 0;
-  transition: opacity 0.2s ease;
-  justify-content: flex-end;
-  /* 右对齐 */
-}
-
-/* 只有鼠标悬停在消息上时才显示操作栏 */
-.message:hover .message-actions {
-  opacity: 1;
-}
-
-.action-btn {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  color: rgba(255, 255, 255, 0.6);
-  padding: 4px 8px;
-  border-radius: 4px;
-  font-size: 11px;
-  cursor: pointer;
-  transition: all 0.2s;
-}
-
-.action-btn:hover {
-  background: rgba(255, 255, 255, 0.15);
-  color: #fff;
-  border-color: rgba(255, 255, 255, 0.3);
-}
-
-.action-btn svg {
-  width: 12px;
-  height: 12px;
-  opacity: 0.8;
-}
-
-
-/* =========================================
-   Markdown 渲染样式 (Pro Mode)
-   ========================================= */
-.markdown-body {
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
-  font-size: 14px;
-  line-height: 1.6;
-  color: #e6e6e6;
-}
-
-.markdown-body>*:first-child {
-  margin-top: 0;
-}
-
-.markdown-body>*:last-child {
-  margin-bottom: 0;
-}
-
-
-.markdown-body p {
-  margin-top: 0;
-  margin-bottom: 6px;
-}
-
-/* 标题 */
-.markdown-body h1,
-.markdown-body h2,
-.markdown-body h3,
-.markdown-body h4,
-.markdown-body h5,
-.markdown-body h6 {
-  margin-top: 12px;
-  margin-bottom: 6px;
-  font-weight: 600;
-  line-height: 1.25;
-  color: #fff;
-}
-
-.markdown-body h1 {
-  font-size: 20px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-  padding-bottom: 4px;
-}
-
-.markdown-body h2 {
-  font-size: 18px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-  padding-bottom: 4px;
-}
-
-.markdown-body h3 {
-  font-size: 16px;
-}
-
-/* 列表 */
-.markdown-body ul,
-.markdown-body ol {
-  padding-left: 20px;
-  margin-bottom: 6px;
-}
-
-.markdown-body li {
-  margin-bottom: 2px;
-}
-
-/* 引用 */
-.markdown-body blockquote {
-  padding: 0 1em;
-  color: rgba(255, 255, 255, 0.6);
-  border-left: 3px solid rgba(255, 255, 255, 0.2);
-  margin: 0 0 8px 0;
-}
-
-/* 链接 */
-.md-link {
-  color: #58a6ff;
-  text-decoration: none;
-}
-
-.md-link:hover {
-  text-decoration: underline;
-}
-
-/* 行内代码 */
-.inline-code {
-  padding: 0.2em 0.4em;
-  margin: 0;
-  font-size: 85%;
-  background-color: rgba(110, 118, 129, 0.4);
-  border-radius: 4px;
-  color: #e6e6e6;
-  font-family: 'Menlo', 'Consolas', monospace;
-}
-
-/* --- 代码块容器 --- */
-.code-block-wrapper {
-  margin: 6px 0;
-  background-color: #1e1e1e;
-  border-radius: 6px;
-  overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
-}
-
-.code-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 4px 12px;
-  /* ⬇️ Reduced padding slightly */
-  background-color: #252526;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-  font-family: sans-serif;
-}
-
-.code-lang {
-  font-size: 11px;
-  color: rgba(255, 255, 255, 0.4);
-  text-transform: uppercase;
-}
-
-.code-copy-btn {
-  background: transparent;
-  border: none;
-  color: rgba(255, 255, 255, 0.6);
-  font-size: 11px;
-  cursor: pointer;
-  padding: 4px 8px;
-  border-radius: 4px;
-  transition: all 0.2s;
-}
-
-.code-copy-btn:hover {
-  background-color: rgba(255, 255, 255, 0.1);
-  color: #fff;
-}
-
-.code-copy-btn.copied {
-  color: #4caf50;
-}
-
-/* 表格 */
-.markdown-body table {
-  /* 基础表格样式 */
-  border-spacing: 0;
-  border-collapse: collapse;
-  margin-bottom: 8px;
-  /* ⬇️ Reduced from 12px */
-  width: 100%;
-}
-
-.markdown-body table th,
-.markdown-body table td {
-  padding: 6px 12px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-}
-
-.markdown-body table th {
-  font-weight: 600;
-  background-color: rgba(255, 255, 255, 0.05);
-}
-
-.markdown-body table tr:nth-child(2n) {
-  background-color: rgba(255, 255, 255, 0.02);
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }

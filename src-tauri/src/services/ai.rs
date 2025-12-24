@@ -72,10 +72,11 @@ pub async fn chat_stream(
     api_key: Option<String>,
     model: Option<String>,
 ) -> Result<(), String> {
+    let env_config = load_ai_config();
     let config = AiConfig {
-        base_url: base_url.unwrap_or_else(|| "https://api.openai.com/v1".to_string()),
-        api_key: api_key.unwrap_or_default(),
-        model: model.unwrap_or_else(|| "gpt-4o-mini".to_string()),
+        base_url: base_url.unwrap_or(env_config.base_url),
+        api_key: api_key.unwrap_or(env_config.api_key),
+        model: model.unwrap_or(env_config.model),
     };
 
     if config.api_key.is_empty() {
@@ -155,10 +156,11 @@ pub async fn chat_simple(
     api_key: Option<String>,
     model: Option<String>,
 ) -> Result<String, String> {
+    let env_config = load_ai_config();
     let config = AiConfig {
-        base_url: base_url.unwrap_or_else(|| "https://api.openai.com/v1".to_string()),
-        api_key: api_key.unwrap_or_default(),
-        model: model.unwrap_or_else(|| "gpt-4o-mini".to_string()),
+        base_url: base_url.unwrap_or(env_config.base_url),
+        api_key: api_key.unwrap_or(env_config.api_key),
+        model: model.unwrap_or(env_config.model),
     };
 
     if config.api_key.is_empty() {

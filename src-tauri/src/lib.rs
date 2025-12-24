@@ -29,7 +29,7 @@ impl WindowMode {
 }
 
 // ✅ 输入态动态宽度常量
-const MIN_INPUT_W: f64 = 220.0;
+const MIN_INPUT_W: f64 = 300.0;
 const MAX_INPUT_W: f64 = 8000.0; // Effectively unlimited, constrained by monitor width logic below
 const INPUT_H: f64 = 140.0;
 const EDGE_MARGIN: f64 = 12.0;

@@ -1,8 +1,16 @@
-/* src/styles/index.css */
-/* Main entry point - imports all component styles */
+@import "tailwindcss";
+@source "../../node_modules/streamdown/dist/*.js";
 
-@import './base.css';
-@import './capsule.css';
-@import './chat-input.css';
-@import './message-list.css';
-@import './markdown.css';
+@theme {
+  --color-background: hsl(225 12% 12%);
+  --color-foreground: hsl(210 20% 96%);
+  --color-muted: hsl(220 10% 20%);
+  --color-muted-foreground: hsl(220 12% 65%);
+  --color-border: hsl(220 10% 22%);
+  --color-primary: hsl(214 90% 70%);
+  --color-primary-foreground: hsl(223 20% 12%);
+}
+
+:root {
+  color-scheme: dark;
+}

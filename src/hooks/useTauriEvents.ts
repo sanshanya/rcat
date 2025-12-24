@@ -1,7 +1,7 @@
 // src/hooks/useTauriEvents.ts
 // Unified Tauri event subscription hook with automatic cleanup
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { listen, type UnlistenFn, type Event } from '@tauri-apps/api/event';
 
 /**
@@ -28,34 +28,42 @@ export type EventHandlers = Record<string, EventHandler<unknown>>;
  * ```
  */
 export function useTauriEvents(handlers: EventHandlers): void {
-    // Use ref to store cleanup functions
-    const unlistenersRef = useRef<UnlistenFn[]>([]);
+    const handlersRef = useRef<EventHandlers>(handlers);
+    const eventNames = useMemo(() => Object.keys(handlers).sort(), [handlers]);
+    const eventNamesKey = eventNames.join('|');
 
     useEffect(() => {
-        const setupListeners = async () => {
-            // Clean up previous listeners
-            unlistenersRef.current.forEach((unlisten) => unlisten());
-            unlistenersRef.current = [];
+        handlersRef.current = handlers;
+    }, [handlers]);
 
-            // Set up new listeners
-            const entries = Object.entries(handlers);
-            const unlisteners = await Promise.all(
-                entries.map(async ([eventName, handler]) => {
-                    return listen(eventName, handler);
+    useEffect(() => {
+        let active = true;
+        const unlisteners: UnlistenFn[] = [];
+
+        const setupListeners = async () => {
+            const registered = await Promise.all(
+                eventNames.map(async (eventName) => {
+                    return listen(eventName, (event) => {
+                        handlersRef.current[eventName]?.(event);
+                    });
                 })
             );
 
-            unlistenersRef.current = unlisteners;
+            if (!active) {
+                registered.forEach((unlisten) => unlisten());
+                return;
+            }
+
+            unlisteners.push(...registered);
         };
 
         setupListeners();
 
-        // Cleanup on unmount
         return () => {
-            unlistenersRef.current.forEach((unlisten) => unlisten());
-            unlistenersRef.current = [];
+            active = false;
+            unlisteners.forEach((unlisten) => unlisten());
         };
-    }, [handlers]);
+    }, [eventNamesKey]);
 }
 
 /**
@@ -72,27 +80,37 @@ export function useTauriEvent<T>(
     eventName: string,
     handler: EventHandler<T>
 ): void {
-    const unlistenRef = useRef<UnlistenFn | null>(null);
+    const handlerRef = useRef<EventHandler<T>>(handler);
 
     useEffect(() => {
+        handlerRef.current = handler;
+    }, [handler]);
+
+    useEffect(() => {
+        let active = true;
+        let unlisten: UnlistenFn | null = null;
+
         const setupListener = async () => {
-            // Clean up previous listener
-            if (unlistenRef.current) {
-                unlistenRef.current();
+            const cleanup = await listen<T>(eventName, (event) => {
+                handlerRef.current(event);
+            });
+
+            if (!active) {
+                cleanup();
+                return;
             }
 
-            // Set up new listener
-            unlistenRef.current = await listen<T>(eventName, handler);
+            unlisten = cleanup;
         };
 
         setupListener();
 
-        // Cleanup on unmount
         return () => {
-            if (unlistenRef.current) {
-                unlistenRef.current();
-                unlistenRef.current = null;
+            active = false;
+            if (unlisten) {
+                unlisten();
+                unlisten = null;
             }
         };
-    }, [eventName, handler]);
+    }, [eventName]);
 }

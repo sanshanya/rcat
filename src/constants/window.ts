@@ -1,8 +1,8 @@
 // src/constants/window.ts
 // Single source of truth for window-related constants
 
-/** Minimum width for Input mode (matches capsule width) */
-export const MIN_INPUT_WIDTH = 220;
+/** Minimum width for Input mode */
+export const MIN_INPUT_WIDTH = 300;
 
 /** Default height for Input mode */
 export const INPUT_HEIGHT = 140;
