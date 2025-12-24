@@ -4,7 +4,6 @@ import {
   useRef,
   useCallback,
   useMemo,
-  type FormEvent,
   type PointerEvent,
 } from "react";
 import "./App.css";
@@ -14,6 +13,7 @@ import { useChat } from "@ai-sdk/react";
 
 import { Capsule, ResizeHandle } from "./components";
 import ChatMessages from "./components/ChatMessages";
+import PromptInput from "./components/PromptInput";
 import { EVT_CLICK_THROUGH_STATE, AUTO_RESIZE_MAX_WIDTH, INPUT_PADDING } from "./constants";
 import { useWindowManager, useTauriEvent } from "./hooks";
 import { measureTextWidth } from "./utils";
@@ -30,21 +30,73 @@ function App() {
   const windowManager = useWindowManager();
   const transport = useMemo(() => createTauriChatTransport(), []);
   const [chatSessionId, setChatSessionId] = useState(createChatSessionId);
-  const { messages, status, sendMessage, error } = useChat({
+  const { messages, status, sendMessage, error, setMessages, stop } = useChat({
     id: chatSessionId,
     transport,
   });
   const isBusy = status === "submitted" || status === "streaming";
 
+  // Handle editing a user message and resending
+  const handleEditMessage = useCallback((messageId: string, newText: string) => {
+    // Find the message index
+    const messageIndex = messages.findIndex(m => m.id === messageId);
+    if (messageIndex === -1) return;
+
+    // Truncate messages after this point and update the edited message
+    const truncatedMessages = messages.slice(0, messageIndex);
+    setMessages(truncatedMessages);
+
+    // Send the new message
+    sendMessage({ text: newText });
+  }, [messages, setMessages, sendMessage]);
+
+  // Handle regenerating from a specific assistant message
+  const handleRegenerateFrom = useCallback((messageId: string) => {
+    // Find the assistant message index
+    const messageIndex = messages.findIndex(m => m.id === messageId);
+    if (messageIndex === -1) return;
+
+    // Find the user message before this assistant message
+    const userMessageBefore = messages
+      .slice(0, messageIndex)
+      .reverse()
+      .find(m => m.role === "user");
+
+    if (!userMessageBefore) return;
+
+    // Get user message text
+    const userText = userMessageBefore.parts
+      .filter((part): part is { type: "text"; text: string } => part.type === "text")
+      .map(part => part.text)
+      .join("\n");
+
+    // Find the user message index
+    const userMessageIndex = messages.findIndex(m => m.id === userMessageBefore.id);
+
+    // Truncate messages from the user message onwards
+    const truncatedMessages = messages.slice(0, userMessageIndex);
+    setMessages(truncatedMessages);
+
+    // Resend the user message
+    sendMessage({ text: userText });
+  }, [messages, setMessages, sendMessage]);
+
   // Input ref for focus handling
   const inputRef = useRef<HTMLInputElement>(null);
+  const contentWrapperRef = useRef<HTMLDivElement>(null);
   const [inputValue, setInputValue] = useState("");
+  const [selectedModel, setSelectedModel] = useState("deepseek-reasoner");
 
   const handleReset = useCallback(() => {
     setChatSessionId(createChatSessionId());
     setInputValue("");
     windowManager.reset();
   }, [windowManager]);
+
+  const handleClearChat = useCallback(() => {
+    setMessages([]);
+    setInputValue("");
+  }, [setMessages]);
 
   // Listen for click-through state changes from Rust
   const handleClickThroughChange = useCallback((event: { payload: boolean }) => {
@@ -87,24 +139,6 @@ function App() {
     }
   };
 
-  const handleSubmit = useCallback(async (event: FormEvent) => {
-    event.preventDefault();
-
-    const textToSend = inputValue.trim();
-    if (!textToSend || isBusy) return;
-
-    setInputValue("");
-    sendMessage({ text: textToSend });
-
-    if (windowManager.mode === 'input') {
-      // Inherit manual width to result mode
-      const inheritWidth = windowManager.inputWidth;
-      void windowManager
-        .changeMode('result', inheritWidth ? { w: inheritWidth, h: 500 } : undefined)
-        .catch(() => undefined);
-    }
-  }, [inputValue, isBusy, sendMessage, windowManager]);
-
   const startDrag = (e: PointerEvent) => {
     if ("button" in e && e.button !== 0) return;
     if (isClickThrough) return;
@@ -120,54 +154,65 @@ function App() {
         <div className="handle-bar"></div>
       </div>
 
-      <MotionConfig transition={{ type: "spring", stiffness: 350, damping: 30 }}>
+      {/* Content wrapper for proper resize handle positioning */}
+      <div className="content-wrapper" ref={contentWrapperRef}>
+        <MotionConfig transition={{ type: "spring", stiffness: 350, damping: 30 }}>
 
-        <Capsule
-          isThinking={isBusy}
-          messageCount={messages.length}
-          windowMode={windowManager.mode}
-          onClick={toggleExpand}
-          disabled={isClickThrough}
-        />
-
-        {windowManager.mode !== 'mini' && (
-          <form className="input-area" onSubmit={handleSubmit}>
-            <input
-              ref={inputRef}
-              type="text"
-              className="chat-input"
-              placeholder="Say something..."
-              value={inputValue}
-              onChange={(e) => setInputValue(e.target.value)}
-              onPointerDown={(e) => e.stopPropagation()}
-              disabled={isClickThrough || isBusy}
-            />
-            <button
-              className="send-button"
-              type="submit"
-              disabled={isClickThrough || isBusy || !inputValue.trim()}
-              onPointerDown={(e) => e.stopPropagation()}
-            >
-              Send
-            </button>
-          </form>
-        )}
-
-        {messages.length > 0 && (
-          <ChatMessages
-            messages={messages}
-            status={status}
+          <Capsule
+            isThinking={isBusy}
+            messageCount={messages.length}
+            windowMode={windowManager.mode}
+            onClick={toggleExpand}
+            disabled={isClickThrough}
           />
-        )}
 
-        {status === "error" && error && (
-          <div className="chat-error">
-            {error.message || String(error)}
-          </div>
-        )}
+          {windowManager.mode !== 'mini' && (
+            <PromptInput
+              value={inputValue}
+              onChange={setInputValue}
+              onSubmit={async () => {
+                const textToSend = inputValue.trim();
+                if (!textToSend) return;
+                
+                setInputValue("");
+                sendMessage({ text: textToSend });
+                
+                if (windowManager.mode === 'input') {
+                  const inheritWidth = windowManager.inputWidth;
+                  void windowManager
+                    .changeMode('result', inheritWidth ? { w: inheritWidth, h: 500 } : undefined)
+                    .catch(() => undefined);
+                }
+              }}
+              onStop={stop}
+              onClearChat={handleClearChat}
+              isStreaming={status === "streaming"}
+              isSubmitting={status === "submitted"}
+              disabled={isClickThrough}
+              model={selectedModel}
+              onModelChange={setSelectedModel}
+            />
+          )}
 
-      </MotionConfig>
+          {messages.length > 0 && (
+            <ChatMessages
+              messages={messages}
+              status={status}
+              onRegenerate={handleRegenerateFrom}
+              onEditMessage={handleEditMessage}
+            />
+          )}
 
+          {status === "error" && error && (
+            <div className="chat-error">
+              {error.message || String(error)}
+            </div>
+          )}
+
+        </MotionConfig>
+      </div>
+
+      {/* Resize handle positioned relative to container */}
       {(windowManager.mode === 'input' || windowManager.mode === 'result') && !isClickThrough && (
         <ResizeHandle
           onResize={windowManager.applyResize}

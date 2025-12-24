@@ -60,13 +60,20 @@ pub struct ChatStreamPayload {
     pub done: bool,
 }
 
+/// Message format received from frontend
+#[derive(Clone, Deserialize)]
+pub struct ChatMessage {
+    pub role: String,
+    pub content: String,
+}
+
 /// Start a streaming chat request with reasoning support.
 /// Uses raw HTTP streaming to capture both content and reasoning_content.
 /// Emits chunks via `chat-stream` event, completion via `chat-done`.
 #[tauri::command]
 pub async fn chat_stream(
     app: tauri::AppHandle,
-    prompt: String,
+    messages: Vec<ChatMessage>,
     base_url: Option<String>,
     api_key: Option<String>,
     model: Option<String>,
@@ -82,16 +89,24 @@ pub async fn chat_stream(
         return Err("API key is required".to_string());
     }
 
+    if messages.is_empty() {
+        return Err("No messages provided".to_string());
+    }
+
     // Ensure base_url ends without trailing slash
     let base_url = config.base_url.trim_end_matches('/');
     let url = format!("{}/chat/completions", base_url);
 
-    // Build request body
+    // Convert messages to API format
+    let api_messages: Vec<serde_json::Value> = messages
+        .iter()
+        .map(|m| serde_json::json!({ "role": m.role, "content": m.content }))
+        .collect();
+
+    // Build request body with full conversation history
     let body = serde_json::json!({
         "model": config.model,
-        "messages": [
-            { "role": "user", "content": prompt }
-        ],
+        "messages": api_messages,
         "stream": true
     });
 

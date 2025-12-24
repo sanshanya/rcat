@@ -30,7 +30,7 @@ export type MessageProps = HTMLAttributes<HTMLDivElement> & {
 export const Message = ({ className, from, ...props }: MessageProps) => (
   <div
     className={cn(
-      "group flex w-full max-w-[95%] flex-col gap-2",
+      "group flex w-full max-w-full flex-col gap-2",
       from === "user" ? "is-user ml-auto justify-end" : "is-assistant",
       className
     )}
@@ -47,9 +47,9 @@ export const MessageContent = ({
 }: MessageContentProps) => (
   <div
     className={cn(
-      "is-user:dark flex w-fit max-w-full min-w-0 flex-col gap-2 overflow-hidden text-sm",
-      "group-[.is-user]:ml-auto group-[.is-user]:rounded-lg group-[.is-user]:bg-secondary group-[.is-user]:px-4 group-[.is-user]:py-3 group-[.is-user]:text-foreground",
-      "group-[.is-assistant]:text-foreground",
+      "flex w-fit max-w-full min-w-0 flex-col gap-2 overflow-hidden text-sm rounded-lg px-4 py-3",
+      "group-[.is-user]:ml-auto group-[.is-user]:bg-slate-700 group-[.is-user]:text-slate-100",
+      "group-[.is-assistant]:bg-black/90 group-[.is-assistant]:border-l-2 group-[.is-assistant]:border-slate-500 group-[.is-assistant]:text-foreground",
       className
     )}
     {...props}
@@ -65,7 +65,14 @@ export const MessageActions = ({
   children,
   ...props
 }: MessageActionsProps) => (
-  <div className={cn("flex items-center gap-1", className)} {...props}>
+  <div
+    className={cn(
+      "flex items-center gap-1",
+      "group-[.is-user]:ml-auto group-[.is-user]:justify-end",
+      className
+    )}
+    {...props}
+  >
     {children}
   </div>
 );

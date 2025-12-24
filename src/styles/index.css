@@ -15,6 +15,25 @@
   color-scheme: dark;
 }
 
+/* Custom Scrollbar for Webkit (Chrome, Edge, Tauri) */
+::-webkit-scrollbar {
+  width: 8px; /* Slimmer scrollbar */
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent; 
+}
+
+::-webkit-scrollbar-thumb {
+  background-color: rgba(255, 255, 255, 0.2);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(255, 255, 255, 0.3);
+}
+
 /* Inline code styling for visibility on dark background */
 .chat-message.assistant code:not([data-streamdown]) {
   background-color: hsl(0 0% 20%);

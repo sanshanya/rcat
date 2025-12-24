@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 
 interface ResizeHandleProps {
   onResize: (dx: number, dy: number) => void;
@@ -8,6 +8,8 @@ interface ResizeHandleProps {
 }
 
 const ResizeHandle = ({ onResize, onResizeStart, onResizeEnd, className = "" }: ResizeHandleProps) => {
+  const [isDragging, setIsDragging] = useState(false);
+
   const handlePointerDown = (e: React.PointerEvent) => {
     e.preventDefault();
     e.stopPropagation();
@@ -17,15 +19,13 @@ const ResizeHandle = ({ onResize, onResizeStart, onResizeEnd, className = "" }: 
     const target = e.target as HTMLElement;
     
     target.setPointerCapture(e.pointerId);
+    setIsDragging(true);
     
     if (onResizeStart) onResizeStart();
 
     const handlePointerMove = (moveEvent: PointerEvent) => {
-      // Calculate delta from current position to start position
-      // Using screen coordinates avoids issues when window resizes/moves under cursor
       const dx = moveEvent.screenX - startX;
       const dy = moveEvent.screenY - startY;
-      
       onResize(dx, dy);
     };
 
@@ -33,6 +33,7 @@ const ResizeHandle = ({ onResize, onResizeStart, onResizeEnd, className = "" }: 
       target.releasePointerCapture(upEvent.pointerId);
       target.removeEventListener('pointermove', handlePointerMove);
       target.removeEventListener('pointerup', handlePointerUp);
+      setIsDragging(false);
       
       if (onResizeEnd) onResizeEnd();
     };
@@ -47,8 +48,8 @@ const ResizeHandle = ({ onResize, onResizeStart, onResizeEnd, className = "" }: 
       onPointerDown={handlePointerDown}
       style={{
         position: 'absolute',
-        bottom: 2,
-        right: 2,
+        bottom: 4,
+        right: 4,
         width: '16px',
         height: '16px',
         cursor: 'nwse-resize',
@@ -56,7 +57,7 @@ const ResizeHandle = ({ onResize, onResizeStart, onResizeEnd, className = "" }: 
         display: 'flex',
         alignItems: 'flex-end',
         justifyContent: 'flex-end',
-        opacity: 0.5,
+        opacity: isDragging ? 0 : 0.5,
       }}
     >
        <svg width="10" height="10" viewBox="0 0 10 10" fill="none" style={{ pointerEvents: 'none' }}>

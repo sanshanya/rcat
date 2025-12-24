@@ -17,15 +17,18 @@ type TauriChatStreamPayload = {
 const createPartId = () =>
   `part_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 
-const getLastUserText = (messages: UIMessage[]) => {
-  const lastUser = [...messages].reverse().find((message) => message.role === "user");
-  if (!lastUser) return "";
-
-  return lastUser.parts
-    .filter((part): part is { type: "text"; text: string } => part.type === "text")
-    .map((part) => part.text)
-    .join("\n")
-    .trim();
+// Convert UIMessages to API message format
+const convertMessagesToApi = (messages: UIMessage[]) => {
+  return messages
+    .filter((msg) => msg.role !== "system")
+    .map((msg) => ({
+      role: msg.role,
+      content: msg.parts
+        .filter((part): part is { type: "text"; text: string } => part.type === "text")
+        .map((part) => part.text)
+        .join("\n"),
+    }))
+    .filter((msg) => msg.content.trim() !== "");
 };
 
 export const createTauriChatTransport = (): ChatTransport<UIMessage> => ({
@@ -33,9 +36,9 @@ export const createTauriChatTransport = (): ChatTransport<UIMessage> => ({
     return createUIMessageStream<UIMessage>({
       originalMessages: messages,
       execute: async ({ writer }) => {
-        const prompt = getLastUserText(messages);
-        if (!prompt) {
-          writer.write({ type: "error", errorText: "No user message to send." });
+        const apiMessages = convertMessagesToApi(messages);
+        if (apiMessages.length === 0) {
+          writer.write({ type: "error", errorText: "No messages to send." });
           return;
         }
 
@@ -139,7 +142,7 @@ export const createTauriChatTransport = (): ChatTransport<UIMessage> => ({
           finish();
         });
 
-        void invoke("chat_stream", { prompt }).catch((error) => {
+        void invoke("chat_stream", { messages: apiMessages }).catch((error) => {
           writer.write({ type: "error", errorText: String(error) });
           finish();
         });
