@@ -255,8 +255,29 @@ body,
 
 .chat-message.assistant {
   align-self: flex-start;
-  background-color: var(--bg-tertiary);
-  border-left: 3px solid var(--accent-green);
+  background-color: rgba(0, 0, 0, 0.9);
+  border-left: 3px solid #333333;
+}
+
+/* Fix visibility for footnotes and math on dark background */
+.chat-message.assistant sup, 
+.chat-message.assistant sub,
+.chat-message.assistant .footnote-ref,
+.chat-message.assistant .katex, 
+.chat-message.assistant .math,
+.chat-message.assistant .mjx-chtml {
+  color: inherit;
+}
+
+/* Footnote backref link */
+.chat-message.assistant a.footnote-backref,
+.chat-message.assistant a.footnote-ref {
+  color: var(--accent-blue);
+  text-decoration: none;
+}
+
+.chat-message.assistant .katex-html {
+  color: #f0f0f0;
 }
 
 .chat-role {
@@ -272,7 +293,7 @@ body,
 }
 
 .chat-message.assistant .chat-role {
-  color: var(--accent-green);
+  color: #888888;
 }
 
 .chat-content {

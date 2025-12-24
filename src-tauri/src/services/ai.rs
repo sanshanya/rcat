@@ -2,17 +2,14 @@
 //! AI Service module for OpenAI-compatible API integration.
 //! Supports any OpenAI-format API (official, Azure, local Ollama, etc.)
 //! via configurable base_url and api_key.
+//! 
+//! Special support for reasoning models (DeepSeek R1, etc.) that output
+//! reasoning_content in the delta stream.
 
-use async_openai::{
-    config::OpenAIConfig,
-    types::{
-        ChatCompletionRequestMessage, ChatCompletionRequestUserMessageArgs,
-        CreateChatCompletionRequestArgs,
-    },
-    Client,
-};
 use futures_util::StreamExt;
+use reqwest_eventsource::{Event, EventSource};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use tauri::Emitter;
 
 /// AI configuration for OpenAI-compatible endpoints
@@ -58,11 +55,13 @@ pub const EVT_CHAT_ERROR: &str = "chat-error";
 /// Streaming chat payload sent to frontend
 #[derive(Clone, Serialize)]
 pub struct ChatStreamPayload {
-    pub chunk: String,
+    pub delta: String,
+    pub kind: String, // "text" or "reasoning"
     pub done: bool,
 }
 
-/// Start a streaming chat request.
+/// Start a streaming chat request with reasoning support.
+/// Uses raw HTTP streaming to capture both content and reasoning_content.
 /// Emits chunks via `chat-stream` event, completion via `chat-done`.
 #[tauri::command]
 pub async fn chat_stream(
@@ -83,54 +82,85 @@ pub async fn chat_stream(
         return Err("API key is required".to_string());
     }
 
-    // Build OpenAI client with custom config
-    let openai_config = OpenAIConfig::new()
-        .with_api_key(&config.api_key)
-        .with_api_base(&config.base_url);
+    // Ensure base_url ends without trailing slash
+    let base_url = config.base_url.trim_end_matches('/');
+    let url = format!("{}/chat/completions", base_url);
 
-    let client = Client::with_config(openai_config);
+    // Build request body
+    let body = serde_json::json!({
+        "model": config.model,
+        "messages": [
+            { "role": "user", "content": prompt }
+        ],
+        "stream": true
+    });
 
-    // Build chat request
-    let messages: Vec<ChatCompletionRequestMessage> =
-        vec![ChatCompletionRequestUserMessageArgs::default()
-            .content(prompt)
-            .build()
-            .map_err(|e| e.to_string())?
-            .into()];
+    // Create HTTP client and request
+    let client = reqwest::Client::new();
+    let request = client
+        .post(&url)
+        .header("Authorization", format!("Bearer {}", config.api_key))
+        .header("Content-Type", "application/json")
+        .json(&body);
 
-    let request = CreateChatCompletionRequestArgs::default()
-        .model(&config.model)
-        .messages(messages)
-        .stream(true)
-        .build()
-        .map_err(|e| e.to_string())?;
+    // Create SSE event source
+    let mut es = EventSource::new(request).map_err(|e| e.to_string())?;
 
-    // Execute streaming request
-    let mut stream = client
-        .chat()
-        .create_stream(request)
-        .await
-        .map_err(|e| e.to_string())?;
+    // Process SSE events
+    while let Some(event) = es.next().await {
+        match event {
+            Ok(Event::Open) => {
+                // Connection opened, nothing to do
+            }
+            Ok(Event::Message(message)) => {
+                // Check for [DONE] signal
+                if message.data == "[DONE]" {
+                    break;
+                }
 
-    // Process stream chunks
-    while let Some(result) = stream.next().await {
-        match result {
-            Ok(response) => {
-                for choice in response.choices {
-                    if let Some(content) = choice.delta.content {
-                        let _ = app.emit(
-                            EVT_CHAT_STREAM,
-                            ChatStreamPayload {
-                                chunk: content,
-                                done: false,
-                            },
-                        );
+                // Parse the JSON data
+                if let Ok(json) = serde_json::from_str::<Value>(&message.data) {
+                    if let Some(choices) = json.get("choices").and_then(|c| c.as_array()) {
+                        for choice in choices {
+                            if let Some(delta) = choice.get("delta") {
+                                // Extract reasoning_content (for DeepSeek R1, etc.)
+                                if let Some(reasoning) = delta.get("reasoning_content").and_then(|r| r.as_str()) {
+                                    if !reasoning.is_empty() {
+                                        let _ = app.emit(
+                                            EVT_CHAT_STREAM,
+                                            ChatStreamPayload {
+                                                delta: reasoning.to_string(),
+                                                kind: "reasoning".to_string(),
+                                                done: false,
+                                            },
+                                        );
+                                    }
+                                }
+
+                                // Extract regular content
+                                if let Some(content) = delta.get("content").and_then(|c| c.as_str()) {
+                                    if !content.is_empty() {
+                                        let _ = app.emit(
+                                            EVT_CHAT_STREAM,
+                                            ChatStreamPayload {
+                                                delta: content.to_string(),
+                                                kind: "text".to_string(),
+                                                done: false,
+                                            },
+                                        );
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
             Err(e) => {
-                let _ = app.emit(EVT_CHAT_ERROR, e.to_string());
-                return Err(e.to_string());
+                // Handle errors
+                let error_msg = format!("Stream error: {}", e);
+                let _ = app.emit(EVT_CHAT_ERROR, &error_msg);
+                es.close();
+                return Err(error_msg);
             }
         }
     }
@@ -139,7 +169,8 @@ pub async fn chat_stream(
     let _ = app.emit(
         EVT_CHAT_STREAM,
         ChatStreamPayload {
-            chunk: String::new(),
+            delta: String::new(),
+            kind: "text".to_string(),
             done: true,
         },
     );
@@ -167,34 +198,34 @@ pub async fn chat_simple(
         return Err("API key is required".to_string());
     }
 
-    let openai_config = OpenAIConfig::new()
-        .with_api_key(&config.api_key)
-        .with_api_base(&config.base_url);
+    // Ensure base_url ends without trailing slash
+    let base_url = config.base_url.trim_end_matches('/');
+    let url = format!("{}/chat/completions", base_url);
 
-    let client = Client::with_config(openai_config);
+    let body = serde_json::json!({
+        "model": config.model,
+        "messages": [
+            { "role": "user", "content": prompt }
+        ]
+    });
 
-    let messages: Vec<ChatCompletionRequestMessage> =
-        vec![ChatCompletionRequestUserMessageArgs::default()
-            .content(prompt)
-            .build()
-            .map_err(|e| e.to_string())?
-            .into()];
-
-    let request = CreateChatCompletionRequestArgs::default()
-        .model(&config.model)
-        .messages(messages)
-        .build()
-        .map_err(|e| e.to_string())?;
-
+    let client = reqwest::Client::new();
     let response = client
-        .chat()
-        .create(request)
+        .post(&url)
+        .header("Authorization", format!("Bearer {}", config.api_key))
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .send()
         .await
         .map_err(|e| e.to_string())?;
 
-    response
-        .choices
-        .first()
-        .and_then(|c| c.message.content.clone())
+    let json: Value = response.json().await.map_err(|e| e.to_string())?;
+
+    json.get("choices")
+        .and_then(|c| c.get(0))
+        .and_then(|c| c.get("message"))
+        .and_then(|m| m.get("content"))
+        .and_then(|c| c.as_str())
+        .map(|s| s.to_string())
         .ok_or_else(|| "No response content".to_string())
 }

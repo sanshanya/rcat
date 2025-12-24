@@ -2,9 +2,9 @@
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "rcat",
   "version": "0.1.0",
-  "identifier": "com.tauri.dev",
+  "identifier": "com.sanshanya.rcat",
   "build": {
-    "frontendDist": "../build",
+    "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",
     "beforeDevCommand": "deno task dev",
     "beforeBuildCommand": "deno task build"

@@ -1,6 +1,12 @@
 import { useEffect, useRef } from "react";
 import type { ChatStatus, UIMessage } from "ai";
 import { Streamdown } from "streamdown";
+import {
+  Reasoning,
+  ReasoningContent,
+  ReasoningTrigger,
+} from "@/components/ai-elements/reasoning";
+import { ThinkingIndicator } from "@/components/ai-elements/thinking-indicator";
 
 interface ChatMessagesProps {
   messages: UIMessage[];
@@ -31,9 +37,15 @@ const ChatMessages = ({ messages, status }: ChatMessagesProps) => {
             </div>
             <div className="chat-content">
               {message.parts.map((part, index) => {
+                const isStreaming = status === "streaming" && message.role === "assistant";
+                
                 if (part.type === "text") {
                   return (
-                    <Streamdown key={index} mode="streaming">
+                    <Streamdown 
+                      key={index} 
+                      isAnimating={isStreaming}
+                      shikiTheme={["github-dark", "github-dark"]}
+                    >
                       {part.text}
                     </Streamdown>
                   );
@@ -41,14 +53,13 @@ const ChatMessages = ({ messages, status }: ChatMessagesProps) => {
 
                 if (part.type === "reasoning") {
                   return (
-                    <details key={index} className="chat-reasoning">
-                      <summary>Show reasoning</summary>
-                      <div className="chat-reasoning-body">
-                        <Streamdown mode="streaming">
-                          {part.text}
-                        </Streamdown>
-                      </div>
-                    </details>
+                    <Reasoning
+                      key={index}
+                      isStreaming={isStreaming && index === message.parts.length - 1}
+                    >
+                      <ReasoningTrigger />
+                      <ReasoningContent>{part.text}</ReasoningContent>
+                    </Reasoning>
                   );
                 }
 
@@ -82,11 +93,7 @@ const ChatMessages = ({ messages, status }: ChatMessagesProps) => {
         <div className="chat-message assistant">
           <div className="chat-role">AI</div>
           <div className="chat-content">
-            <span className="thinking-dots">
-              <span>.</span>
-              <span>.</span>
-              <span>.</span>
-            </span>
+            <ThinkingIndicator isThinking={true} />
           </div>
         </div>
       )}
