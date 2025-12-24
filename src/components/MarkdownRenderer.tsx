@@ -1,86 +1,45 @@
-import React, { useState } from 'react';
-import ReactMarkdown from 'react-markdown';
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
-import remarkGfm from 'remark-gfm';
-import clsx from 'clsx';
+// src/components/MarkdownRenderer.tsx
+import { useMemo } from 'react';
 
 interface MarkdownRendererProps {
-  content: string;
-  className?: string; // Additional classes
+    content: string;
 }
 
-const CopyButton = ({ text }: { text: string }) => {
-  const [copied, setCopied] = useState(false);
+/**
+ * Simple Markdown renderer for AI responses.
+ * Supports: bold, italic, code blocks, inline code, and line breaks.
+ */
+const MarkdownRenderer = ({ content }: MarkdownRendererProps) => {
+    const html = useMemo(() => {
+        if (!content) return '';
 
-  const handleCopy = async () => {
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch (err) {
-      console.error('Failed to copy!', err);
-    }
-  };
+        let result = content
+            // Escape HTML entities
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            // Code blocks (```code```)
+            .replace(/```(\w*)\n([\s\S]*?)```/g, (_match, lang, code) => {
+                return `<pre class="code-block" data-lang="${lang}"><code>${code.trim()}</code></pre>`;
+            })
+            // Inline code (`code`)
+            .replace(/`([^`]+)`/g, '<code class="inline-code">$1</code>')
+            // Bold (**text**)
+            .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+            // Italic (*text*)
+            .replace(/\*([^*]+)\*/g, '<em>$1</em>')
+            // Line breaks
+            .replace(/\n/g, '<br/>');
 
-  return (
-    <button 
-      className={clsx("code-copy-btn", copied ? "copied" : "")}
-      onClick={handleCopy}
-      aria-label="Copy code"
-    >
-      {copied ? "已复制" : "复制"}
-    </button>
-  );
-};
+        return result;
+    }, [content]);
 
-const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, className }) => {
-  return (
-    <div className={clsx("markdown-body", className)}>
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        components={{
-          code({ node, inline, className, children, ...props }: { node: any, inline?: boolean, className?: string, children?: React.ReactNode } & any) {
-            const match = /language-(\w+)/.exec(className || '');
-            const codeString = String(children).replace(/\n$/, '');
-            
-            return !inline && match ? (
-              <div className="code-block-wrapper">
-                <div className="code-header">
-                  <span className="code-lang">{match[1]}</span>
-                  <CopyButton text={codeString} />
-                </div>
-                <SyntaxHighlighter
-                  {...props}
-                  style={vscDarkPlus}
-                  language={match[1]}
-                  PreTag="div"
-                  customStyle={{
-                    margin: 0,
-                    borderRadius: '0 0 6px 6px',
-                    fontSize: '13px',
-                    lineHeight: '1.5',
-                  }}
-                >
-                  {codeString}
-                </SyntaxHighlighter>
-              </div>
-            ) : (
-              <code className={clsx("inline-code", className)} {...props}>
-                {children}
-              </code>
-            );
-          },
-          // Customizing other elements for "Pro" feel
-          a: ({ node, ...props }: any) => (
-            <a {...props} target="_blank" rel="noopener noreferrer" className="md-link" />
-          )
-        }}
-      >
-        {content}
-      </ReactMarkdown>
-    </div>
-  );
+    return (
+        <span
+            className="markdown-content"
+            dangerouslySetInnerHTML={{ __html: html }}
+        />
+    );
 };
 
 export default MarkdownRenderer;

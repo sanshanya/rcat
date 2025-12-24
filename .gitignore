@@ -1,16 +1,33 @@
-# =====================================
-# Node.js / Vite / TypeScript
-# =====================================
-
+# ========================
 # Dependencies
+# ========================
 node_modules/
+.pnp
+.pnp.js
 
-# Build output
+# ========================
+# Build outputs
+# ========================
 dist/
 dist-ssr/
+build/
 *.local
 
+# Tauri build artifacts
+src-tauri/target/
+src-tauri/gen/
+
+# ========================
+# Environment & Secrets
+# ========================
+.env
+.env.local
+.env.*.local
+*.pem
+
+# ========================
 # Logs
+# ========================
 logs/
 *.log
 npm-debug.log*
@@ -18,89 +35,50 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
+bun-debug.log*
 
-# Deno
-deno.lock
-
-# =====================================
-# Rust / Cargo / Tauri
-# =====================================
-
-# Cargo build output
-src-tauri/target/
-
-# Cargo lock (optional: can be committed for apps, ignored for libs)
-# src-tauri/Cargo.lock
-
-# Tauri auto-generated files
-src-tauri/gen/
-
-# =====================================
-# OS and Editor
-# =====================================
-
-# macOS
-.DS_Store
-.AppleDouble
-.LSOverride
-._*
-
-# Windows
-Thumbs.db
-ehthumbs.db
-Desktop.ini
-$RECYCLE.BIN/
-*.cab
-*.msi
-*.msm
-*.msp
-*.lnk
-
-# Linux
-*~
-
-# Visual Studio Code
+# ========================
+# IDE & Editor
+# ========================
 .vscode/*
 !.vscode/extensions.json
 !.vscode/settings.json
-
-# JetBrains IDEs
 .idea/
-*.iml
-*.iws
-*.ipr
-
-# Visual Studio
 *.suo
 *.ntvs*
 *.njsproj
 *.sln
-*.user
-
-# Vim / Neovim
 *.sw?
-*.swp
-*.swo
 
-# =====================================
-# Environment & Secrets
-# =====================================
-.env
-.env.local
-.env.*.local
+# ========================
+# OS Files
+# ========================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
 
-# =====================================
-# Testing & Coverage
-# =====================================
+# ========================
+# Cache & Temp
+# ========================
+.cache/
+.parcel-cache/
+.turbo/
+*.tsbuildinfo
+
+# ========================
+# Testing
+# ========================
 coverage/
-*.lcov
+.nyc_output/
 
-# =====================================
-# Miscellaneous
-# =====================================
-
-# Temporary files
+# ========================
+# Misc
+# ========================
+*.bak
 *.tmp
 *.temp
-tmp/
-temp/

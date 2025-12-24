@@ -16,20 +16,20 @@
   --color-accent-green: rgba(100, 255, 150, 0.8);
   --color-border: rgba(255, 255, 255, 0.15);
   --color-border-subtle: rgba(255, 255, 255, 0.08);
-  
+
   /* Spacing */
   --spacing-xs: 2px;
   --spacing-sm: 4px;
   --spacing-md: 8px;
   --spacing-lg: 12px;
   --spacing-xl: 16px;
-  
+
   /* Border Radius */
   --radius-sm: 4px;
   --radius-md: 10px;
   --radius-lg: 22px;
   --radius-pill: 27px;
-  
+
   /* Transitions */
   --transition-fast: 0.15s ease;
   --transition-normal: 0.2s ease;
@@ -39,7 +39,10 @@
 /* =========================================
    2. Global Resets
    ========================================= */
-:root, html, body, #root {
+:root,
+html,
+body,
+#root {
   background-color: transparent !important;
   margin: 0;
   padding: 0;
@@ -50,7 +53,9 @@
   cursor: default;
 }
 
-*, *::before, *::after {
+*,
+*::before,
+*::after {
   box-sizing: border-box;
 }
 
@@ -130,11 +135,25 @@
    6. Common Animations
    ========================================= */
 @keyframes fadeIn {
-  from { opacity: 0; transform: translateY(5px); }
-  to { opacity: 1; transform: translateY(0); }
+  from {
+    opacity: 0;
+    transform: translateY(5px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 @keyframes slideIn {
-  from { opacity: 0; transform: translateY(-20px); }
-  to { opacity: 1; transform: translateY(0); }
+  from {
+    opacity: 0;
+    transform: translateY(-20px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
