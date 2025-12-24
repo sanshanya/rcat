@@ -48,8 +48,8 @@ const ResizeHandle = ({ onResize, onResizeStart, onResizeEnd, className = "" }: 
       onPointerDown={handlePointerDown}
       style={{
         position: 'absolute',
-        bottom: 4,
-        right: 4,
+        bottom: 0,
+        right: 0,
         width: '16px',
         height: '16px',
         cursor: 'nwse-resize',

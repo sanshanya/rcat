@@ -209,16 +209,20 @@ function App() {
             </div>
           )}
 
+
+          {/* Resize handle positioned relative to content-wrapper */}
+          {(windowManager.mode === 'input' || windowManager.mode === 'result') && !isClickThrough && (
+            <ResizeHandle
+              onResize={windowManager.applyResize}
+              onResizeStart={windowManager.startResize}
+            />
+          )}
+
         </MotionConfig>
       </div>
 
       {/* Resize handle positioned relative to container */}
-      {(windowManager.mode === 'input' || windowManager.mode === 'result') && !isClickThrough && (
-        <ResizeHandle
-          onResize={windowManager.applyResize}
-          onResizeStart={windowManager.startResize}
-        />
-      )}
+
     </div>
   );
 }
