@@ -315,6 +315,7 @@ function App() {
               isStreaming={status === "streaming"}
               isSubmitting={status === "submitted"}
               disabled={isClickThrough}
+              windowMode={windowMode}
               model={selectedModel}
               onModelChange={setSelectedModel}
               toolMode={toolMode}

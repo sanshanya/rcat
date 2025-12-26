@@ -1,9 +1,10 @@
 import { motion } from "framer-motion";
+import type { WindowMode } from "@/types";
 
 interface CapsuleProps {
   isThinking: boolean;
   messageCount: number;
-  windowMode: 'mini' | 'input' | 'result';
+  windowMode: WindowMode;
   onClick: () => void;
   disabled: boolean;
 }

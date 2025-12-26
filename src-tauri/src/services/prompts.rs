@@ -58,18 +58,27 @@ pub mod tool_capture_focused {
 // TOOL SCHEMA BUILDERS
 // ============================================================================
 
-/// Build the JSON schema for vision tools
-pub fn build_vision_tools_schema() -> serde_json::Value {
-    json!([
-        {
+/// Build the JSON schema for vision tools.
+///
+/// When `strict` is enabled (e.g. DeepSeek `/beta`), each function includes `strict: true`
+/// and its parameter schema follows strict-mode requirements (`additionalProperties: false`,
+/// and all properties listed in `required`).
+pub fn build_vision_tools_schema(strict: bool) -> serde_json::Value {
+    let mut tools = vec![
+        json!({
             "type": "function",
             "function": {
                 "name": tool_list_windows::NAME,
                 "description": tool_list_windows::DESCRIPTION,
-                "parameters": { "type": "object", "properties": {} }
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "required": [],
+                    "additionalProperties": false
+                }
             }
-        },
-        {
+        }),
+        json!({
             "type": "function",
             "function": {
                 "name": tool_capture_window::NAME,
@@ -82,19 +91,37 @@ pub fn build_vision_tools_schema() -> serde_json::Value {
                             "description": tool_capture_window::PARAM_WINDOW_TITLE_DESC
                         }
                     },
-                    "required": [tool_capture_window::PARAM_WINDOW_TITLE]
+                    "required": [tool_capture_window::PARAM_WINDOW_TITLE],
+                    "additionalProperties": false
                 }
             }
-        },
-        {
+        }),
+        json!({
             "type": "function",
             "function": {
                 "name": tool_capture_focused::NAME,
                 "description": tool_capture_focused::DESCRIPTION,
-                "parameters": { "type": "object", "properties": {} }
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "required": [],
+                    "additionalProperties": false
+                }
+            }
+        }),
+    ];
+
+    if strict {
+        for tool in &mut tools {
+            if let Some(function) = tool.get_mut("function") {
+                if let serde_json::Value::Object(map) = function {
+                    map.insert("strict".to_string(), json!(true));
+                }
             }
         }
-    ])
+    }
+
+    serde_json::Value::Array(tools)
 }
 
 // ============================================================================
@@ -144,10 +171,31 @@ mod tests {
 
     #[test]
     fn test_build_vision_tools_schema() {
-        let schema = build_vision_tools_schema();
+        let schema = build_vision_tools_schema(false);
         assert!(schema.is_array());
         let tools = schema.as_array().unwrap();
         assert_eq!(tools.len(), 3);
+    }
+
+    #[test]
+    fn test_build_vision_tools_schema_strict() {
+        let schema = build_vision_tools_schema(true);
+        let tools = schema.as_array().unwrap();
+        for tool in tools {
+            assert_eq!(
+                tool.get("function")
+                    .and_then(|f| f.get("strict"))
+                    .and_then(|s| s.as_bool()),
+                Some(true)
+            );
+            assert_eq!(
+                tool.get("function")
+                    .and_then(|f| f.get("parameters"))
+                    .and_then(|p| p.get("additionalProperties"))
+                    .and_then(|v| v.as_bool()),
+                Some(false)
+            );
+        }
     }
 
     #[test]

@@ -8,6 +8,7 @@ import {
   type FormEvent,
 } from "react";
 import { Eye, EyeOff, Mic, MicOff, Plus, Settings, Trash2 } from "lucide-react";
+import { invoke } from "@tauri-apps/api/core";
 import {
   Select,
   SelectContent,
@@ -22,7 +23,9 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { MODEL_OPTIONS } from "@/constants";
+import { INPUT_HEIGHT_COLLAPSED, INPUT_HEIGHT_EXPANDED, MODEL_OPTIONS } from "@/constants";
+import type { WindowMode } from "@/types";
+import { isTauriContext } from "@/utils";
 
 const MAX_TEXTAREA_HEIGHT_PX = 200;
 
@@ -58,6 +61,7 @@ interface PromptInputProps {
   isStreaming?: boolean;
   isSubmitting?: boolean;
   disabled?: boolean;
+  windowMode: WindowMode;
   model: string;
   onModelChange: (model: string) => void;
   toolMode?: boolean;
@@ -75,6 +79,7 @@ export const PromptInput = forwardRef<HTMLTextAreaElement, PromptInputProps>(
       isStreaming = false,
       isSubmitting = false,
       disabled = false,
+      windowMode,
       model,
       onModelChange,
       toolMode = false,
@@ -86,10 +91,14 @@ export const PromptInput = forwardRef<HTMLTextAreaElement, PromptInputProps>(
     useImperativeHandle(ref, () => textareaRef.current as HTMLTextAreaElement);
 
     const [isListening, setIsListening] = useState(false);
+    const [modelSelectOpen, setModelSelectOpen] = useState(false);
     const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
     const listeningBaseValueRef = useRef("");
 
     const isBusy = isStreaming || isSubmitting;
+    const isModelSelectExpandedRef = useRef(false);
+    const isModelSelectOpeningRef = useRef(false);
+    const modelSelectOpenTimeoutRef = useRef<number | null>(null);
 
     const autoResize = (el: HTMLTextAreaElement) => {
       el.style.height = "auto";
@@ -112,6 +121,55 @@ export const PromptInput = forwardRef<HTMLTextAreaElement, PromptInputProps>(
         onSubmit();
       }
     };
+
+    const setInputWindowHeight = useCallback(
+      async (height: number) => {
+        if (!isTauriContext()) return;
+        if (windowMode !== "input") return;
+        try {
+          await invoke("resize_input_height", { desiredHeight: height });
+        } catch {
+          // Ignore resize failures
+        }
+      },
+      [windowMode]
+    );
+
+    const expandForModelSelect = useCallback(() => {
+      if (isModelSelectExpandedRef.current) return;
+      isModelSelectExpandedRef.current = true;
+      return setInputWindowHeight(INPUT_HEIGHT_EXPANDED);
+    }, [setInputWindowHeight]);
+
+    const collapseAfterModelSelect = useCallback(() => {
+      if (!isModelSelectExpandedRef.current) return;
+      isModelSelectExpandedRef.current = false;
+      return setInputWindowHeight(INPUT_HEIGHT_COLLAPSED);
+    }, [setInputWindowHeight]);
+
+    useEffect(() => {
+      if (windowMode !== "input") {
+        // Reset the expansion flag when leaving input mode so next open can expand again.
+        isModelSelectExpandedRef.current = false;
+        return;
+      }
+
+      if (modelSelectOpen) {
+        void expandForModelSelect();
+      } else {
+        void collapseAfterModelSelect();
+      }
+    }, [collapseAfterModelSelect, expandForModelSelect, modelSelectOpen, windowMode]);
+
+    useEffect(() => {
+      return () => {
+        if (modelSelectOpenTimeoutRef.current !== null) {
+          window.clearTimeout(modelSelectOpenTimeoutRef.current);
+          modelSelectOpenTimeoutRef.current = null;
+        }
+        isModelSelectOpeningRef.current = false;
+      };
+    }, []);
 
     const handleSubmit = (e: FormEvent<HTMLFormElement>) => {
       e.preventDefault();
@@ -280,10 +338,53 @@ export const PromptInput = forwardRef<HTMLTextAreaElement, PromptInputProps>(
               value={model}
               onValueChange={onModelChange}
               disabled={disabled}
+              open={modelSelectOpen}
+              onOpenChange={(open) => {
+                // Ignore transient open/close toggles triggered by the same pointer gesture
+                // while we're resizing the Tauri window before opening the menu.
+                if (isModelSelectOpeningRef.current) return;
+                setModelSelectOpen(open);
+              }}
             >
               <SelectTrigger
                 className="prompt-input-model-select"
-                onPointerDown={(e) => e.stopPropagation()}
+                onPointerDown={(e) => {
+                  e.stopPropagation();
+                  if (disabled) return;
+                  if (windowMode !== "input") return;
+                  if (modelSelectOpen) return;
+                  if (isModelSelectOpeningRef.current) return;
+
+                  // Prevent Radix from opening immediately; resizing the Tauri window here
+                  // can cause the dropdown to instantly close due to pointer/focus changes.
+                  e.preventDefault();
+
+                  isModelSelectOpeningRef.current = true;
+
+                  const pointerEndPromise = new Promise<void>((resolve) => {
+                    const done = () => {
+                      window.removeEventListener("pointerup", onPointerEnd, true);
+                      window.removeEventListener("pointercancel", onPointerEnd, true);
+                      resolve();
+                    };
+                    const onPointerEnd = () => done();
+                    window.addEventListener("pointerup", onPointerEnd, true);
+                    window.addEventListener("pointercancel", onPointerEnd, true);
+                  });
+
+                  void Promise.all([
+                    expandForModelSelect() ?? Promise.resolve(),
+                    pointerEndPromise,
+                  ]).then(() => {
+                    // Defer to the next tick so the trigger's click event can't immediately
+                    // toggle the Select closed right after we programmatically open it.
+                    modelSelectOpenTimeoutRef.current = window.setTimeout(() => {
+                      modelSelectOpenTimeoutRef.current = null;
+                      setModelSelectOpen(true);
+                      isModelSelectOpeningRef.current = false;
+                    }, 0);
+                  });
+                }}
               >
                 <SelectValue />
               </SelectTrigger>

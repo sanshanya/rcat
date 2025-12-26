@@ -4,8 +4,14 @@
 /** Minimum width for Input mode */
 export const MIN_INPUT_WIDTH = 380;
 
-/** Default height for Input mode */
-export const INPUT_HEIGHT = 380;
+/** Default height for Input mode (compact) */
+export const INPUT_HEIGHT_COLLAPSED = 220;
+
+/** Expanded height for Input mode (e.g. to show dropdowns) */
+export const INPUT_HEIGHT_EXPANDED = 380;
+
+/** Back-compat alias */
+export const INPUT_HEIGHT = INPUT_HEIGHT_COLLAPSED;
 
 /** Default size for Result mode */
 export const DEFAULT_RESULT_SIZE = { w: 400, h: 500 };

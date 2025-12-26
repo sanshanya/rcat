@@ -9,8 +9,10 @@ use tauri::{
     Emitter, Manager,
 };
 
-mod services;
+pub mod services;
 
+#[cfg_attr(feature = "typegen", derive(specta::Type))]
+#[cfg_attr(feature = "typegen", specta(rename_all = "lowercase"))]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum WindowMode {
@@ -23,7 +25,7 @@ impl WindowMode {
     pub fn get_size(&self) -> (f64, f64) {
         match self {
             WindowMode::Mini => (220.0, 80.0),
-            WindowMode::Input => (MIN_INPUT_W, INPUT_H),
+            WindowMode::Input => (MIN_INPUT_W, INPUT_H_COLLAPSED),
             WindowMode::Result => (400.0, 500.0),
         }
     }
@@ -32,8 +34,23 @@ impl WindowMode {
 // ✅ 输入态动态宽度常量
 const MIN_INPUT_W: f64 = 380.0;
 const MAX_INPUT_W: f64 = 8000.0; // Effectively unlimited, constrained by monitor width logic below
-const INPUT_H: f64 = 380.0; // Increased to accommodate dropdown menu
+// Default input window height (compact; avoids blocking clicks behind)
+const INPUT_H_COLLAPSED: f64 = 220.0;
+// Expanded input window height (used temporarily for menus like model Select)
+const INPUT_H_EXPANDED: f64 = 380.0;
 const EDGE_MARGIN: f64 = 12.0;
+
+fn get_current_logical_size(window: &tauri::WebviewWindow) -> Option<(f64, f64)> {
+    let size = window.inner_size().ok()?;
+    let scale = window
+        .current_monitor()
+        .ok()
+        .flatten()
+        .map(|m| m.scale_factor())
+        .unwrap_or(1.0);
+
+    Some((size.width as f64 / scale, size.height as f64 / scale))
+}
 
 // ✅ 窗口模式切换命令
 #[tauri::command]
@@ -50,6 +67,12 @@ fn resize_input_width(app: tauri::AppHandle, desired_width: f64) {
     if let Some(window) = app.get_webview_window("main") {
         // 1. 先 clamp 到 min/max
         let clamped = desired_width.clamp(MIN_INPUT_W, MAX_INPUT_W);
+
+        // Preserve current height to avoid resetting dynamic input height.
+        let current_h = get_current_logical_size(&window)
+            .map(|(_, h)| h)
+            .unwrap_or(INPUT_H_COLLAPSED)
+            .max(INPUT_H_COLLAPSED);
 
         // 2. 获取窗口位置和显示器信息
         let pos = window.outer_position().ok();
@@ -73,15 +96,40 @@ fn resize_input_width(app: tauri::AppHandle, desired_width: f64) {
             }
 
             // 最终宽度仍然受 max 限制
-            clamped.min(monitor_width - 2.0 * EDGE_MARGIN)
+            let max_w = (monitor_width - 2.0 * EDGE_MARGIN).max(100.0);
+            clamped.min(max_w)
         } else {
             clamped
         };
 
-        let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize {
-            width: final_width,
-            height: INPUT_H,
-        }));
+        safe_resize(&window, final_width, current_h);
+    }
+}
+
+/// ✅ 输入态动态高度调整（用于临时展开以展示下拉菜单等）
+#[tauri::command]
+fn resize_input_height(app: tauri::AppHandle, desired_height: f64) {
+    if let Some(window) = app.get_webview_window("main") {
+        let (current_w, _) =
+            get_current_logical_size(&window).unwrap_or((MIN_INPUT_W, INPUT_H_COLLAPSED));
+
+        let monitor = window.current_monitor().ok().flatten();
+
+        // Clamp height to monitor bounds (with margins) when possible.
+        let clamped_h = if let Some(m) = monitor {
+            let scale = m.scale_factor();
+            let monitor_height = m.size().height as f64 / scale;
+            let max_h = (monitor_height - 2.0 * EDGE_MARGIN).max(100.0);
+            desired_height
+                .clamp(INPUT_H_COLLAPSED, INPUT_H_EXPANDED)
+                .min(max_h)
+        } else {
+            desired_height.clamp(INPUT_H_COLLAPSED, INPUT_H_EXPANDED)
+        };
+
+        // Keep width stable (respect current/auto-resized width).
+        let final_w = current_w.max(MIN_INPUT_W);
+        safe_resize(&window, final_w, clamped_h);
     }
 }
 
@@ -158,6 +206,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             set_window_mode,
             resize_input_width,
+            resize_input_height,
             resize_window,
             get_drag_constraints,
             services::ai::chat_stream,

@@ -45,6 +45,28 @@ AI_MODEL=deepseek-reasoner
 AI_PROVIDER=deepseek
 ```
 
+### VLM Screenshot Optimization (Optional)
+
+When using `analyze_screen_vlm`, screenshots are JPEG-compressed and optionally downscaled before Base64 encoding to reduce payload size and latency.
+
+```env
+# Max width/height in pixels (0 = no resize)
+VLM_IMAGE_MAX_DIM=1280
+
+# JPEG quality (1-100)
+VLM_JPEG_QUALITY=70
+```
+
+### Rust → TypeScript Types (Optional)
+
+Shared bridge types are generated into `src/bindings/tauri-types.ts`.
+
+```bash
+npm run typegen
+# or
+cargo run --manifest-path src-tauri/Cargo.toml --bin generate_ts_types --features typegen
+```
+
 ## 🏃‍♂️ Development
 
 Install dependencies:

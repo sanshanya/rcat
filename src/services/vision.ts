@@ -6,49 +6,11 @@
  */
 
 import { invoke } from '@tauri-apps/api/core';
-
-/**
- * Result of a screen capture and OCR operation.
- */
-export interface ScreenCaptureResult {
-    /** Extracted text from the screen */
-    text: string;
-    /** OCR confidence score (0.0 - 1.0), null if not available */
-    confidence: number | null;
-    /** Unix timestamp in milliseconds when the capture was taken */
-    timestamp: number;
-    /** Window name that was captured (if specific window) */
-    window_name: string | null;
-}
-
-/**
- * Result of a VLM (Vision Language Model) analysis.
- */
-export interface VlmAnalysisResult {
-    /** Analysis result from the VLM */
-    content: string;
-    /** Unix timestamp in milliseconds */
-    timestamp: number;
-}
-
-/**
- * Detailed window metadata for smart selection.
- * Windows are returned in Z-order (topmost first).
- */
-export interface WindowInfo {
-    /** Window title */
-    title: string;
-    /** Application name (e.g., "Code", "chrome") */
-    app_name: string;
-    /** Process ID */
-    pid: number;
-    /** Whether this window is currently focused */
-    is_focused: boolean;
-    /** Z-order index (0 = topmost, higher = further back) */
-    z_index: number;
-    /** Whether this window is minimized */
-    is_minimized: boolean;
-}
+import type {
+    ScreenCaptureResult,
+    VlmAnalysisResult,
+    WindowInfo,
+} from '@/bindings/tauri-types';
 
 /**
  * Capture the screen and perform OCR to extract text.

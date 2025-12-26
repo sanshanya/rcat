@@ -8,6 +8,7 @@
 //!   `byot` ("bring your own types") methods to deserialize those fields.
 
 use async_openai::{config::OpenAIConfig, traits::RequestOptionsBuilder, Client};
+use async_openai::error::OpenAIError;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -16,6 +17,8 @@ use std::{
 };
 use tauri::Emitter;
 
+use super::retry::RetryConfig;
+
 /// Event name for streaming chat chunks
 pub const EVT_CHAT_STREAM: &str = "chat-stream";
 /// Event name for stream completion
@@ -23,6 +26,7 @@ pub const EVT_CHAT_DONE: &str = "chat-done";
 /// Event name for stream error
 pub const EVT_CHAT_ERROR: &str = "chat-error";
 
+#[cfg_attr(feature = "typegen", derive(specta::Type))]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AiProvider {
@@ -112,6 +116,7 @@ fn load_ai_config() -> AiConfig {
 }
 
 /// Public AI configuration returned to the frontend (secrets omitted).
+#[cfg_attr(feature = "typegen", derive(specta::Type))]
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AiPublicConfig {
@@ -134,12 +139,14 @@ pub fn get_ai_public_config() -> AiPublicConfig {
 }
 
 /// Message format received from frontend
+#[cfg_attr(feature = "typegen", derive(specta::Type))]
 #[derive(Clone, Deserialize)]
 pub struct ChatMessage {
     pub role: String,
     pub content: String,
 }
 
+#[cfg_attr(feature = "typegen", derive(specta::Type))]
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatRequestOptions {
@@ -192,6 +199,67 @@ fn is_disallowed_header(name: &str) -> bool {
         lower.as_str(),
         "authorization" | "proxy-authorization" | "x-api-key"
     )
+}
+
+fn build_header_map(headers: &HashMap<String, String>) -> Result<reqwest::header::HeaderMap, String> {
+    let mut header_map = reqwest::header::HeaderMap::new();
+    for (key, value) in headers {
+        if is_disallowed_header(key) {
+            return Err(format!("Header not allowed from frontend: {key}"));
+        }
+        let name = reqwest::header::HeaderName::from_bytes(key.as_bytes())
+            .map_err(|_| format!("Invalid header name: {key}"))?;
+        let val = reqwest::header::HeaderValue::from_str(value)
+            .map_err(|_| format!("Invalid header value for {key}"))?;
+        header_map.insert(name, val);
+    }
+    Ok(header_map)
+}
+
+fn apply_request_options<T: RequestOptionsBuilder>(
+    mut builder: T,
+    request_options: &ChatRequestOptions,
+) -> Result<T, String> {
+    if let Some(path) = request_options.path.as_deref() {
+        validate_path_override(path)?;
+        builder = builder.path(path).map_err(|e| e.to_string())?;
+    }
+
+    if let Some(query) = request_options.query.as_ref() {
+        builder = builder.query(query).map_err(|e| e.to_string())?;
+    }
+
+    if let Some(headers) = request_options.headers.as_ref() {
+        builder = builder.headers(build_header_map(headers)?);
+    }
+
+    Ok(builder)
+}
+
+fn should_retry_openai_error(err: &OpenAIError) -> bool {
+    match err {
+        OpenAIError::Reqwest(e) => e.is_timeout() || e.is_connect(),
+        OpenAIError::StreamError(_) => true,
+        OpenAIError::JSONDeserialize(_, _) => true,
+        OpenAIError::ApiError(api) => {
+            let msg = api.message.to_ascii_lowercase();
+            let code = api.code.as_deref().unwrap_or("").to_ascii_lowercase();
+            let ty = api.r#type.as_deref().unwrap_or("").to_ascii_lowercase();
+
+            msg.contains("rate limit")
+                || msg.contains("too many")
+                || msg.contains("429")
+                || msg.contains("overload")
+                || msg.contains("temporarily")
+                || msg.contains("timeout")
+                || code.contains("rate")
+                || code.contains("timeout")
+                || code.contains("overload")
+                || ty.contains("rate")
+                || ty.contains("timeout")
+        }
+        _ => false,
+    }
 }
 
 /// BYOT stream chunk type that keeps DeepSeek-style `reasoning_content`.
@@ -423,71 +491,95 @@ async fn run_chat_stream(
         "stream": true
     });
 
-    let mut chat = client.chat();
+    let retry = RetryConfig::from_env();
+    let mut last_error: Option<String> = None;
 
-    if let Some(path) = request_options.path.as_deref() {
-        validate_path_override(path)?;
-        chat = chat.path(path).map_err(|e| e.to_string())?;
-    }
+    'attempts: for attempt in 1..=retry.max_attempts {
+        let chat = apply_request_options(client.chat(), &request_options)?;
 
-    if let Some(query) = request_options.query.as_ref() {
-        chat = chat.query(query).map_err(|e| e.to_string())?;
-    }
-
-    if let Some(headers) = request_options.headers.as_ref() {
-        let mut header_map = reqwest::header::HeaderMap::new();
-        for (key, value) in headers {
-            if is_disallowed_header(key) {
-                return Err(format!("Header not allowed from frontend: {key}"));
-            }
-            let name = reqwest::header::HeaderName::from_bytes(key.as_bytes())
-                .map_err(|_| format!("Invalid header name: {key}"))?;
-            let value = reqwest::header::HeaderValue::from_str(value)
-                .map_err(|_| format!("Invalid header value for {key}"))?;
-            header_map.insert(name, value);
-        }
-        chat = chat.headers(header_map);
-    }
-
-    let mut stream = chat
-        .create_stream_byot::<_, ByotChatCompletionStreamResponse>(&request)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| e.to_string())?;
-        for choice in chunk.choices {
-            if let Some(reasoning) = choice.delta.reasoning_content {
-                if !reasoning.is_empty() {
-                    let _ = app.emit(
-                        EVT_CHAT_STREAM,
-                        ChatStreamPayload {
-                            request_id: request_id.clone(),
-                            delta: reasoning,
-                            kind: ChatDeltaKind::Reasoning,
-                            done: false,
-                        },
+        let mut stream = match chat
+            .create_stream_byot::<_, ByotChatCompletionStreamResponse>(&request)
+            .await
+        {
+            Ok(stream) => stream,
+            Err(err) => {
+                let msg = err.to_string();
+                last_error = Some(msg.clone());
+                if attempt < retry.max_attempts && should_retry_openai_error(&err) {
+                    log::warn!(
+                        "Retry attempt {}/{} after error: {}",
+                        attempt + 1,
+                        retry.max_attempts,
+                        msg
                     );
+                    tokio::time::sleep(retry.backoff(attempt)).await;
+                    continue;
+                }
+                return Err(msg);
+            }
+        };
+
+        let mut emitted_any = false;
+
+        while let Some(chunk) = stream.next().await {
+            let chunk = match chunk {
+                Ok(chunk) => chunk,
+                Err(err) => {
+                    let msg = err.to_string();
+                    last_error = Some(msg.clone());
+                    if attempt < retry.max_attempts && !emitted_any && should_retry_openai_error(&err)
+                    {
+                        log::warn!(
+                            "Retry attempt {}/{} after stream error: {}",
+                            attempt + 1,
+                            retry.max_attempts,
+                            msg
+                        );
+                        tokio::time::sleep(retry.backoff(attempt)).await;
+                        continue 'attempts;
+                    }
+                    return Err(msg);
+                }
+            };
+
+            for choice in chunk.choices {
+                if let Some(reasoning) = choice.delta.reasoning_content {
+                    if !reasoning.is_empty() {
+                        emitted_any = true;
+                        let _ = app.emit(
+                            EVT_CHAT_STREAM,
+                            ChatStreamPayload {
+                                request_id: request_id.clone(),
+                                delta: reasoning,
+                                kind: ChatDeltaKind::Reasoning,
+                                done: false,
+                            },
+                        );
+                    }
+                }
+
+                if let Some(content) = choice.delta.content {
+                    if !content.is_empty() {
+                        emitted_any = true;
+                        let _ = app.emit(
+                            EVT_CHAT_STREAM,
+                            ChatStreamPayload {
+                                request_id: request_id.clone(),
+                                delta: content,
+                                kind: ChatDeltaKind::Text,
+                                done: false,
+                            },
+                        );
+                    }
                 }
             }
-
-            if let Some(content) = choice.delta.content {
-                if !content.is_empty() {
-                    let _ = app.emit(
-                        EVT_CHAT_STREAM,
-                        ChatStreamPayload {
-                            request_id: request_id.clone(),
-                            delta: content,
-                            kind: ChatDeltaKind::Text,
-                            done: false,
-                        },
-                    );
-                }
-            }
         }
+
+        return Ok(());
     }
 
-    Ok(())
+    Err(last_error.unwrap_or_else(|| "Retry limit exceeded".to_string()))
+
 }
 
 /// Simple non-streaming chat for testing/debugging.
@@ -522,31 +614,7 @@ pub async fn chat_simple(
     });
 
     let request_options = request_options.unwrap_or_default();
-    let mut chat = client.chat();
-
-    if let Some(path) = request_options.path.as_deref() {
-        validate_path_override(path)?;
-        chat = chat.path(path).map_err(|e| e.to_string())?;
-    }
-
-    if let Some(query) = request_options.query.as_ref() {
-        chat = chat.query(query).map_err(|e| e.to_string())?;
-    }
-
-    if let Some(headers) = request_options.headers.as_ref() {
-        let mut header_map = reqwest::header::HeaderMap::new();
-        for (key, value) in headers {
-            if is_disallowed_header(key) {
-                return Err(format!("Header not allowed from frontend: {key}"));
-            }
-            let name = reqwest::header::HeaderName::from_bytes(key.as_bytes())
-                .map_err(|_| format!("Invalid header name: {key}"))?;
-            let value = reqwest::header::HeaderValue::from_str(value)
-                .map_err(|_| format!("Invalid header value for {key}"))?;
-            header_map.insert(name, value);
-        }
-        chat = chat.headers(header_map);
-    }
+    let chat = apply_request_options(client.chat(), &request_options)?;
 
     let response: serde_json::Value = chat
         .create_byot::<_, serde_json::Value>(&request)
@@ -571,8 +639,18 @@ use super::prompts;
 use super::vision;
 
 /// Vision tools available for AI to call
-fn get_vision_tools() -> serde_json::Value {
-    prompts::build_vision_tools_schema()
+fn get_vision_tools(config: &AiConfig) -> serde_json::Value {
+    // DeepSeek strict Tool Calls are enabled under `/beta` + `strict: true` schemas.
+    // Allow an explicit env override for other providers during testing.
+    let strict_from_env = std::env::var("AI_TOOL_STRICT")
+        .ok()
+        .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false);
+
+    let base = config.base_url.trim().trim_end_matches('/');
+    let strict_from_base = matches!(config.provider, AiProvider::DeepSeek) && base.ends_with("/beta");
+
+    prompts::build_vision_tools_schema(strict_from_env || strict_from_base)
 }
 
 /// Execute a tool call and return the result
@@ -732,10 +810,15 @@ async fn run_chat_with_tools(
         }
     }
 
-    let tools = get_vision_tools();
-    const MAX_TOOL_ROUNDS: usize = 5;
+    let tools = get_vision_tools(&config);
+    let retry = RetryConfig::from_env();
+    let max_tool_rounds = std::env::var("AI_MAX_TOOL_ROUNDS")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .unwrap_or(5)
+        .clamp(1, 50);
 
-    for _round in 0..MAX_TOOL_ROUNDS {
+    'rounds: for _round in 0..max_tool_rounds {
         // Use streaming API
         let request = serde_json::json!({
             "model": config.model,
@@ -744,183 +827,210 @@ async fn run_chat_with_tools(
             "stream": true
         });
 
-        let mut chat = client.chat();
+        let mut last_error: Option<String> = None;
 
-        if let Some(path) = request_options.path.as_deref() {
-            validate_path_override(path)?;
-            chat = chat.path(path).map_err(|e| e.to_string())?;
-        }
-        if let Some(query) = request_options.query.as_ref() {
-            chat = chat.query(query).map_err(|e| e.to_string())?;
-        }
-        if let Some(headers) = request_options.headers.as_ref() {
-            let mut header_map = reqwest::header::HeaderMap::new();
-            for (key, value) in headers {
-                if is_disallowed_header(key) {
-                    return Err(format!("Header not allowed from frontend: {key}"));
-                }
-                let name = reqwest::header::HeaderName::from_bytes(key.as_bytes())
-                    .map_err(|_| format!("Invalid header name: {key}"))?;
-                let val = reqwest::header::HeaderValue::from_str(value)
-                    .map_err(|_| format!("Invalid header value for {key}"))?;
-                header_map.insert(name, val);
-            }
-            chat = chat.headers(header_map);
-        }
+        'attempts: for attempt in 1..=retry.max_attempts {
+            let chat = apply_request_options(client.chat(), &request_options)?;
 
-        let mut stream = chat
-            .create_stream_byot::<_, ByotChatCompletionStreamResponse>(&request)
-            .await
-            .map_err(|e| e.to_string())?;
-
-        // Accumulators for this round
-        let mut accumulated_content = String::new();
-        let mut accumulated_reasoning = String::new();
-        let mut accumulated_tool_calls: Vec<(String, String, String, String)> = Vec::new(); // (id, type, name, arguments)
-        let mut finish_reason: Option<String> = None;
-
-        // Process stream
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk.map_err(|e| e.to_string())?;
-
-            for choice in chunk.choices {
-                // Track finish reason
-                if choice.finish_reason.is_some() {
-                    finish_reason = choice.finish_reason;
-                }
-
-                // Stream reasoning content
-                if let Some(reasoning) = choice.delta.reasoning_content {
-                    if !reasoning.is_empty() {
-                        accumulated_reasoning.push_str(&reasoning);
-                        let _ = app.emit(
-                            EVT_CHAT_STREAM,
-                            ChatStreamPayload {
-                                request_id: request_id.to_string(),
-                                delta: reasoning,
-                                kind: ChatDeltaKind::Reasoning,
-                                done: false,
-                            },
+            let mut stream = match chat
+                .create_stream_byot::<_, ByotChatCompletionStreamResponse>(&request)
+                .await
+            {
+                Ok(stream) => stream,
+                Err(err) => {
+                    let msg = err.to_string();
+                    last_error = Some(msg.clone());
+                    if attempt < retry.max_attempts && should_retry_openai_error(&err) {
+                        log::warn!(
+                            "Retry attempt {}/{} after error: {}",
+                            attempt + 1,
+                            retry.max_attempts,
+                            msg
                         );
+                        tokio::time::sleep(retry.backoff(attempt)).await;
+                        continue 'attempts;
                     }
+                    return Err(msg);
                 }
+            };
 
-                // Stream text content
-                if let Some(content) = choice.delta.content {
-                    if !content.is_empty() {
-                        accumulated_content.push_str(&content);
-                        let _ = app.emit(
-                            EVT_CHAT_STREAM,
-                            ChatStreamPayload {
-                                request_id: request_id.to_string(),
-                                delta: content,
-                                kind: ChatDeltaKind::Text,
-                                done: false,
-                            },
-                        );
+            // Accumulators for this round
+            let mut accumulated_content = String::new();
+            let mut accumulated_reasoning = String::new();
+            let mut accumulated_tool_calls: Vec<(String, String, String, String)> = Vec::new(); // (id, type, name, arguments)
+            let mut finish_reason: Option<String> = None;
+            let mut emitted_any = false;
+            let mut stream_error: Option<OpenAIError> = None;
+
+            // Process stream
+            while let Some(chunk) = stream.next().await {
+                let chunk = match chunk {
+                    Ok(chunk) => chunk,
+                    Err(err) => {
+                        stream_error = Some(err);
+                        break;
                     }
-                }
+                };
 
-                // Accumulate tool calls (they come in chunks)
-                if let Some(tool_calls) = choice.delta.tool_calls {
-                    for tc in tool_calls {
-                        let idx = tc.index;
-                        // Ensure we have enough slots
-                        while accumulated_tool_calls.len() <= idx {
-                            accumulated_tool_calls.push((
-                                String::new(),
-                                String::new(),
-                                String::new(),
-                                String::new(),
-                            ));
+                for choice in chunk.choices {
+                    // Track finish reason
+                    if choice.finish_reason.is_some() {
+                        finish_reason = choice.finish_reason;
+                    }
+
+                    // Stream reasoning content
+                    if let Some(reasoning) = choice.delta.reasoning_content {
+                        if !reasoning.is_empty() {
+                            emitted_any = true;
+                            accumulated_reasoning.push_str(&reasoning);
+                            let _ = app.emit(
+                                EVT_CHAT_STREAM,
+                                ChatStreamPayload {
+                                    request_id: request_id.to_string(),
+                                    delta: reasoning,
+                                    kind: ChatDeltaKind::Reasoning,
+                                    done: false,
+                                },
+                            );
                         }
-                        // Accumulate parts
-                        if let Some(id) = tc.id {
-                            accumulated_tool_calls[idx].0 = id;
+                    }
+
+                    // Stream text content
+                    if let Some(content) = choice.delta.content {
+                        if !content.is_empty() {
+                            emitted_any = true;
+                            accumulated_content.push_str(&content);
+                            let _ = app.emit(
+                                EVT_CHAT_STREAM,
+                                ChatStreamPayload {
+                                    request_id: request_id.to_string(),
+                                    delta: content,
+                                    kind: ChatDeltaKind::Text,
+                                    done: false,
+                                },
+                            );
                         }
-                        if let Some(call_type) = tc.call_type {
-                            accumulated_tool_calls[idx].1 = call_type;
-                        }
-                        if let Some(func) = tc.function {
-                            if let Some(name) = func.name {
-                                accumulated_tool_calls[idx].2 = name;
+                    }
+
+                    // Accumulate tool calls (they come in chunks)
+                    if let Some(tool_calls) = choice.delta.tool_calls {
+                        for tc in tool_calls {
+                            let idx = tc.index;
+                            // Ensure we have enough slots
+                            while accumulated_tool_calls.len() <= idx {
+                                accumulated_tool_calls.push((
+                                    String::new(),
+                                    String::new(),
+                                    String::new(),
+                                    String::new(),
+                                ));
                             }
-                            if let Some(args) = func.arguments {
-                                accumulated_tool_calls[idx].3.push_str(&args);
+                            // Accumulate parts
+                            if let Some(id) = tc.id {
+                                accumulated_tool_calls[idx].0 = id;
+                            }
+                            if let Some(call_type) = tc.call_type {
+                                accumulated_tool_calls[idx].1 = call_type;
+                            }
+                            if let Some(func) = tc.function {
+                                if let Some(name) = func.name {
+                                    accumulated_tool_calls[idx].2 = name;
+                                }
+                                if let Some(args) = func.arguments {
+                                    accumulated_tool_calls[idx].3.push_str(&args);
+                                }
                             }
                         }
                     }
                 }
             }
-        }
 
-        // Check if we have tool calls to execute
-        let has_tool_calls =
-            !accumulated_tool_calls.is_empty() && finish_reason.as_deref() == Some("tool_calls");
+            if let Some(err) = stream_error {
+                let msg = err.to_string();
+                last_error = Some(msg.clone());
+                if attempt < retry.max_attempts && !emitted_any && should_retry_openai_error(&err) {
+                    log::warn!(
+                        "Retry attempt {}/{} after stream error: {}",
+                        attempt + 1,
+                        retry.max_attempts,
+                        msg
+                    );
+                    tokio::time::sleep(retry.backoff(attempt)).await;
+                    continue 'attempts;
+                }
+                return Err(msg);
+            }
 
-        if has_tool_calls {
-            // Build assistant message with tool_calls AND reasoning_content
-            let tool_calls_json: Vec<serde_json::Value> = accumulated_tool_calls
-                .iter()
-                .filter(|(id, _, name, _)| !id.is_empty() && !name.is_empty())
-                .map(|(id, call_type, name, args)| {
-                    serde_json::json!({
-                        "id": id,
-                        "type": if call_type.is_empty() { "function" } else { call_type.as_str() },
-                        "function": {
-                            "name": name,
-                            "arguments": args
-                        }
+            // Check if we have tool calls to execute
+            let has_tool_calls = !accumulated_tool_calls.is_empty()
+                && finish_reason.as_deref() == Some("tool_calls");
+
+            if has_tool_calls {
+                // Build assistant message with tool_calls AND reasoning_content
+                let tool_calls_json: Vec<serde_json::Value> = accumulated_tool_calls
+                    .iter()
+                    .filter(|(id, _, name, _)| !id.is_empty() && !name.is_empty())
+                    .map(|(id, call_type, name, args)| {
+                        serde_json::json!({
+                            "id": id,
+                            "type": if call_type.is_empty() { "function" } else { call_type.as_str() },
+                            "function": {
+                                "name": name,
+                                "arguments": args
+                            }
+                        })
                     })
-                })
-                .collect();
+                    .collect();
 
-            api_messages.push(serde_json::json!({
-                "role": "assistant",
-                "content": if accumulated_content.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(accumulated_content.clone()) },
-                "reasoning_content": if accumulated_reasoning.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(accumulated_reasoning.clone()) },
-                "tool_calls": tool_calls_json
-            }));
-
-            // Emit tool call info and execute
-            for (id, _, name, args) in &accumulated_tool_calls {
-                if id.is_empty() || name.is_empty() {
-                    continue;
-                }
-
-                let _ = app.emit(
-                    EVT_CHAT_STREAM,
-                    ChatStreamPayload {
-                        request_id: request_id.to_string(),
-                        delta: prompts::tool_call_indicator(name),
-                        kind: ChatDeltaKind::Reasoning,
-                        done: false,
-                    },
-                );
-
-                let arguments: serde_json::Value =
-                    serde_json::from_str(args).unwrap_or(serde_json::json!({}));
-
-                let tool_result = execute_tool_call(name, &arguments)
-                    .await
-                    .unwrap_or_else(|e| format!("工具执行失败: {}", e));
-
-                // Add tool result to conversation
                 api_messages.push(serde_json::json!({
-                    "role": "tool",
-                    "tool_call_id": id,
-                    "content": tool_result
+                    "role": "assistant",
+                    "content": if accumulated_content.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(accumulated_content.clone()) },
+                    "reasoning_content": if accumulated_reasoning.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(accumulated_reasoning.clone()) },
+                    "tool_calls": tool_calls_json
                 }));
+
+                // Emit tool call info and execute
+                for (id, _, name, args) in &accumulated_tool_calls {
+                    if id.is_empty() || name.is_empty() {
+                        continue;
+                    }
+
+                    let _ = app.emit(
+                        EVT_CHAT_STREAM,
+                        ChatStreamPayload {
+                            request_id: request_id.to_string(),
+                            delta: prompts::tool_call_indicator(name),
+                            kind: ChatDeltaKind::Reasoning,
+                            done: false,
+                        },
+                    );
+
+                    let arguments: serde_json::Value =
+                        serde_json::from_str(args).unwrap_or(serde_json::json!({}));
+
+                    let tool_result = execute_tool_call(name, &arguments)
+                        .await
+                        .unwrap_or_else(|e| format!("工具执行失败: {}", e));
+
+                    // Add tool result to conversation
+                    api_messages.push(serde_json::json!({
+                        "role": "tool",
+                        "tool_call_id": id,
+                        "content": tool_result
+                    }));
+                }
+                // Continue to next round
+                continue 'rounds;
             }
-            // Continue to next round
-            continue;
+
+            // No tool calls - we're done
+            return Ok(());
         }
 
-        // No tool calls - we're done
-        break;
+        return Err(last_error.unwrap_or_else(|| "Retry limit exceeded".to_string()));
     }
 
-    Ok(())
+    Err(format!("Tool round limit reached ({max_tool_rounds})"))
 }
 
 #[cfg(test)]

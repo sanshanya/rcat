@@ -1,13 +1,8 @@
 // src/types/index.ts
 // Centralized type definitions for the RCAT application
 
-/**
- * Window modes for the application FSM.
- * - mini: Collapsed capsule state
- * - input: Expanded input field
- * - result: Full chat view with message history
- */
-export type WindowMode = 'mini' | 'input' | 'result';
+// Cross-bridge types are generated from Rust to avoid drift.
+export type { WindowMode } from '@/bindings/tauri-types';
 
 /**
  * Size dimensions for window operations.

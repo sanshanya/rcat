@@ -7,6 +7,7 @@ license = ""
 repository = ""
 edition = "2021"
 rust-version = "1.77.2"
+default-run = "app"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -29,6 +30,10 @@ futures-util = "0.3"
 dotenvy = "0.15"
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls-native-roots"] }
 
+# Optional: Rust -> TypeScript type generation (dev tooling)
+specta = { version = "2.0.0-rc.22", features = ["derive"], optional = true }
+specta-typescript = { version = "0.0.9", optional = true }
+
 # Vision module dependencies
 xcap = "0.8.0"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
@@ -42,3 +47,7 @@ windows = { version = "0.62.2", features = [
     "Storage",
     "Storage_Streams",
 ] }
+
+[features]
+# Enables dev-only Rust -> TS type export binary.
+typegen = ["dep:specta", "dep:specta-typescript"]
