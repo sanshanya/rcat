@@ -28,3 +28,17 @@ async-openai = { version = "0.32.2", features = ["byot", "chat-completion"] }
 futures-util = "0.3"
 dotenvy = "0.15"
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls-native-roots"] }
+
+# Vision module dependencies
+xcap = "0.8.0"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+base64 = "0.22"
+
+# Windows OCR (Windows-only)
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.62.2", features = [
+    "Graphics_Imaging",
+    "Media_Ocr",
+    "Storage",
+    "Storage_Streams",
+] }

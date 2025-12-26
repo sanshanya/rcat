@@ -30,9 +30,9 @@ impl WindowMode {
 }
 
 // ✅ 输入态动态宽度常量
-const MIN_INPUT_W: f64 = 300.0;
+const MIN_INPUT_W: f64 = 380.0;
 const MAX_INPUT_W: f64 = 8000.0; // Effectively unlimited, constrained by monitor width logic below
-const INPUT_H: f64 = 200.0;
+const INPUT_H: f64 = 380.0; // Increased to accommodate dropdown menu
 const EDGE_MARGIN: f64 = 12.0;
 
 // ✅ 窗口模式切换命令
@@ -163,7 +163,14 @@ pub fn run() {
             services::ai::chat_stream,
             services::ai::chat_abort,
             services::ai::chat_simple,
-            services::ai::get_ai_public_config
+            services::ai::get_ai_public_config,
+            services::ai::chat_stream_with_tools,
+            // Vision commands
+            services::vision::capture_screen_text,
+            services::vision::analyze_screen_vlm,
+            services::vision::list_capturable_windows,
+            services::vision::get_smart_window,
+            services::vision::capture_smart
         ])
         .setup(|app| {
             setup_tray(app)?;

@@ -2,10 +2,10 @@
 // Single source of truth for window-related constants
 
 /** Minimum width for Input mode */
-export const MIN_INPUT_WIDTH = 300;
+export const MIN_INPUT_WIDTH = 380;
 
 /** Default height for Input mode */
-export const INPUT_HEIGHT = 140;
+export const INPUT_HEIGHT = 380;
 
 /** Default size for Result mode */
 export const DEFAULT_RESULT_SIZE = { w: 400, h: 500 };
@@ -16,5 +16,5 @@ export const EDGE_MARGIN = 12;
 /** Maximum width for auto-resize during typing */
 export const AUTO_RESIZE_MAX_WIDTH = 600;
 
-/** Padding for text width calculation */
-export const INPUT_PADDING = 92; // 32(gap) + 40(icon) + 20(safe)
+/** Padding for text width calculation (includes tool buttons) */
+export const INPUT_PADDING = 132; // 32(gap) + 80(icons) + 20(safe)

@@ -21,7 +21,83 @@ import {
 } from "./constants";
 import { useWindowManager, useTauriEvent } from "./hooks";
 import { isTauriContext, measureTextWidth } from "./utils";
-import { createTauriChatTransport } from "./services";
+import { createTauriChatTransport, captureScreenText, analyzeScreenVlm, listCapturableWindows, captureSmart, getSmartWindow } from "./services";
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+
+// 暴露测试函数到全局 window 对象，方便控制台调试
+if (typeof window !== 'undefined') {
+  // @ts-expect-error - 临时测试用
+  window.visionTest = {
+    captureScreenText,
+    analyzeScreenVlm,
+    listCapturableWindows,
+    captureSmart,
+    getSmartWindow,
+    // 便捷测试函数
+    async testOCR() {
+      console.log('🔍 开始 OCR 测试...');
+      const result = await captureScreenText();
+      console.log('✅ OCR 结果:', result);
+      return result;
+    },
+    async testSmart() {
+      console.log('🧠 开始智能捕获...');
+      const result = await captureSmart();
+      console.log('✅ 智能捕获结果:', result);
+      return result;
+    },
+    async testVLM(prompt = '描述这个屏幕上的内容') {
+      console.log('🤖 开始 VLM 分析...');
+      const result = await analyzeScreenVlm(prompt);
+      console.log('✅ VLM 结果:', result);
+      return result;
+    },
+    async listWindows() {
+      const windows = await listCapturableWindows();
+      console.log('📋 可用窗口 (按Z序):', windows);
+      return windows;
+    },
+    async smartWindow() {
+      const win = await getSmartWindow();
+      console.log('🎯 智能选中窗口:', win);
+      return win;
+    },
+    // AI 工具调用测试
+    async testToolChat(prompt = '请告诉我用户当前正在使用哪些应用程序') {
+      console.log('🛠️ 开始工具调用测试...');
+      const requestId = `test_${Date.now()}`;
+
+      // 监听响应
+      const unlisten = await listen('chat-stream', (event: { payload: { delta: string; kind: string; done: boolean } }) => {
+        const { delta, kind, done } = event.payload;
+        if (done) {
+          console.log('✅ 完成');
+          return;
+        }
+        if (kind === 'reasoning') {
+          console.log('🔧', delta);
+        } else {
+          console.log('💬', delta);
+        }
+      });
+
+      try {
+        await invoke('chat_stream_with_tools', {
+          requestId,
+          messages: [{ role: 'user', content: prompt }],
+          model: null,
+          requestOptions: null
+        });
+        // 等待一段时间让流完成
+        await new Promise(resolve => setTimeout(resolve, 10000));
+      } finally {
+        unlisten();
+      }
+    }
+  };
+  console.log('💡 测试: visionTest.testToolChat("帮我看看QQ消息")');
+}
 
 const createChatSessionId = () =>
   `chat_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
@@ -41,14 +117,23 @@ function App() {
   } = useWindowManager();
   const [selectedModel, setSelectedModel] = useState("deepseek-reasoner");
   const selectedModelRef = useRef(selectedModel);
+  const [toolMode, setToolMode] = useState(false);
+  const toolModeRef = useRef(toolMode);
 
   useEffect(() => {
     selectedModelRef.current = selectedModel;
   }, [selectedModel]);
 
+  useEffect(() => {
+    toolModeRef.current = toolMode;
+  }, [toolMode]);
+
   const transport = useMemo(
     // eslint-disable-next-line
-    () => createTauriChatTransport({ getModel: () => selectedModelRef.current }),
+    () => createTauriChatTransport({
+      getModel: () => selectedModelRef.current,
+      getToolMode: () => toolModeRef.current,
+    }),
     []
   );
   const [chatSessionId, setChatSessionId] = useState(createChatSessionId);
@@ -196,13 +281,13 @@ function App() {
         <MotionConfig
           transition={{ type: "spring", stiffness: 350, damping: 30 }}
         >
-            <Capsule
-              isThinking={isBusy}
-              messageCount={messages.length}
-              windowMode={windowMode}
-              onClick={toggleExpand}
-              disabled={isClickThrough}
-            />
+          <Capsule
+            isThinking={isBusy}
+            messageCount={messages.length}
+            windowMode={windowMode}
+            onClick={toggleExpand}
+            disabled={isClickThrough}
+          />
 
           {windowMode !== "mini" && (
             <PromptInput
@@ -219,9 +304,9 @@ function App() {
                 if (windowMode === "input") {
                   const inheritWidth = inputWidth;
                   void changeMode(
-                      "result",
-                      inheritWidth ? { w: inheritWidth, h: 500 } : undefined
-                    )
+                    "result",
+                    inheritWidth ? { w: inheritWidth, h: 500 } : undefined
+                  )
                     .catch(() => undefined);
                 }
               }}
@@ -232,6 +317,8 @@ function App() {
               disabled={isClickThrough}
               model={selectedModel}
               onModelChange={setSelectedModel}
+              toolMode={toolMode}
+              onToolModeChange={setToolMode}
             />
           )}
 

@@ -6,6 +6,7 @@ import { isTauriContext } from "@/utils";
 
 type TauriChatTransportOptions = {
   getModel?: () => string;
+  getToolMode?: () => boolean;
 };
 
 type TauriChatStreamPayload = {
@@ -76,18 +77,18 @@ export const createTauriChatTransport = (
         let unlistenStream: UnlistenFn | null = null;
         let unlistenError: UnlistenFn | null = null;
 
-        let resolveDone: () => void = () => {};
+        let resolveDone: () => void = () => { };
         const donePromise = new Promise<void>((resolve) => {
           resolveDone = resolve;
         });
 
         const cleanup = () => {
           if (unlistenStream) {
-            void unlistenStream().catch(() => undefined);
+            unlistenStream();
             unlistenStream = null;
           }
           if (unlistenError) {
-            void unlistenError().catch(() => undefined);
+            unlistenError();
             unlistenError = null;
           }
           if (abortSignal) {
@@ -185,7 +186,11 @@ export const createTauriChatTransport = (
         };
         if (model) invokeParams.model = model;
 
-        void invoke("chat_stream", invokeParams).catch((error) => {
+        // Choose the appropriate command based on tool mode
+        const useTools = options.getToolMode?.() ?? false;
+        const commandName = useTools ? 'chat_stream_with_tools' : 'chat_stream';
+
+        void invoke(commandName, invokeParams).catch((error) => {
           writer.write({ type: "error", errorText: String(error) });
           finish();
         });

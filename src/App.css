@@ -274,15 +274,16 @@ body,
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 32px;
-  height: 32px;
+  width: 28px;
+  height: 28px;
   padding: 0;
   border: none;
-  border-radius: 8px;
+  border-radius: 6px;
   background-color: transparent;
   color: var(--text-secondary);
   cursor: pointer;
   transition: all 0.15s ease;
+  flex-shrink: 0;
 }
 
 .prompt-input-tool-btn:hover {
@@ -296,7 +297,8 @@ body,
 }
 
 .prompt-input-model-select {
-  max-width: 140px;
+  min-width: 100px;
+  flex-shrink: 1;
 }
 
 .prompt-input-submit {
@@ -388,10 +390,10 @@ body,
 }
 
 /* Fix visibility for footnotes and math on dark background */
-.chat-message.assistant sup, 
+.chat-message.assistant sup,
 .chat-message.assistant sub,
 .chat-message.assistant .footnote-ref,
-.chat-message.assistant .katex, 
+.chat-message.assistant .katex,
 .chat-message.assistant .math,
 .chat-message.assistant .mjx-chtml {
   color: inherit;
@@ -491,6 +493,7 @@ body,
 }
 
 @keyframes bounce {
+
   0%,
   80%,
   100% {

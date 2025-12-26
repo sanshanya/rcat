@@ -2,3 +2,4 @@
 // Barrel export for services
 
 export * from './tauriChatTransport';
+export * from './vision';

@@ -188,7 +188,10 @@ fn validate_path_override(path: &str) -> Result<(), String> {
 
 fn is_disallowed_header(name: &str) -> bool {
     let lower = name.trim().to_ascii_lowercase();
-    matches!(lower.as_str(), "authorization" | "proxy-authorization" | "x-api-key")
+    matches!(
+        lower.as_str(),
+        "authorization" | "proxy-authorization" | "x-api-key"
+    )
 }
 
 /// BYOT stream chunk type that keeps DeepSeek-style `reasoning_content`.
@@ -200,6 +203,7 @@ struct ByotChatCompletionStreamResponse {
 #[derive(Debug, Deserialize)]
 struct ByotChatChoiceStream {
     delta: ByotChatCompletionStreamDelta,
+    finish_reason: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -207,6 +211,23 @@ struct ByotChatCompletionStreamDelta {
     content: Option<String>,
     #[serde(rename = "reasoning_content")]
     reasoning_content: Option<String>,
+    tool_calls: Option<Vec<StreamToolCallDelta>>,
+}
+
+/// Streaming tool call delta - tool calls come in chunks
+#[derive(Debug, Clone, Deserialize)]
+struct StreamToolCallDelta {
+    index: usize,
+    id: Option<String>,
+    #[serde(rename = "type")]
+    call_type: Option<String>,
+    function: Option<StreamFunctionDelta>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct StreamFunctionDelta {
+    name: Option<String>,
+    arguments: Option<String>,
 }
 
 pub struct AiStreamManager {
@@ -370,10 +391,31 @@ async fn run_chat_stream(
         .with_api_key(config.api_key);
     let client = Client::with_config(openai_config).with_http_client(http_client);
 
-    let api_messages: Vec<serde_json::Value> = messages
-        .into_iter()
-        .map(|m| serde_json::json!({ "role": m.role, "content": m.content }))
-        .collect();
+    let mut api_messages: Vec<serde_json::Value> = Vec::new();
+
+    // 1. Inject or replace system prompt
+    let has_system = messages
+        .first()
+        .map(|m| m.role == "system")
+        .unwrap_or(false);
+    if !has_system {
+        api_messages.push(serde_json::json!({
+            "role": "system",
+            "content": prompts::SYSTEM_PROMPT_DEFAULT
+        }));
+    }
+
+    // 2. Add user messages
+    for m in messages {
+        if m.role == "system" {
+            api_messages.push(serde_json::json!({
+                "role": "system",
+                "content": prompts::SYSTEM_PROMPT_DEFAULT
+            }));
+        } else {
+            api_messages.push(serde_json::json!({ "role": m.role, "content": m.content }));
+        }
+    }
 
     let request = serde_json::json!({
         "model": config.model,
@@ -519,6 +561,366 @@ pub async fn chat_simple(
         .and_then(|c| c.as_str())
         .map(|s| s.to_string())
         .ok_or_else(|| "No response content".to_string())
+}
+
+// ============================================================================
+// Tool Calling Support
+// ============================================================================
+
+use super::prompts;
+use super::vision;
+
+/// Vision tools available for AI to call
+fn get_vision_tools() -> serde_json::Value {
+    prompts::build_vision_tools_schema()
+}
+
+/// Execute a tool call and return the result
+async fn execute_tool_call(name: &str, arguments: &serde_json::Value) -> Result<String, String> {
+    match name {
+        name if name == prompts::tool_list_windows::NAME => {
+            let windows = vision::list_capturable_windows()?;
+            let formatted: Vec<(String, String, bool)> = windows
+                .iter()
+                .map(|w| (w.title.clone(), w.app_name.clone(), w.is_focused))
+                .collect();
+            Ok(prompts::format_window_list(&formatted))
+        }
+        name if name == prompts::tool_capture_window::NAME => {
+            let window_title = arguments
+                .get(prompts::tool_capture_window::PARAM_WINDOW_TITLE)
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "Missing window_title argument".to_string())?;
+
+            let result = vision::capture_screen_text(Some(window_title.to_string())).await?;
+            let window_name = result
+                .window_name
+                .unwrap_or_else(|| window_title.to_string());
+            Ok(prompts::format_window_capture(&window_name, &result.text))
+        }
+        name if name == prompts::tool_capture_focused::NAME => {
+            let result = vision::capture_smart().await?;
+            let window_name = result.window_name.unwrap_or_else(|| "未知".to_string());
+            Ok(prompts::format_focused_capture(&window_name, &result.text))
+        }
+        _ => Err(format!("Unknown tool: {}", name)),
+    }
+}
+
+/// Streaming chat with tool calling support.
+///
+/// The AI can call vision tools to observe the user's screen.
+#[tauri::command]
+pub async fn chat_stream_with_tools(
+    app: tauri::AppHandle,
+    streams: tauri::State<'_, AiStreamManager>,
+    request_id: String,
+    messages: Vec<ChatMessage>,
+    model: Option<String>,
+    request_options: Option<ChatRequestOptions>,
+) -> Result<(), String> {
+    if request_id.trim().is_empty() {
+        return Err("requestId is required".to_string());
+    }
+    if messages.is_empty() {
+        return Err("No messages provided".to_string());
+    }
+
+    let mut config = load_ai_config();
+    if let Some(model) = model {
+        if !model.trim().is_empty() {
+            config.model = model;
+        }
+    }
+    if config.api_key.is_empty() {
+        return Err("API key is required".to_string());
+    }
+
+    let request_id_for_task = request_id.clone();
+    let app_for_task = app.clone();
+    let http_client = streams.http_client.clone();
+    let handles_for_task = streams.handles.clone();
+    let request_options_for_task = request_options.unwrap_or_default();
+
+    let mut handles = streams
+        .handles
+        .lock()
+        .map_err(|_| "AI stream manager lock poisoned".to_string())?;
+    if handles.contains_key(&request_id) {
+        return Err("Stream already in progress for this requestId".to_string());
+    }
+
+    let handle = tauri::async_runtime::spawn(async move {
+        let result = run_chat_with_tools(
+            &app_for_task,
+            &request_id_for_task,
+            messages,
+            config,
+            request_options_for_task,
+            http_client,
+        )
+        .await;
+
+        if let Err(error) = result {
+            let _ = app_for_task.emit(
+                EVT_CHAT_ERROR,
+                ChatErrorPayload {
+                    request_id: request_id_for_task.clone(),
+                    error,
+                },
+            );
+        }
+
+        let _ = app_for_task.emit(
+            EVT_CHAT_STREAM,
+            ChatStreamPayload {
+                request_id: request_id_for_task.clone(),
+                delta: String::new(),
+                kind: ChatDeltaKind::Text,
+                done: true,
+            },
+        );
+        let _ = app_for_task.emit(EVT_CHAT_DONE, request_id_for_task.clone());
+
+        if let Ok(mut map) = handles_for_task.lock() {
+            map.remove(&request_id_for_task);
+        }
+    });
+
+    handles.insert(request_id, handle);
+    Ok(())
+}
+
+async fn run_chat_with_tools(
+    app: &tauri::AppHandle,
+    request_id: &str,
+    messages: Vec<ChatMessage>,
+    config: AiConfig,
+    request_options: ChatRequestOptions,
+    http_client: reqwest::Client,
+) -> Result<(), String> {
+    let openai_config = OpenAIConfig::new()
+        .with_api_base(config.base_url.clone())
+        .with_api_key(config.api_key.clone());
+    let client = Client::with_config(openai_config).with_http_client(http_client);
+
+    // Build initial messages
+    let mut api_messages: Vec<serde_json::Value> = Vec::new();
+
+    // 1. Inject or replace system prompt
+    let has_system = messages
+        .first()
+        .map(|m| m.role == "system")
+        .unwrap_or(false);
+    if !has_system {
+        api_messages.push(serde_json::json!({
+            "role": "system",
+            "content": prompts::SYSTEM_PROMPT_WITH_TOOLS
+        }));
+    }
+
+    // 2. Add user messages
+    for m in messages {
+        if m.role == "system" {
+            // Replace existing system prompt with ours (force tool rules)
+            api_messages.push(serde_json::json!({
+                "role": "system",
+                "content": prompts::SYSTEM_PROMPT_WITH_TOOLS
+            }));
+        } else {
+            api_messages.push(serde_json::json!({ "role": m.role, "content": m.content }));
+        }
+    }
+
+    let tools = get_vision_tools();
+    const MAX_TOOL_ROUNDS: usize = 5;
+
+    for _round in 0..MAX_TOOL_ROUNDS {
+        // Use streaming API
+        let request = serde_json::json!({
+            "model": config.model,
+            "messages": api_messages,
+            "tools": tools,
+            "stream": true
+        });
+
+        let mut chat = client.chat();
+
+        if let Some(path) = request_options.path.as_deref() {
+            validate_path_override(path)?;
+            chat = chat.path(path).map_err(|e| e.to_string())?;
+        }
+        if let Some(query) = request_options.query.as_ref() {
+            chat = chat.query(query).map_err(|e| e.to_string())?;
+        }
+        if let Some(headers) = request_options.headers.as_ref() {
+            let mut header_map = reqwest::header::HeaderMap::new();
+            for (key, value) in headers {
+                if is_disallowed_header(key) {
+                    return Err(format!("Header not allowed from frontend: {key}"));
+                }
+                let name = reqwest::header::HeaderName::from_bytes(key.as_bytes())
+                    .map_err(|_| format!("Invalid header name: {key}"))?;
+                let val = reqwest::header::HeaderValue::from_str(value)
+                    .map_err(|_| format!("Invalid header value for {key}"))?;
+                header_map.insert(name, val);
+            }
+            chat = chat.headers(header_map);
+        }
+
+        let mut stream = chat
+            .create_stream_byot::<_, ByotChatCompletionStreamResponse>(&request)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        // Accumulators for this round
+        let mut accumulated_content = String::new();
+        let mut accumulated_reasoning = String::new();
+        let mut accumulated_tool_calls: Vec<(String, String, String, String)> = Vec::new(); // (id, type, name, arguments)
+        let mut finish_reason: Option<String> = None;
+
+        // Process stream
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|e| e.to_string())?;
+
+            for choice in chunk.choices {
+                // Track finish reason
+                if choice.finish_reason.is_some() {
+                    finish_reason = choice.finish_reason;
+                }
+
+                // Stream reasoning content
+                if let Some(reasoning) = choice.delta.reasoning_content {
+                    if !reasoning.is_empty() {
+                        accumulated_reasoning.push_str(&reasoning);
+                        let _ = app.emit(
+                            EVT_CHAT_STREAM,
+                            ChatStreamPayload {
+                                request_id: request_id.to_string(),
+                                delta: reasoning,
+                                kind: ChatDeltaKind::Reasoning,
+                                done: false,
+                            },
+                        );
+                    }
+                }
+
+                // Stream text content
+                if let Some(content) = choice.delta.content {
+                    if !content.is_empty() {
+                        accumulated_content.push_str(&content);
+                        let _ = app.emit(
+                            EVT_CHAT_STREAM,
+                            ChatStreamPayload {
+                                request_id: request_id.to_string(),
+                                delta: content,
+                                kind: ChatDeltaKind::Text,
+                                done: false,
+                            },
+                        );
+                    }
+                }
+
+                // Accumulate tool calls (they come in chunks)
+                if let Some(tool_calls) = choice.delta.tool_calls {
+                    for tc in tool_calls {
+                        let idx = tc.index;
+                        // Ensure we have enough slots
+                        while accumulated_tool_calls.len() <= idx {
+                            accumulated_tool_calls.push((
+                                String::new(),
+                                String::new(),
+                                String::new(),
+                                String::new(),
+                            ));
+                        }
+                        // Accumulate parts
+                        if let Some(id) = tc.id {
+                            accumulated_tool_calls[idx].0 = id;
+                        }
+                        if let Some(call_type) = tc.call_type {
+                            accumulated_tool_calls[idx].1 = call_type;
+                        }
+                        if let Some(func) = tc.function {
+                            if let Some(name) = func.name {
+                                accumulated_tool_calls[idx].2 = name;
+                            }
+                            if let Some(args) = func.arguments {
+                                accumulated_tool_calls[idx].3.push_str(&args);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Check if we have tool calls to execute
+        let has_tool_calls =
+            !accumulated_tool_calls.is_empty() && finish_reason.as_deref() == Some("tool_calls");
+
+        if has_tool_calls {
+            // Build assistant message with tool_calls AND reasoning_content
+            let tool_calls_json: Vec<serde_json::Value> = accumulated_tool_calls
+                .iter()
+                .filter(|(id, _, name, _)| !id.is_empty() && !name.is_empty())
+                .map(|(id, call_type, name, args)| {
+                    serde_json::json!({
+                        "id": id,
+                        "type": if call_type.is_empty() { "function" } else { call_type.as_str() },
+                        "function": {
+                            "name": name,
+                            "arguments": args
+                        }
+                    })
+                })
+                .collect();
+
+            api_messages.push(serde_json::json!({
+                "role": "assistant",
+                "content": if accumulated_content.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(accumulated_content.clone()) },
+                "reasoning_content": if accumulated_reasoning.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(accumulated_reasoning.clone()) },
+                "tool_calls": tool_calls_json
+            }));
+
+            // Emit tool call info and execute
+            for (id, _, name, args) in &accumulated_tool_calls {
+                if id.is_empty() || name.is_empty() {
+                    continue;
+                }
+
+                let _ = app.emit(
+                    EVT_CHAT_STREAM,
+                    ChatStreamPayload {
+                        request_id: request_id.to_string(),
+                        delta: prompts::tool_call_indicator(name),
+                        kind: ChatDeltaKind::Reasoning,
+                        done: false,
+                    },
+                );
+
+                let arguments: serde_json::Value =
+                    serde_json::from_str(args).unwrap_or(serde_json::json!({}));
+
+                let tool_result = execute_tool_call(name, &arguments)
+                    .await
+                    .unwrap_or_else(|e| format!("工具执行失败: {}", e));
+
+                // Add tool result to conversation
+                api_messages.push(serde_json::json!({
+                    "role": "tool",
+                    "tool_call_id": id,
+                    "content": tool_result
+                }));
+            }
+            // Continue to next round
+            continue;
+        }
+
+        // No tool calls - we're done
+        break;
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]

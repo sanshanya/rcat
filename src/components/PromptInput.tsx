@@ -7,7 +7,7 @@ import {
   useState,
   type FormEvent,
 } from "react";
-import { Mic, MicOff, Plus, Settings, Trash2 } from "lucide-react";
+import { Eye, EyeOff, Mic, MicOff, Plus, Settings, Trash2 } from "lucide-react";
 import {
   Select,
   SelectContent,
@@ -60,6 +60,8 @@ interface PromptInputProps {
   disabled?: boolean;
   model: string;
   onModelChange: (model: string) => void;
+  toolMode?: boolean;
+  onToolModeChange?: (enabled: boolean) => void;
 }
 
 export const PromptInput = forwardRef<HTMLTextAreaElement, PromptInputProps>(
@@ -75,15 +77,17 @@ export const PromptInput = forwardRef<HTMLTextAreaElement, PromptInputProps>(
       disabled = false,
       model,
       onModelChange,
+      toolMode = false,
+      onToolModeChange,
     },
     ref
   ) => {
-	    const textareaRef = useRef<HTMLTextAreaElement>(null);
-	    useImperativeHandle(ref, () => textareaRef.current as HTMLTextAreaElement);
-	
-	    const [isListening, setIsListening] = useState(false);
-	    const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
-	    const listeningBaseValueRef = useRef("");
+    const textareaRef = useRef<HTMLTextAreaElement>(null);
+    useImperativeHandle(ref, () => textareaRef.current as HTMLTextAreaElement);
+
+    const [isListening, setIsListening] = useState(false);
+    const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
+    const listeningBaseValueRef = useRef("");
 
     const isBusy = isStreaming || isSubmitting;
 
@@ -114,36 +118,36 @@ export const PromptInput = forwardRef<HTMLTextAreaElement, PromptInputProps>(
       submitOrStop();
     };
 
-	    const startListening = useCallback(() => {
-	      const SpeechRecognition = (
-	        window as Window & {
-	          SpeechRecognition?: SpeechRecognitionConstructor;
-	          webkitSpeechRecognition?: SpeechRecognitionConstructor;
-	        }
-	      ).SpeechRecognition
-	        ?? (
-	          window as Window & {
-	            SpeechRecognition?: SpeechRecognitionConstructor;
-	            webkitSpeechRecognition?: SpeechRecognitionConstructor;
-	          }
-	        ).webkitSpeechRecognition;
+    const startListening = useCallback(() => {
+      const SpeechRecognition = (
+        window as Window & {
+          SpeechRecognition?: SpeechRecognitionConstructor;
+          webkitSpeechRecognition?: SpeechRecognitionConstructor;
+        }
+      ).SpeechRecognition
+        ?? (
+          window as Window & {
+            SpeechRecognition?: SpeechRecognitionConstructor;
+            webkitSpeechRecognition?: SpeechRecognitionConstructor;
+          }
+        ).webkitSpeechRecognition;
 
-	      if (!SpeechRecognition) {
-	        console.warn("Speech recognition not supported");
-	        return;
-	      }
+      if (!SpeechRecognition) {
+        console.warn("Speech recognition not supported");
+        return;
+      }
 
       const recognition = new SpeechRecognition();
       recognition.continuous = true;
       recognition.interimResults = true;
       recognition.lang = "zh-CN";
 
-	      recognition.onresult = (event: SpeechRecognitionEventLike) => {
-	        let finalTranscript = "";
-	        let interimTranscript = "";
-	        for (let i = 0; i < event.results.length; i++) {
-	          const result = event.results[i];
-	          const text = result?.[0]?.transcript ?? "";
+      recognition.onresult = (event: SpeechRecognitionEventLike) => {
+        let finalTranscript = "";
+        let interimTranscript = "";
+        for (let i = 0; i < event.results.length; i++) {
+          const result = event.results[i];
+          const text = result?.[0]?.transcript ?? "";
           if (result?.isFinal) {
             finalTranscript += text;
           } else {
@@ -155,10 +159,10 @@ export const PromptInput = forwardRef<HTMLTextAreaElement, PromptInputProps>(
         );
       };
 
-	      recognition.onerror = (event: { error: string }) => {
-	        console.error("Speech recognition error:", event.error);
-	        setIsListening(false);
-	      };
+      recognition.onerror = (event: { error: string }) => {
+        console.error("Speech recognition error:", event.error);
+        setIsListening(false);
+      };
 
       recognition.onend = () => {
         setIsListening(false);
@@ -244,6 +248,21 @@ export const PromptInput = forwardRef<HTMLTextAreaElement, PromptInputProps>(
 
             <button
               type="button"
+              className={`prompt-input-tool-btn ${toolMode ? "active" : ""}`}
+              disabled={disabled}
+              onClick={() => onToolModeChange?.(!toolMode)}
+              onPointerDown={(e) => e.stopPropagation()}
+              title={toolMode ? "关闭工具模式" : "开启工具模式 (AI可查看屏幕)"}
+            >
+              {toolMode ? (
+                <Eye className="size-4" />
+              ) : (
+                <EyeOff className="size-4" />
+              )}
+            </button>
+
+            <button
+              type="button"
               className={`prompt-input-tool-btn ${isListening ? "active" : ""}`}
               disabled={disabled}
               onClick={toggleListening}
@@ -268,7 +287,7 @@ export const PromptInput = forwardRef<HTMLTextAreaElement, PromptInputProps>(
               >
                 <SelectValue />
               </SelectTrigger>
-              <SelectContent>
+              <SelectContent side="top" align="end" sideOffset={4}>
                 {MODEL_OPTIONS.map((m) => (
                   <SelectItem key={m.id} value={m.id}>
                     {m.name}
