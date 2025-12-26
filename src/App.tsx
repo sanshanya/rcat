@@ -14,12 +14,15 @@ import { useChat } from "@ai-sdk/react";
 import { Capsule, ResizeHandle } from "./components";
 import ChatMessages from "./components/ChatMessages";
 import PromptInput from "./components/PromptInput";
-import { EVT_CLICK_THROUGH_STATE, AUTO_RESIZE_MAX_WIDTH, INPUT_PADDING } from "./constants";
+import {
+  EVT_CLICK_THROUGH_STATE,
+  AUTO_RESIZE_MAX_WIDTH,
+  INPUT_PADDING,
+} from "./constants";
 import { useWindowManager, useTauriEvent } from "./hooks";
-import { measureTextWidth } from "./utils";
+import { isTauriContext, measureTextWidth } from "./utils";
 import { createTauriChatTransport } from "./services";
 
-const appWindow = getCurrentWindow();
 const createChatSessionId = () =>
   `chat_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 
@@ -27,8 +30,27 @@ function App() {
   const [isClickThrough, setIsClickThrough] = useState(false);
 
   // Use custom hooks for cleaner separation of concerns
-  const windowManager = useWindowManager();
-  const transport = useMemo(() => createTauriChatTransport(), []);
+  const {
+    mode: windowMode,
+    inputWidth,
+    changeMode,
+    reset: resetWindow,
+    startResize,
+    applyResize,
+    requestAutoResize,
+  } = useWindowManager();
+  const [selectedModel, setSelectedModel] = useState("deepseek-reasoner");
+  const selectedModelRef = useRef(selectedModel);
+
+  useEffect(() => {
+    selectedModelRef.current = selectedModel;
+  }, [selectedModel]);
+
+  const transport = useMemo(
+    // eslint-disable-next-line
+    () => createTauriChatTransport({ getModel: () => selectedModelRef.current }),
+    []
+  );
   const [chatSessionId, setChatSessionId] = useState(createChatSessionId);
   const { messages, status, sendMessage, error, setMessages, stop } = useChat({
     id: chatSessionId,
@@ -37,61 +59,70 @@ function App() {
   const isBusy = status === "submitted" || status === "streaming";
 
   // Handle editing a user message and resending
-  const handleEditMessage = useCallback((messageId: string, newText: string) => {
-    // Find the message index
-    const messageIndex = messages.findIndex(m => m.id === messageId);
-    if (messageIndex === -1) return;
+  const handleEditMessage = useCallback(
+    (messageId: string, newText: string) => {
+      // Find the message index
+      const messageIndex = messages.findIndex((m) => m.id === messageId);
+      if (messageIndex === -1) return;
 
-    // Truncate messages after this point and update the edited message
-    const truncatedMessages = messages.slice(0, messageIndex);
-    setMessages(truncatedMessages);
+      // Truncate messages after this point and update the edited message
+      const truncatedMessages = messages.slice(0, messageIndex);
+      setMessages(truncatedMessages);
 
-    // Send the new message
-    sendMessage({ text: newText });
-  }, [messages, setMessages, sendMessage]);
+      // Send the new message
+      sendMessage({ text: newText });
+    },
+    [messages, setMessages, sendMessage]
+  );
 
   // Handle regenerating from a specific assistant message
-  const handleRegenerateFrom = useCallback((messageId: string) => {
-    // Find the assistant message index
-    const messageIndex = messages.findIndex(m => m.id === messageId);
-    if (messageIndex === -1) return;
+  const handleRegenerateFrom = useCallback(
+    (messageId: string) => {
+      // Find the assistant message index
+      const messageIndex = messages.findIndex((m) => m.id === messageId);
+      if (messageIndex === -1) return;
 
-    // Find the user message before this assistant message
-    const userMessageBefore = messages
-      .slice(0, messageIndex)
-      .reverse()
-      .find(m => m.role === "user");
+      // Find the user message before this assistant message
+      const userMessageBefore = messages
+        .slice(0, messageIndex)
+        .reverse()
+        .find((m) => m.role === "user");
 
-    if (!userMessageBefore) return;
+      if (!userMessageBefore) return;
 
-    // Get user message text
-    const userText = userMessageBefore.parts
-      .filter((part): part is { type: "text"; text: string } => part.type === "text")
-      .map(part => part.text)
-      .join("\n");
+      // Get user message text
+      const userText = userMessageBefore.parts
+        .filter(
+          (part): part is { type: "text"; text: string } => part.type === "text"
+        )
+        .map((part) => part.text)
+        .join("\n");
 
-    // Find the user message index
-    const userMessageIndex = messages.findIndex(m => m.id === userMessageBefore.id);
+      // Find the user message index
+      const userMessageIndex = messages.findIndex(
+        (m) => m.id === userMessageBefore.id
+      );
 
-    // Truncate messages from the user message onwards
-    const truncatedMessages = messages.slice(0, userMessageIndex);
-    setMessages(truncatedMessages);
+      // Truncate messages from the user message onwards
+      const truncatedMessages = messages.slice(0, userMessageIndex);
+      setMessages(truncatedMessages);
 
-    // Resend the user message
-    sendMessage({ text: userText });
-  }, [messages, setMessages, sendMessage]);
+      // Resend the user message
+      sendMessage({ text: userText });
+    },
+    [messages, setMessages, sendMessage]
+  );
 
-  // Input ref for focus handling
-  const inputRef = useRef<HTMLInputElement>(null);
+  // Input ref for focus handling + width measurement
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const contentWrapperRef = useRef<HTMLDivElement>(null);
   const [inputValue, setInputValue] = useState("");
-  const [selectedModel, setSelectedModel] = useState("deepseek-reasoner");
 
   const handleReset = useCallback(() => {
     setChatSessionId(createChatSessionId());
     setInputValue("");
-    windowManager.reset();
-  }, [windowManager]);
+    resetWindow();
+  }, [resetWindow]);
 
   const handleClearChat = useCallback(() => {
     setMessages([]);
@@ -99,12 +130,15 @@ function App() {
   }, [setMessages]);
 
   // Listen for click-through state changes from Rust
-  const handleClickThroughChange = useCallback((event: { payload: boolean }) => {
-    setIsClickThrough(event.payload);
-    if (event.payload) {
-      handleReset();
-    }
-  }, [handleReset]);
+  const handleClickThroughChange = useCallback(
+    (event: { payload: boolean }) => {
+      setIsClickThrough(event.payload);
+      if (event.payload) {
+        handleReset();
+      }
+    },
+    [handleReset]
+  );
 
   useTauriEvent<boolean>(EVT_CLICK_THROUGH_STATE, handleClickThroughChange);
 
@@ -112,8 +146,8 @@ function App() {
   const resizeTimeoutRef = useRef<number | null>(null);
 
   useEffect(() => {
-    if (windowManager.mode !== 'input') return;
-    if (windowManager.inputWidth !== null) return; // Skip if manual override
+    if (windowMode !== "input") return;
+    if (inputWidth !== null) return; // Skip if manual override
 
     if (resizeTimeoutRef.current) {
       clearTimeout(resizeTimeoutRef.current);
@@ -121,20 +155,23 @@ function App() {
 
     resizeTimeoutRef.current = window.setTimeout(() => {
       const textWidth = measureTextWidth(inputValue, inputRef.current);
-      const desiredWidth = Math.min(textWidth + INPUT_PADDING, AUTO_RESIZE_MAX_WIDTH);
-      windowManager.requestAutoResize(desiredWidth);
+      const desiredWidth = Math.min(
+        textWidth + INPUT_PADDING,
+        AUTO_RESIZE_MAX_WIDTH
+      );
+      requestAutoResize(desiredWidth);
     }, 50);
 
     return () => {
       if (resizeTimeoutRef.current) clearTimeout(resizeTimeoutRef.current);
     };
-  }, [inputValue, windowManager.mode, windowManager.inputWidth]);
+  }, [inputValue, inputWidth, requestAutoResize, windowMode]);
 
   const toggleExpand = async () => {
-    if (windowManager.mode !== 'mini') {
+    if (windowMode !== "mini") {
       handleReset();
     } else {
-      await windowManager.changeMode('input');
+      await changeMode("input");
       setTimeout(() => inputRef.current?.focus(), 100);
     }
   };
@@ -142,45 +179,49 @@ function App() {
   const startDrag = (e: PointerEvent) => {
     if ("button" in e && e.button !== 0) return;
     if (isClickThrough) return;
+    if (!isTauriContext()) return;
     e.preventDefault();
     e.stopPropagation();
-    void appWindow.startDragging();
+    void getCurrentWindow().startDragging().catch(() => undefined);
   };
 
   return (
     <div className={`container ${isClickThrough ? "click-through-mode" : ""}`}>
-
       <div className="drag-handle" onPointerDown={startDrag}>
         <div className="handle-bar"></div>
       </div>
 
       {/* Content wrapper for proper resize handle positioning */}
       <div className="content-wrapper" ref={contentWrapperRef}>
-        <MotionConfig transition={{ type: "spring", stiffness: 350, damping: 30 }}>
+        <MotionConfig
+          transition={{ type: "spring", stiffness: 350, damping: 30 }}
+        >
+            <Capsule
+              isThinking={isBusy}
+              messageCount={messages.length}
+              windowMode={windowMode}
+              onClick={toggleExpand}
+              disabled={isClickThrough}
+            />
 
-          <Capsule
-            isThinking={isBusy}
-            messageCount={messages.length}
-            windowMode={windowManager.mode}
-            onClick={toggleExpand}
-            disabled={isClickThrough}
-          />
-
-          {windowManager.mode !== 'mini' && (
+          {windowMode !== "mini" && (
             <PromptInput
+              ref={inputRef}
               value={inputValue}
               onChange={setInputValue}
               onSubmit={async () => {
                 const textToSend = inputValue.trim();
                 if (!textToSend) return;
-                
+
                 setInputValue("");
                 sendMessage({ text: textToSend });
-                
-                if (windowManager.mode === 'input') {
-                  const inheritWidth = windowManager.inputWidth;
-                  void windowManager
-                    .changeMode('result', inheritWidth ? { w: inheritWidth, h: 500 } : undefined)
+
+                if (windowMode === "input") {
+                  const inheritWidth = inputWidth;
+                  void changeMode(
+                      "result",
+                      inheritWidth ? { w: inheritWidth, h: 500 } : undefined
+                    )
                     .catch(() => undefined);
                 }
               }}
@@ -204,25 +245,19 @@ function App() {
           )}
 
           {status === "error" && error && (
-            <div className="chat-error">
-              {error.message || String(error)}
-            </div>
+            <div className="chat-error">{error.message || String(error)}</div>
           )}
-
 
           {/* Resize handle positioned relative to content-wrapper */}
-          {(windowManager.mode === 'input' || windowManager.mode === 'result') && !isClickThrough && (
-            <ResizeHandle
-              onResize={windowManager.applyResize}
-              onResizeStart={windowManager.startResize}
-            />
-          )}
-
+          {(windowMode === "input" || windowMode === "result") &&
+            !isClickThrough && (
+              <ResizeHandle
+                onResize={applyResize}
+                onResizeStart={startResize}
+              />
+            )}
         </MotionConfig>
       </div>
-
-      {/* Resize handle positioned relative to container */}
-
     </div>
   );
 }

@@ -10,6 +10,7 @@ use tauri::{
 };
 
 mod services;
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum WindowMode {
@@ -153,14 +154,16 @@ const EVT_CLICK_THROUGH_STATE: &str = "click-through-state";
 
 pub fn run() {
     tauri::Builder::default()
+        .manage(services::ai::AiStreamManager::default())
         .invoke_handler(tauri::generate_handler![
             set_window_mode,
             resize_input_width,
             resize_window,
             get_drag_constraints,
             services::ai::chat_stream,
+            services::ai::chat_abort,
             services::ai::chat_simple,
-            services::ai::load_ai_config
+            services::ai::get_ai_public_config
         ])
         .setup(|app| {
             setup_tray(app)?;
@@ -170,6 +173,8 @@ pub fn run() {
         .expect("error while running tauri application");
 }
 
+// TODO: Refactor tray state management into a dedicated TrayState struct
+// when tray logic grows more complex (e.g., more menu items, dynamic state).
 fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
     let click_through = CheckMenuItem::with_id(
         app,

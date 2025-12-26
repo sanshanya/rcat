@@ -3,6 +3,7 @@
 
 import { useEffect, useMemo, useRef } from 'react';
 import { listen, type UnlistenFn, type Event } from '@tauri-apps/api/event';
+import { isTauriContext } from '../utils';
 
 /**
  * Event handler type
@@ -29,16 +30,18 @@ export type EventHandlers = Record<string, EventHandler<unknown>>;
  */
 export function useTauriEvents(handlers: EventHandlers): void {
     const handlersRef = useRef<EventHandlers>(handlers);
-    const eventNames = useMemo(() => Object.keys(handlers).sort(), [handlers]);
-    const eventNamesKey = eventNames.join('|');
+    const eventNamesKey = useMemo(() => Object.keys(handlers).sort().join('|'), [handlers]);
 
     useEffect(() => {
         handlersRef.current = handlers;
     }, [handlers]);
 
     useEffect(() => {
+        if (!isTauriContext()) return;
+
         let active = true;
         const unlisteners: UnlistenFn[] = [];
+        const eventNames = eventNamesKey ? eventNamesKey.split('|') : [];
 
         const setupListeners = async () => {
             const registered = await Promise.all(
@@ -50,18 +53,20 @@ export function useTauriEvents(handlers: EventHandlers): void {
             );
 
             if (!active) {
-                registered.forEach((unlisten) => unlisten());
+                await Promise.all(registered.map((unlisten) => unlisten().catch(() => undefined)));
                 return;
             }
 
             unlisteners.push(...registered);
         };
 
-        setupListeners();
+        void setupListeners().catch(() => undefined);
 
         return () => {
             active = false;
-            unlisteners.forEach((unlisten) => unlisten());
+            unlisteners.forEach((unlisten) => {
+                void unlisten().catch(() => undefined);
+            });
         };
     }, [eventNamesKey]);
 }
@@ -87,6 +92,8 @@ export function useTauriEvent<T>(
     }, [handler]);
 
     useEffect(() => {
+        if (!isTauriContext()) return;
+
         let active = true;
         let unlisten: UnlistenFn | null = null;
 
@@ -96,19 +103,19 @@ export function useTauriEvent<T>(
             });
 
             if (!active) {
-                cleanup();
+                await cleanup().catch(() => undefined);
                 return;
             }
 
             unlisten = cleanup;
         };
 
-        setupListener();
+        void setupListener().catch(() => undefined);
 
         return () => {
             active = false;
             if (unlisten) {
-                unlisten();
+                void unlisten().catch(() => undefined);
                 unlisten = null;
             }
         };

@@ -1,5 +1,13 @@
-import { useState, useRef, useCallback, useEffect } from "react";
-import { Mic, MicOff, Plus, Trash2, Settings } from "lucide-react";
+import {
+  forwardRef,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useRef,
+  useState,
+  type FormEvent,
+} from "react";
+import { Mic, MicOff, Plus, Settings, Trash2 } from "lucide-react";
 import {
   Select,
   SelectContent,
@@ -14,15 +22,32 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { MODEL_OPTIONS } from "@/constants";
 
-// Available models - hardcoded for now
-const MODELS = [
-  { id: "deepseek-reasoner", name: "DeepSeek R1" },
-  { id: "deepseek-chat", name: "DeepSeek V3" },
-  { id: "gpt-4o", name: "GPT-4o" },
-  { id: "gpt-4o-mini", name: "GPT-4o Mini" },
-  { id: "claude-3-5-sonnet-20241022", name: "Claude 3.5 Sonnet" },
-];
+const MAX_TEXTAREA_HEIGHT_PX = 200;
+
+type SpeechRecognitionResultLike = {
+  0: { transcript: string };
+  isFinal: boolean;
+  length: number;
+};
+
+type SpeechRecognitionEventLike = {
+  results: ArrayLike<SpeechRecognitionResultLike>;
+};
+
+type SpeechRecognitionLike = {
+  continuous: boolean;
+  interimResults: boolean;
+  lang: string;
+  onresult: ((event: SpeechRecognitionEventLike) => void) | null;
+  onerror: ((event: { error: string }) => void) | null;
+  onend: (() => void) | null;
+  start: () => void;
+  stop: () => void;
+};
+
+type SpeechRecognitionConstructor = new () => SpeechRecognitionLike;
 
 interface PromptInputProps {
   value: string;
@@ -37,195 +62,235 @@ interface PromptInputProps {
   onModelChange: (model: string) => void;
 }
 
-export const PromptInput = ({
-  value,
-  onChange,
-  onSubmit,
-  onStop,
-  onClearChat,
-  isStreaming = false,
-  isSubmitting = false,
-  disabled = false,
-  model,
-  onModelChange,
-}: PromptInputProps) => {
-  const inputRef = useRef<HTMLTextAreaElement>(null);
-  const [isListening, setIsListening] = useState(false);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const recognitionRef = useRef<any>(null);
+export const PromptInput = forwardRef<HTMLTextAreaElement, PromptInputProps>(
+  (
+    {
+      value,
+      onChange,
+      onSubmit,
+      onStop,
+      onClearChat,
+      isStreaming = false,
+      isSubmitting = false,
+      disabled = false,
+      model,
+      onModelChange,
+    },
+    ref
+  ) => {
+	    const textareaRef = useRef<HTMLTextAreaElement>(null);
+	    useImperativeHandle(ref, () => textareaRef.current as HTMLTextAreaElement);
+	
+	    const [isListening, setIsListening] = useState(false);
+	    const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
+	    const listeningBaseValueRef = useRef("");
 
-  const isBusy = isStreaming || isSubmitting;
+    const isBusy = isStreaming || isSubmitting;
 
-  // Handle form submit
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (isStreaming && onStop) {
-      onStop();
-    } else if (value.trim() && !isBusy) {
-      onSubmit();
-    }
-  };
+    const autoResize = (el: HTMLTextAreaElement) => {
+      el.style.height = "auto";
+      el.style.height = `${Math.min(el.scrollHeight, MAX_TEXTAREA_HEIGHT_PX)}px`;
+    };
 
-  // Speech recognition setup
-  const startListening = useCallback(() => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (!SpeechRecognition) {
-      console.warn("Speech recognition not supported");
-      return;
-    }
+    useEffect(() => {
+      const el = textareaRef.current;
+      if (!el) return;
+      autoResize(el);
+    }, [value]);
 
-    const recognition = new SpeechRecognition();
-
-    recognition.continuous = true;
-    recognition.interimResults = true;
-    recognition.lang = "zh-CN";
-
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    recognition.onresult = (event: any) => {
-      let transcript = "";
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        transcript += event.results[i][0].transcript;
+    const submitOrStop = () => {
+      if (disabled) return;
+      if (isStreaming && onStop) {
+        onStop();
+        return;
       }
-      onChange(value + transcript);
+      if (value.trim() && !isBusy) {
+        onSubmit();
+      }
     };
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    recognition.onerror = (event: any) => {
-      console.error("Speech recognition error:", event.error);
-      setIsListening(false);
+    const handleSubmit = (e: FormEvent<HTMLFormElement>) => {
+      e.preventDefault();
+      submitOrStop();
     };
 
-    recognition.onend = () => {
-      setIsListening(false);
-    };
+	    const startListening = useCallback(() => {
+	      const SpeechRecognition = (
+	        window as Window & {
+	          SpeechRecognition?: SpeechRecognitionConstructor;
+	          webkitSpeechRecognition?: SpeechRecognitionConstructor;
+	        }
+	      ).SpeechRecognition
+	        ?? (
+	          window as Window & {
+	            SpeechRecognition?: SpeechRecognitionConstructor;
+	            webkitSpeechRecognition?: SpeechRecognitionConstructor;
+	          }
+	        ).webkitSpeechRecognition;
 
-    recognitionRef.current = recognition;
-    recognition.start();
-    setIsListening(true);
-  }, [onChange, value]);
+	      if (!SpeechRecognition) {
+	        console.warn("Speech recognition not supported");
+	        return;
+	      }
 
-  const stopListening = useCallback(() => {
-    if (recognitionRef.current) {
-      recognitionRef.current.stop();
-      setIsListening(false);
-    }
-  }, []);
+      const recognition = new SpeechRecognition();
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      recognition.lang = "zh-CN";
 
-  const toggleListening = useCallback(() => {
-    if (isListening) {
-      stopListening();
-    } else {
-      startListening();
-    }
-  }, [isListening, startListening, stopListening]);
+	      recognition.onresult = (event: SpeechRecognitionEventLike) => {
+	        let finalTranscript = "";
+	        let interimTranscript = "";
+	        for (let i = 0; i < event.results.length; i++) {
+	          const result = event.results[i];
+	          const text = result?.[0]?.transcript ?? "";
+          if (result?.isFinal) {
+            finalTranscript += text;
+          } else {
+            interimTranscript += text;
+          }
+        }
+        onChange(
+          `${listeningBaseValueRef.current}${finalTranscript}${interimTranscript}`
+        );
+      };
 
-  // Cleanup on unmount
-  useEffect(() => {
-    return () => {
+	      recognition.onerror = (event: { error: string }) => {
+	        console.error("Speech recognition error:", event.error);
+	        setIsListening(false);
+	      };
+
+      recognition.onend = () => {
+        setIsListening(false);
+      };
+
+      recognitionRef.current = recognition;
+      listeningBaseValueRef.current = value;
+      recognition.start();
+      setIsListening(true);
+    }, [onChange, value]);
+
+    const stopListening = useCallback(() => {
       if (recognitionRef.current) {
         recognitionRef.current.stop();
+        setIsListening(false);
       }
-    };
-  }, []);
+    }, []);
 
-  return (
-    <form className="prompt-input-container" onSubmit={handleSubmit}>
-      {/* Text input - textarea for multiline support */}
-      <textarea
-        ref={inputRef}
-        className="prompt-input-field"
-        placeholder="Say something..."
-        value={value}
-        onChange={(e) => {
-          onChange(e.target.value);
-          // Auto-resize
-          e.target.style.height = 'auto';
-          e.target.style.height = Math.min(e.target.scrollHeight, 200) + 'px';
-        }}
-        onKeyDown={(e) => {
-          // Enter to submit, Shift+Enter for newline
-          if (e.key === 'Enter' && !e.shiftKey) {
-            e.preventDefault();
-            if (value.trim()) {
-              handleSubmit(e as unknown as React.FormEvent);
+    const toggleListening = useCallback(() => {
+      if (disabled) return;
+      if (isListening) {
+        stopListening();
+      } else {
+        startListening();
+      }
+    }, [disabled, isListening, startListening, stopListening]);
+
+    useEffect(() => {
+      return () => {
+        if (recognitionRef.current) {
+          recognitionRef.current.stop();
+        }
+      };
+    }, []);
+
+    return (
+      <form className="prompt-input-container" onSubmit={handleSubmit}>
+        <textarea
+          ref={textareaRef}
+          className="prompt-input-field"
+          placeholder="Say something..."
+          value={value}
+          onChange={(e) => {
+            onChange(e.target.value);
+            autoResize(e.target);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              submitOrStop();
             }
-          }
-        }}
-        onPointerDown={(e) => e.stopPropagation()}
-        disabled={disabled}
-        rows={1}
-      />
+          }}
+          onPointerDown={(e) => e.stopPropagation()}
+          disabled={disabled}
+          rows={1}
+        />
 
-      {/* Toolbar */}
-      <div className="prompt-input-toolbar">
-        {/* Left side: extras, voice, model */}
-        <div className="prompt-input-tools">
-          {/* Extras button (+) */}
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <button
-                type="button"
-                className="prompt-input-tool-btn"
+        <div className="prompt-input-toolbar">
+          <div className="prompt-input-tools">
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  type="button"
+                  className="prompt-input-tool-btn"
+                  disabled={disabled}
+                  onPointerDown={(e) => e.stopPropagation()}
+                >
+                  <Plus className="size-4" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start">
+                <DropdownMenuItem onClick={onClearChat}>
+                  <Trash2 className="size-4" />
+                  <span>清空对话</span>
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem disabled>
+                  <Settings className="size-4" />
+                  <span>设置 (即将推出)</span>
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+
+            <button
+              type="button"
+              className={`prompt-input-tool-btn ${isListening ? "active" : ""}`}
+              disabled={disabled}
+              onClick={toggleListening}
+              onPointerDown={(e) => e.stopPropagation()}
+              title={isListening ? "停止录音" : "语音输入"}
+            >
+              {isListening ? (
+                <MicOff className="size-4" />
+              ) : (
+                <Mic className="size-4" />
+              )}
+            </button>
+
+            <Select
+              value={model}
+              onValueChange={onModelChange}
+              disabled={disabled}
+            >
+              <SelectTrigger
+                className="prompt-input-model-select"
                 onPointerDown={(e) => e.stopPropagation()}
               >
-                <Plus className="size-4" />
-              </button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="start">
-              <DropdownMenuItem onClick={onClearChat}>
-                <Trash2 className="size-4" />
-                <span>清空对话</span>
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem disabled>
-                <Settings className="size-4" />
-                <span>设置 (即将推出)</span>
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {MODEL_OPTIONS.map((m) => (
+                  <SelectItem key={m.id} value={m.id}>
+                    {m.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
 
-          {/* Voice button */}
           <button
-            type="button"
-            className={`prompt-input-tool-btn ${isListening ? "active" : ""}`}
-            onClick={toggleListening}
+            type="submit"
+            className={`prompt-input-submit ${isStreaming ? "stop" : ""}`}
+            disabled={disabled || (!isStreaming && (isBusy || !value.trim()))}
             onPointerDown={(e) => e.stopPropagation()}
-            title={isListening ? "停止录音" : "语音输入"}
           >
-            {isListening ? <MicOff className="size-4" /> : <Mic className="size-4" />}
+            {isStreaming ? "Stop" : "Send"}
           </button>
-
-          {/* Model selector */}
-          <Select value={model} onValueChange={onModelChange}>
-            <SelectTrigger
-              className="prompt-input-model-select"
-              onPointerDown={(e) => e.stopPropagation()}
-            >
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {MODELS.map((m) => (
-                <SelectItem key={m.id} value={m.id}>
-                  {m.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
         </div>
-
-        {/* Right side: submit/stop */}
-        <button
-          type="submit"
-          className={`prompt-input-submit ${isStreaming ? "stop" : ""}`}
-          disabled={disabled || (!isStreaming && (isBusy || !value.trim()))}
-          onPointerDown={(e) => e.stopPropagation()}
-        >
-          {isStreaming ? "Stop" : "Send"}
-        </button>
-      </div>
-    </form>
-  );
-};
+      </form>
+    );
+  }
+);
+PromptInput.displayName = "PromptInput";
 
 export default PromptInput;

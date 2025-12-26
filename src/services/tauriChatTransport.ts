@@ -1,21 +1,30 @@
 import { createUIMessageStream, type ChatTransport, type UIMessage } from "ai";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { EVT_CHAT_ERROR, EVT_CHAT_STREAM } from "@/constants";
+import { isTauriContext } from "@/utils";
 
-const AI_EVENTS = {
-  CHAT_STREAM: "chat-stream",
-  CHAT_ERROR: "chat-error",
-} as const;
+type TauriChatTransportOptions = {
+  getModel?: () => string;
+};
 
 type TauriChatStreamPayload = {
-  chunk?: string;
-  delta?: string;
-  kind?: "text" | "reasoning";
-  done?: boolean;
+  requestId: string;
+  delta: string;
+  kind: "text" | "reasoning";
+  done: boolean;
+};
+
+type TauriChatErrorPayload = {
+  requestId: string;
+  error: string;
 };
 
 const createPartId = () =>
   `part_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+
+const createRequestId = () =>
+  `req_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
 
 // Convert UIMessages to API message format
 const convertMessagesToApi = (messages: UIMessage[]) => {
@@ -24,14 +33,18 @@ const convertMessagesToApi = (messages: UIMessage[]) => {
     .map((msg) => ({
       role: msg.role,
       content: msg.parts
-        .filter((part): part is { type: "text"; text: string } => part.type === "text")
+        .filter(
+          (part): part is { type: "text"; text: string } => part.type === "text"
+        )
         .map((part) => part.text)
         .join("\n"),
     }))
     .filter((msg) => msg.content.trim() !== "");
 };
 
-export const createTauriChatTransport = (): ChatTransport<UIMessage> => ({
+export const createTauriChatTransport = (
+  options: TauriChatTransportOptions = {}
+): ChatTransport<UIMessage> => ({
   async sendMessages({ messages, abortSignal }) {
     return createUIMessageStream<UIMessage>({
       originalMessages: messages,
@@ -41,6 +54,18 @@ export const createTauriChatTransport = (): ChatTransport<UIMessage> => ({
           writer.write({ type: "error", errorText: "No messages to send." });
           return;
         }
+
+        if (!isTauriContext()) {
+          writer.write({
+            type: "error",
+            errorText: "Not running in a Tauri context.",
+          });
+          return;
+        }
+
+        const requestId = createRequestId();
+
+        const model = options.getModel?.();
 
         const textPartId = createPartId();
         const reasoningPartId = createPartId();
@@ -57,8 +82,14 @@ export const createTauriChatTransport = (): ChatTransport<UIMessage> => ({
         });
 
         const cleanup = () => {
-          unlistenStream?.();
-          unlistenError?.();
+          if (unlistenStream) {
+            void unlistenStream().catch(() => undefined);
+            unlistenStream = null;
+          }
+          if (unlistenError) {
+            void unlistenError().catch(() => undefined);
+            unlistenError = null;
+          }
           if (abortSignal) {
             abortSignal.removeEventListener("abort", handleAbort);
           }
@@ -94,6 +125,7 @@ export const createTauriChatTransport = (): ChatTransport<UIMessage> => ({
 
         const handleAbort = () => {
           writer.write({ type: "abort" });
+          void invoke("chat_abort", { requestId }).catch(() => undefined);
           finish();
         };
 
@@ -107,18 +139,19 @@ export const createTauriChatTransport = (): ChatTransport<UIMessage> => ({
         }
 
         unlistenStream = await listen<TauriChatStreamPayload>(
-          AI_EVENTS.CHAT_STREAM,
+          EVT_CHAT_STREAM,
           (event) => {
+            if (event.payload.requestId !== requestId) return;
+
             if (event.payload.done) {
               finish();
               return;
             }
 
-            const kind = event.payload.kind ?? "text";
-            const delta = event.payload.delta ?? event.payload.chunk ?? "";
+            const delta = event.payload.delta ?? "";
             if (!delta) return;
 
-            if (kind === "reasoning") {
+            if (event.payload.kind === "reasoning") {
               ensureReasoningStart();
               writer.write({
                 type: "reasoning-delta",
@@ -137,12 +170,22 @@ export const createTauriChatTransport = (): ChatTransport<UIMessage> => ({
           }
         );
 
-        unlistenError = await listen<string>(AI_EVENTS.CHAT_ERROR, (event) => {
-          writer.write({ type: "error", errorText: event.payload });
-          finish();
-        });
+        unlistenError = await listen<TauriChatErrorPayload>(
+          EVT_CHAT_ERROR,
+          (event) => {
+            if (event.payload.requestId !== requestId) return;
+            writer.write({ type: "error", errorText: event.payload.error });
+            finish();
+          }
+        );
 
-        void invoke("chat_stream", { messages: apiMessages }).catch((error) => {
+        const invokeParams: Record<string, unknown> = {
+          requestId,
+          messages: apiMessages,
+        };
+        if (model) invokeParams.model = model;
+
+        void invoke("chat_stream", invokeParams).catch((error) => {
           writer.write({ type: "error", errorText: String(error) });
           finish();
         });

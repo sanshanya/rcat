@@ -1,55 +1,50 @@
 // src/utils/measureText.ts
 // Utility for measuring text width using canvas
 
-/** Cached canvas element for text measurement */
 let cachedCanvas: HTMLCanvasElement | null = null;
 
-/**
- * Get or create cached canvas for text measurement
- */
 function getCanvas(): HTMLCanvasElement {
-    if (!cachedCanvas) {
-        cachedCanvas = document.createElement('canvas');
-    }
-    return cachedCanvas;
+  if (!cachedCanvas) {
+    cachedCanvas = document.createElement("canvas");
+  }
+  return cachedCanvas;
 }
 
 /**
- * Measure the rendered width of text using an input element's computed font.
- * Uses a cached canvas to avoid repeated DOM creation.
- *
- * @param text - The text to measure
- * @param inputElement - The input element to get font styles from
- * @returns Width in pixels
+ * Measure the rendered width of text using an input/textarea element's
+ * computed font (longest line wins for multiline input).
  */
 export function measureTextWidth(
-    text: string,
-    inputElement: HTMLInputElement | null
+  text: string,
+  inputElement: HTMLInputElement | HTMLTextAreaElement | null
 ): number {
-    if (!inputElement) return 0;
+  if (!inputElement) return 0;
 
-    const canvas = getCanvas();
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return 0;
+  const canvas = getCanvas();
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return 0;
 
-    const computedStyle = window.getComputedStyle(inputElement);
-    ctx.font = computedStyle.font;
+  const computedStyle = window.getComputedStyle(inputElement);
+  ctx.font = computedStyle.font;
 
-    return ctx.measureText(text).width;
+  const lines = text.split(/\r?\n/);
+  let maxWidth = 0;
+  for (const line of lines) {
+    maxWidth = Math.max(maxWidth, ctx.measureText(line).width);
+  }
+
+  return maxWidth;
 }
 
 /**
- * Measure text width using explicit font specification
- *
- * @param text - The text to measure
- * @param font - CSS font string (e.g., "16px Inter")
- * @returns Width in pixels
+ * Measure text width using explicit font specification.
  */
 export function measureTextWithFont(text: string, font: string): number {
-    const canvas = getCanvas();
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return 0;
+  const canvas = getCanvas();
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return 0;
 
-    ctx.font = font;
-    return ctx.measureText(text).width;
+  ctx.font = font;
+  return ctx.measureText(text).width;
 }
+

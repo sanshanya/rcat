@@ -1,6 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import type { ChatStatus, UIMessage } from "ai";
-import { CopyIcon, PencilIcon, RefreshCcwIcon, CheckIcon, XIcon } from "lucide-react";
+import {
+  CheckIcon,
+  CopyIcon,
+  PencilIcon,
+  RefreshCcwIcon,
+  XIcon,
+} from "lucide-react";
 import {
   Message,
   MessageAction,
@@ -22,8 +28,15 @@ interface ChatMessagesProps {
   onEditMessage?: (messageId: string, newText: string) => void;
 }
 
-const ChatMessages = ({ messages, status, onRegenerate, onEditMessage }: ChatMessagesProps) => {
+const ChatMessages = ({
+  messages,
+  status,
+  onRegenerate,
+  onEditMessage,
+}: ChatMessagesProps) => {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const copyResetTimeoutRef = useRef<number | null>(null);
+
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editText, setEditText] = useState("");
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
@@ -38,16 +51,39 @@ const ChatMessages = ({ messages, status, onRegenerate, onEditMessage }: ChatMes
     return () => cancelAnimationFrame(frame);
   }, [messages, status]);
 
+  useEffect(() => {
+    return () => {
+      if (copyResetTimeoutRef.current) {
+        window.clearTimeout(copyResetTimeoutRef.current);
+      }
+    };
+  }, []);
+
   const handleCopy = (messageId: string, text: string) => {
-    navigator.clipboard.writeText(text);
-    setCopiedMessageId(messageId);
-    // Reset after 2 seconds
-    setTimeout(() => setCopiedMessageId(null), 2000);
+    if (!navigator.clipboard?.writeText) return;
+
+    void navigator.clipboard
+      .writeText(text)
+      .then(() => {
+        setCopiedMessageId(messageId);
+        if (copyResetTimeoutRef.current) {
+          window.clearTimeout(copyResetTimeoutRef.current);
+        }
+        copyResetTimeoutRef.current = window.setTimeout(
+          () => setCopiedMessageId(null),
+          2000
+        );
+      })
+      .catch(() => {
+        // Ignore clipboard failures (permission, unsupported, etc.)
+      });
   };
 
   const getMessageText = (message: UIMessage): string => {
     return message.parts
-      .filter((part): part is { type: "text"; text: string } => part.type === "text")
+      .filter(
+        (part): part is { type: "text"; text: string } => part.type === "text"
+      )
       .map((part) => part.text)
       .join("\n");
   };
@@ -69,12 +105,19 @@ const ChatMessages = ({ messages, status, onRegenerate, onEditMessage }: ChatMes
     cancelEditing();
   };
 
+  const lastAssistantId = [...messages]
+    .reverse()
+    .find((message) => message.role === "assistant")?.id;
+
   return (
     <div className="chat-panel select-text cursor-text pr-2" ref={scrollRef}>
       {messages
         .filter((message) => message.role !== "system")
         .map((message) => {
-          const isStreaming = status === "streaming" && message.role === "assistant";
+          const isStreaming =
+            status === "streaming" &&
+            message.role === "assistant" &&
+            message.id === lastAssistantId;
           const isEditing = editingMessageId === message.id;
           const isCopied = copiedMessageId === message.id;
 
@@ -139,7 +182,9 @@ const ChatMessages = ({ messages, status, onRegenerate, onEditMessage }: ChatMes
                       return (
                         <Reasoning
                           key={index}
-                          isStreaming={isStreaming && index === message.parts.length - 1}
+                          isStreaming={
+                            isStreaming && index === message.parts.length - 1
+                          }
                         >
                           <ReasoningTrigger />
                           <ReasoningContent>{part.text}</ReasoningContent>
@@ -178,7 +223,9 @@ const ChatMessages = ({ messages, status, onRegenerate, onEditMessage }: ChatMes
                   <MessageAction
                     label="Copy"
                     tooltip={isCopied ? "Copied!" : "Copy to clipboard"}
-                    onClick={() => handleCopy(message.id, getMessageText(message))}
+                    onClick={() =>
+                      handleCopy(message.id, getMessageText(message))
+                    }
                   >
                     {isCopied ? (
                       <CheckIcon className="size-3 text-green-400" />
@@ -213,7 +260,9 @@ const ChatMessages = ({ messages, status, onRegenerate, onEditMessage }: ChatMes
                   <MessageAction
                     label="Copy"
                     tooltip={isCopied ? "Copied!" : "Copy to clipboard"}
-                    onClick={() => handleCopy(message.id, getMessageText(message))}
+                    onClick={() =>
+                      handleCopy(message.id, getMessageText(message))
+                    }
                   >
                     {isCopied ? (
                       <CheckIcon className="size-3 text-green-400" />

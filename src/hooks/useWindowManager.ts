@@ -3,6 +3,7 @@ import { useState, useCallback, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { MIN_INPUT_WIDTH, DEFAULT_RESULT_SIZE } from '../constants/window';
 import type { WindowMode, WindowSize } from '../types';
+import { isTauriContext } from '../utils';
 
 // Re-export for convenience
 export type { WindowMode, WindowSize };
@@ -33,11 +34,14 @@ export function useWindowManager() {
     if (newMode === 'result') {
       const size = override || resultSize || DEFAULT_RESULT_SIZE;
       if (override) setResultSize(override);
+      if (!isTauriContext()) return;
       await invoke('resize_window', { width: size.w, height: size.h });
     } else if (newMode === 'input' && inputWidth) {
       // Restore manual input width if set
+      if (!isTauriContext()) return;
       await invoke('resize_input_width', { desiredWidth: inputWidth });
     } else {
+      if (!isTauriContext()) return;
       await invoke('set_window_mode', { mode: newMode });
     }
   }, [inputWidth, resultSize]);
@@ -48,7 +52,7 @@ export function useWindowManager() {
   const reset = useCallback(() => {
     setInputWidth(null);
     // Note: We don't reset resultSize to allow persistence across sessions
-    changeMode('mini');
+    void changeMode('mini').catch(() => undefined);
   }, [changeMode]);
 
   /**
@@ -58,6 +62,11 @@ export function useWindowManager() {
     // Sync capture to avoid stale state (lesson learned from earlier bugs)
     startSizeRef.current = { w: window.innerWidth, h: window.innerHeight };
     
+    if (!isTauriContext()) {
+      constraintsRef.current = { w: 8000, h: 8000 };
+      return;
+    }
+
     // Async fetch constraints (fire & forget)
     invoke<[number, number]>('get_drag_constraints')
       .then(([maxW, maxH]) => { 
@@ -83,10 +92,14 @@ export function useWindowManager() {
 
     if (mode === 'input') {
       setInputWidth(newW);
-      invoke('resize_input_width', { desiredWidth: newW });
+      if (isTauriContext()) {
+        void invoke('resize_input_width', { desiredWidth: newW }).catch(() => undefined);
+      }
     } else if (mode === 'result') {
       setResultSize({ w: newW, h: newH });
-      invoke('resize_window', { width: newW, height: newH });
+      if (isTauriContext()) {
+        void invoke('resize_window', { width: newW, height: newH }).catch(() => undefined);
+      }
     }
   }, [mode]);
 
@@ -96,7 +109,8 @@ export function useWindowManager() {
   const requestAutoResize = useCallback((desiredWidth: number) => {
     // Skip if manual override is active
     if (inputWidth !== null) return;
-    invoke('resize_input_width', { desiredWidth });
+    if (!isTauriContext()) return;
+    void invoke('resize_input_width', { desiredWidth }).catch(() => undefined);
   }, [inputWidth]);
 
   return {
