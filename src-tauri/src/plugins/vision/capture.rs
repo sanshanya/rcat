@@ -150,8 +150,8 @@ pub(crate) fn get_smart_window() -> Result<Option<WindowInfo>, String> {
 pub(crate) fn capture_smart_image() -> Result<(DynamicImage, String), String> {
     use xcap::Window;
 
-    let target_info = get_smart_window()?
-        .ok_or_else(|| "No suitable window found to capture".to_string())?;
+    let target_info =
+        get_smart_window()?.ok_or_else(|| "No suitable window found to capture".to_string())?;
 
     let windows = Window::all().map_err(|e| format!("Failed to enumerate windows: {}", e))?;
 
@@ -169,4 +169,3 @@ pub(crate) fn capture_smart_image() -> Result<(DynamicImage, String), String> {
 
     Ok((DynamicImage::ImageRgba8(buffer), target_info.title))
 }
-

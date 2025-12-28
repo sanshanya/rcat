@@ -5,8 +5,8 @@ use std::sync::{
     Arc, Mutex,
 };
 use std::{fs, time::Duration};
-use tokio::sync::Notify;
 use tauri::Manager;
+use tokio::sync::Notify;
 
 use crate::{WindowMode, EDGE_MARGIN, MIN_INPUT_W};
 
@@ -71,7 +71,9 @@ impl WindowStateStore {
     }
 
     pub(crate) fn set_current_mode(&self, mode: WindowMode) {
-        self.inner.current_mode.store(mode.as_u8(), Ordering::SeqCst);
+        self.inner
+            .current_mode
+            .store(mode.as_u8(), Ordering::SeqCst);
     }
 
     fn current_mode(&self) -> WindowMode {
@@ -129,12 +131,7 @@ impl WindowStateStore {
     }
 
     pub(crate) fn restore_anchor_to_window(&self, window: &tauri::WebviewWindow) {
-        let anchor = self
-            .inner
-            .state
-            .lock()
-            .ok()
-            .and_then(|s| s.anchor);
+        let anchor = self.inner.state.lock().ok().and_then(|s| s.anchor);
         let Some(anchor) = anchor else { return };
 
         let (x, y) = clamp_window_position(window, anchor.x, anchor.y);
@@ -142,8 +139,12 @@ impl WindowStateStore {
     }
 
     pub(crate) fn load_from_disk(&self, app: &tauri::AppHandle) {
-        let Some(path) = window_state_path(app) else { return };
-        let Ok(contents) = fs::read_to_string(&path) else { return };
+        let Some(path) = window_state_path(app) else {
+            return;
+        };
+        let Ok(contents) = fs::read_to_string(&path) else {
+            return;
+        };
         let Ok(mut parsed) = serde_json::from_str::<PersistedWindowState>(&contents) else {
             return;
         };
@@ -199,8 +200,12 @@ impl WindowStateStore {
     }
 
     fn write_snapshot(&self, app: &tauri::AppHandle, snapshot: &PersistedWindowState) {
-        let Some(path) = window_state_path(app) else { return };
-        let Ok(serialized) = serde_json::to_string(snapshot) else { return };
+        let Some(path) = window_state_path(app) else {
+            return;
+        };
+        let Ok(serialized) = serde_json::to_string(snapshot) else {
+            return;
+        };
 
         let _guard = match self.inner.io_lock.lock() {
             Ok(g) => g,
@@ -233,8 +238,7 @@ pub(crate) fn clamp_window_position(window: &tauri::WebviewWindow, x: i32, y: i3
         return (x, y);
     }
 
-    let (virtual_left, virtual_top, virtual_right, virtual_bottom) =
-        bounds.expect("checked above");
+    let (virtual_left, virtual_top, virtual_right, virtual_bottom) = bounds.expect("checked above");
     let size = size.expect("checked above");
 
     let scale = window
@@ -305,4 +309,3 @@ pub(crate) fn get_virtual_monitor_bounds(
         None
     }
 }
-

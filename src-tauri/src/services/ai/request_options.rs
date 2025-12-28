@@ -25,7 +25,9 @@ fn is_disallowed_header(name: &str) -> bool {
     )
 }
 
-fn build_header_map(headers: &HashMap<String, String>) -> Result<reqwest::header::HeaderMap, String> {
+fn build_header_map(
+    headers: &HashMap<String, String>,
+) -> Result<reqwest::header::HeaderMap, String> {
     let mut header_map = reqwest::header::HeaderMap::new();
     for (key, value) in headers {
         if is_disallowed_header(key) {
@@ -59,4 +61,3 @@ pub(super) fn apply_request_options<T: RequestOptionsBuilder>(
 
     Ok(builder)
 }
-

@@ -3,5 +3,7 @@
 
 export * from './tauriChatTransport';
 export * from './aiConfig';
+export * from './ai';
 export * from './vision';
 export * from './window';
+export * from './history';

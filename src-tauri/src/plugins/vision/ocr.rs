@@ -83,4 +83,3 @@ pub(crate) async fn perform_ocr(image: &DynamicImage) -> Result<(String, Option<
 pub(crate) async fn perform_ocr(_image: &DynamicImage) -> Result<(String, Option<f64>), String> {
     Err("Windows OCR is only available on Windows".to_string())
 }
-

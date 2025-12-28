@@ -3,11 +3,17 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+#[derive(Default)]
+pub(super) struct StreamRegistry {
+    pub(super) handles: HashMap<String, tauri::async_runtime::JoinHandle<()>>,
+    pub(super) by_conversation: HashMap<String, String>,
+}
+
 pub struct AiStreamManager {
     pub(super) http_client: reqwest::Client,
     // NOTE: Using std::sync::Mutex since lock is never held across .await.
     // If future logic requires holding lock across await points, switch to tokio::sync::Mutex.
-    pub(super) handles: Arc<Mutex<HashMap<String, tauri::async_runtime::JoinHandle<()>>>>,
+    pub(super) registry: Arc<Mutex<StreamRegistry>>,
 }
 
 impl Default for AiStreamManager {
@@ -19,21 +25,54 @@ impl Default for AiStreamManager {
 
         Self {
             http_client,
-            handles: Arc::new(Mutex::new(HashMap::new())),
+            registry: Arc::new(Mutex::new(StreamRegistry::default())),
         }
     }
 }
 
 impl AiStreamManager {
-    pub(super) fn take_handle(
+    pub(super) fn take_request(
         &self,
         request_id: &str,
-    ) -> Result<Option<tauri::async_runtime::JoinHandle<()>>, String> {
-        let mut map = self
-            .handles
+    ) -> Result<Option<(Option<String>, tauri::async_runtime::JoinHandle<()>)>, String> {
+        let mut registry = self
+            .registry
             .lock()
             .map_err(|_| "AI stream manager lock poisoned".to_string())?;
-        Ok(map.remove(request_id))
+        let handle = registry.handles.remove(request_id);
+        let Some(handle) = handle else {
+            return Ok(None);
+        };
+
+        let conversation_id = registry
+            .by_conversation
+            .iter()
+            .find(|(_, rid)| rid.as_str() == request_id)
+            .map(|(cid, _)| cid.clone());
+
+        if let Some(cid) = conversation_id.as_deref() {
+            registry.by_conversation.remove(cid);
+        }
+
+        Ok(Some((conversation_id, handle)))
+    }
+
+    pub(super) fn take_conversation(
+        &self,
+        conversation_id: &str,
+    ) -> Result<Option<(String, tauri::async_runtime::JoinHandle<()>)>, String> {
+        let mut registry = self
+            .registry
+            .lock()
+            .map_err(|_| "AI stream manager lock poisoned".to_string())?;
+
+        let Some(request_id) = registry.by_conversation.remove(conversation_id) else {
+            return Ok(None);
+        };
+        let Some(handle) = registry.handles.remove(&request_id) else {
+            return Ok(None);
+        };
+
+        Ok(Some((request_id, handle)))
     }
 }
-

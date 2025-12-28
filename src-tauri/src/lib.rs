@@ -229,9 +229,19 @@ pub fn run() {
             set_window_min_size,
             services::ai::commands::chat_stream,
             services::ai::commands::chat_abort,
+            services::ai::commands::chat_abort_conversation,
             services::ai::commands::chat_simple,
             services::config::get_ai_public_config,
             services::ai::commands::chat_stream_with_tools,
+            // History commands
+            services::history::history_bootstrap,
+            services::history::history_list_conversations,
+            services::history::history_get_conversation,
+            services::history::history_new_conversation,
+            services::history::history_set_active_conversation,
+            services::history::history_mark_seen,
+            services::history::history_clear_conversation,
+            services::history::history_delete_conversation,
             // Vision commands
             services::vision::capture_screen_text,
             services::vision::analyze_screen_vlm,
@@ -251,14 +261,12 @@ pub fn run() {
                 tauri::WindowEvent::Moved(pos) => {
                     window_state.update_anchor(pos.x, pos.y);
                 }
-                tauri::WindowEvent::Resized(_)
-                | tauri::WindowEvent::ScaleFactorChanged { .. } => {
+                tauri::WindowEvent::Resized(_) | tauri::WindowEvent::ScaleFactorChanged { .. } => {
                     if let Some(w) = app.get_webview_window("main") {
                         window_state.update_size_from_window(&w);
                     }
                 }
-                tauri::WindowEvent::CloseRequested { .. }
-                | tauri::WindowEvent::Destroyed => {
+                tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed => {
                     window_state.flush(&app);
                 }
                 _ => {}
@@ -268,6 +276,11 @@ pub fn run() {
             tray::setup_tray(app)?;
 
             let app_handle = app.handle().clone();
+
+            // History store must be available before the frontend boots.
+            let history_store = plugins::history::HistoryStore::init(&app_handle)?;
+            app.manage(history_store);
+
             let window_state = app.state::<WindowStateStore>();
             window_state.load_from_disk(&app_handle);
             window_state.spawn_persist_task(app_handle.clone());
@@ -278,7 +291,11 @@ pub fn run() {
 
             // The window is created as resizable (to allow native resize in input/result),
             // but mini mode should remain fixed-size.
-            set_window_mode(app_handle.clone(), app.state::<WindowStateStore>(), WindowMode::Mini);
+            set_window_mode(
+                app_handle.clone(),
+                app.state::<WindowStateStore>(),
+                WindowMode::Mini,
+            );
 
             Ok(())
         })

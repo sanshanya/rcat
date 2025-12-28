@@ -99,4 +99,3 @@ pub(crate) fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
     builder.build(app)?;
     Ok(())
 }
-

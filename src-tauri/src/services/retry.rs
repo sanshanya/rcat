@@ -10,8 +10,10 @@ pub struct RetryConfig {
 impl RetryConfig {
     pub fn from_env() -> Self {
         let max_attempts = env_usize("AI_MAX_ATTEMPTS", 5).clamp(1, 20);
-        let base_delay = Duration::from_millis(env_u64("AI_RETRY_BASE_DELAY_MS", 250).clamp(0, 60_000));
-        let max_delay = Duration::from_millis(env_u64("AI_RETRY_MAX_DELAY_MS", 4_000).clamp(0, 300_000));
+        let base_delay =
+            Duration::from_millis(env_u64("AI_RETRY_BASE_DELAY_MS", 250).clamp(0, 60_000));
+        let max_delay =
+            Duration::from_millis(env_u64("AI_RETRY_MAX_DELAY_MS", 4_000).clamp(0, 300_000));
 
         Self {
             max_attempts,

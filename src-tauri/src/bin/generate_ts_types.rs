@@ -25,6 +25,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     types.register::<app_lib::services::vision::VlmAnalysisResult>();
     types.register::<app_lib::services::vision::WindowInfo>();
 
+    // History module types
+    types.register::<app_lib::services::history::ConversationSummary>();
+    types.register::<app_lib::services::history::ConversationMessage>();
+    types.register::<app_lib::services::history::ConversationDetail>();
+    types.register::<app_lib::services::history::HistoryBootstrap>();
+
     let mut exporter = Typescript::new()
         // We use millisecond timestamps (u64) within JS-safe range in practice.
         .bigint(BigIntExportBehavior::Number)
@@ -37,8 +43,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let ts = exporter.export(&types)?;
 
-    let out_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../src/bindings/tauri-types.ts");
+    let out_path =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../src/bindings/tauri-types.ts");
 
     if let Some(parent) = out_path.parent() {
         std::fs::create_dir_all(parent)?;

@@ -69,4 +69,3 @@ pub(crate) async fn capture_smart() -> Result<ScreenCaptureResult, String> {
         window_name: Some(window_name),
     })
 }
-

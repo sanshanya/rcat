@@ -11,6 +11,7 @@ import {
 type AutoFitState = {
   mini: { w: number; h: number } | null;
   input: number | null;
+  resultMin: number | null;
 };
 
 const EPS_PX = 1;
@@ -26,6 +27,8 @@ const reporters = {
   miniResize: createReporter("resizeWindow:mini"),
   inputMinSize: createReporter("setWindowMinSize:input"),
   inputResize: createReporter("resizeInputHeight"),
+  resultMinSize: createReporter("setWindowMinSize:result"),
+  resultResize: createReporter("resizeInputHeight:result"),
 } as const;
 
 const getMaxOverlayBottom = (): number | null => {
@@ -59,8 +62,7 @@ const hasOverlayNode = (node: Node): boolean => {
  * Policy:
  * - `mini`: fit width + height to content (capsule) and lock min size.
  * - `input`: fit height to content and update min height (min width stays fixed).
- *
- * This hook intentionally does nothing in `result` mode.
+ * - `result`: update min height to avoid clipping fixed UI (no auto-resize).
  */
 export function useAutoWindowFit(
   containerRef: RefObject<HTMLElement | null>,
@@ -71,7 +73,7 @@ export function useAutoWindowFit(
     modeRef.current = mode;
   }, [mode]);
 
-  const lastAutoSizeRef = useRef<AutoFitState>({ mini: null, input: null });
+  const lastAutoSizeRef = useRef<AutoFitState>({ mini: null, input: null, resultMin: null });
   const rafRef = useRef<number | null>(null);
   const allowShrinkRef = useRef(false);
 
@@ -89,18 +91,18 @@ export function useAutoWindowFit(
         allowShrinkRef.current = false;
 
         const currentMode = modeRef.current;
-        if (currentMode !== "mini" && currentMode !== "input") return;
+        if (currentMode !== "mini" && currentMode !== "input" && currentMode !== "result") return;
 
         const el = containerRef.current;
         if (!el) return;
 
         const rect = el.getBoundingClientRect();
-        let desiredHeight = Math.ceil(rect.height);
-        if (!Number.isFinite(desiredHeight) || desiredHeight <= 0) return;
-
         const currentHeight = window.innerHeight;
 
         if (currentMode === "mini") {
+          let desiredHeight = Math.ceil(rect.height);
+          if (!Number.isFinite(desiredHeight) || desiredHeight <= 0) return;
+
           const desiredWidth = Math.ceil(rect.width);
           if (!Number.isFinite(desiredWidth) || desiredWidth <= 0) return;
 
@@ -128,6 +130,62 @@ export function useAutoWindowFit(
           void resizeWindow(desiredWidth, desiredHeight).catch(reporters.miniResize);
           return;
         }
+
+        if (currentMode === "result") {
+          // Compute a true minimum height by summing fixed children and the min-height
+          // of flexing children (e.g. the scrollable message list).
+          const children = Array.from(el.children).filter((node): node is HTMLElement => {
+            if (!(node instanceof HTMLElement)) return false;
+            const display = window.getComputedStyle(node).display;
+            return display !== "none";
+          });
+          if (children.length === 0) return;
+
+          const containerStyle = window.getComputedStyle(el);
+          const gapPx = Number.parseFloat(containerStyle.rowGap || containerStyle.gap || "0") || 0;
+
+          let total = 0;
+          for (const child of children) {
+            const childStyle = window.getComputedStyle(child);
+            const flexGrow = Number.parseFloat(childStyle.flexGrow || "0") || 0;
+            if (flexGrow > 0) {
+              const minH = Number.parseFloat(childStyle.minHeight || "0") || 0;
+              total += minH;
+            } else {
+              total += child.getBoundingClientRect().height;
+            }
+          }
+          total += gapPx * Math.max(0, children.length - 1);
+
+          let desiredMinHeight = Math.ceil(total);
+          if (!Number.isFinite(desiredMinHeight) || desiredMinHeight <= 0) return;
+
+          const overlayBottom = getMaxOverlayBottom();
+          if (overlayBottom !== null) {
+            desiredMinHeight = Math.max(
+              desiredMinHeight,
+              Math.ceil(overlayBottom + OVERLAY_PADDING_PX)
+            );
+          }
+
+          const lastHeight = lastAutoSizeRef.current.resultMin;
+          const shouldUpdateMin =
+            lastHeight === null || !nearlyEqual(desiredMinHeight, lastHeight);
+          if (shouldUpdateMin) {
+            lastAutoSizeRef.current.resultMin = desiredMinHeight;
+            void setWindowMinSize(0, desiredMinHeight).catch(reporters.resultMinSize);
+          }
+
+          // If the window was persisted too small (or got externally resized),
+          // bump it to at least the computed minimum so content isn't clipped.
+          if (currentHeight + EPS_PX < desiredMinHeight) {
+            void resizeInputHeight(desiredMinHeight).catch(reporters.resultResize);
+          }
+          return;
+        }
+
+        let desiredHeight = Math.ceil(rect.height);
+        if (!Number.isFinite(desiredHeight) || desiredHeight <= 0) return;
 
         const overlayBottom = getMaxOverlayBottom();
         if (overlayBottom !== null) {
@@ -162,12 +220,12 @@ export function useAutoWindowFit(
   );
 
   useEffect(() => {
-    if (mode !== "mini" && mode !== "input") return;
+    if (mode !== "mini" && mode !== "input" && mode !== "result") return;
     scheduleSync(true);
   }, [mode, scheduleSync]);
 
   useEffect(() => {
-    if (mode !== "mini" && mode !== "input") return;
+    if (mode !== "mini" && mode !== "input" && mode !== "result") return;
     if (typeof ResizeObserver === "undefined") return;
 
     const el = containerRef.current;
@@ -181,7 +239,7 @@ export function useAutoWindowFit(
   }, [containerRef, mode, scheduleSync]);
 
   useEffect(() => {
-    if (mode !== "mini" && mode !== "input") return;
+    if (mode !== "mini" && mode !== "input" && mode !== "result") return;
     if (typeof MutationObserver === "undefined") return;
     if (typeof document === "undefined") return;
     if (!document.body) return;

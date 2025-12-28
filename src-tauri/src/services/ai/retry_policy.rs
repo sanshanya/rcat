@@ -8,11 +8,7 @@ pub(super) fn should_retry_openai_error(err: &OpenAIError) -> bool {
         OpenAIError::ApiError(api) => {
             let msg = api.message.to_ascii_lowercase();
             let code = api.code.as_deref().unwrap_or("").to_ascii_lowercase();
-            let ty = api
-                .r#type
-                .as_deref()
-                .unwrap_or("")
-                .to_ascii_lowercase();
+            let ty = api.r#type.as_deref().unwrap_or("").to_ascii_lowercase();
 
             msg.contains("rate limit")
                 || msg.contains("too many")
@@ -29,4 +25,3 @@ pub(super) fn should_retry_openai_error(err: &OpenAIError) -> bool {
         _ => false,
     }
 }
-

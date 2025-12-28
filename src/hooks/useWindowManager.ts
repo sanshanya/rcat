@@ -1,11 +1,11 @@
 // src/hooks/useWindowManager.ts
 import { useState, useCallback } from 'react';
-import type { WindowMode, WindowSize } from '../types';
+import type { WindowMode } from '../types';
 import { isTauriContext, reportPromiseError } from '../utils';
-import { resizeWindow, setWindowMode } from '@/services/window';
+import { setWindowMode } from '@/services/window';
 
 // Re-export for convenience
-export type { WindowMode, WindowSize };
+export type { WindowMode };
 
 /**
  * Hook to manage window mode FSM.
@@ -15,13 +15,10 @@ export function useWindowManager() {
   const [mode, setMode] = useState<WindowMode>('mini');
 
   /**
-   * Change window mode with optional size override.
-   * Handles the complex logic of restoring manual sizes.
+   * Change window mode.
+   * Window sizing is delegated to Rust `WindowStateStore`.
    */
-  const changeMode = useCallback(async (
-    newMode: WindowMode, 
-    override?: WindowSize
-  ) => {
+  const changeMode = useCallback(async (newMode: WindowMode) => {
     if (!isTauriContext()) {
       setMode(newMode);
       return;
@@ -33,10 +30,6 @@ export function useWindowManager() {
     // Update UI only after backend applies constraints/sizing to avoid races with
     // frontend auto-fit logic (which depends on the current mode).
     setMode(newMode);
-    
-    if (newMode === 'result' && override) {
-      await resizeWindow(override.w, override.h);
-    }
   }, []);
 
   /**

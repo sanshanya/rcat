@@ -20,7 +20,7 @@ pub(super) async fn run_chat_stream(
     config: AiConfig,
     request_options: ChatRequestOptions,
     http_client: reqwest::Client,
-) -> Result<(), String> {
+) -> Result<(String, String), String> {
     let request_id = request_id.to_string();
 
     let openai_config = OpenAIConfig::new()
@@ -89,6 +89,8 @@ pub(super) async fn run_chat_stream(
         };
 
         let mut emitted_any = false;
+        let mut accumulated_text = String::new();
+        let mut accumulated_reasoning = String::new();
 
         while let Some(chunk) = stream.next().await {
             let chunk = match chunk {
@@ -117,6 +119,7 @@ pub(super) async fn run_chat_stream(
                 if let Some(reasoning) = choice.delta.reasoning_content {
                     if !reasoning.is_empty() {
                         emitted_any = true;
+                        accumulated_reasoning.push_str(&reasoning);
                         let _ = app.emit(
                             EVT_CHAT_STREAM,
                             ChatStreamPayload {
@@ -132,6 +135,7 @@ pub(super) async fn run_chat_stream(
                 if let Some(content) = choice.delta.content {
                     if !content.is_empty() {
                         emitted_any = true;
+                        accumulated_text.push_str(&content);
                         let _ = app.emit(
                             EVT_CHAT_STREAM,
                             ChatStreamPayload {
@@ -146,9 +150,8 @@ pub(super) async fn run_chat_stream(
             }
         }
 
-        return Ok(());
+        return Ok((accumulated_text, accumulated_reasoning));
     }
 
     Err(last_error.unwrap_or_else(|| "Retry limit exceeded".to_string()))
 }
-

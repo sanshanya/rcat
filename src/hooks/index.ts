@@ -6,3 +6,7 @@ export * from './useTauriEvents';
 export * from './useAutoWindowFit';
 export * from './useAiPublicConfig';
 export * from './useSpeechRecognition';
+export * from './useConversationHistory';
+export * from './useAutosizeTextarea';
+export * from './useModelSelection';
+export * from './useSyncWindowModeWithConversation';

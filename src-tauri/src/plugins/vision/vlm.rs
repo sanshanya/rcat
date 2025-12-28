@@ -172,4 +172,3 @@ pub(crate) async fn analyze_screen_vlm(
 
     Err(last_error.unwrap_or_else(|| "VLM API request failed".to_string()))
 }
-

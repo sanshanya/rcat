@@ -1,5 +1,5 @@
-use async_openai::{config::OpenAIConfig, Client};
 use async_openai::error::OpenAIError;
+use async_openai::{config::OpenAIConfig, Client};
 use futures_util::StreamExt;
 use tauri::Emitter;
 
@@ -22,7 +22,7 @@ pub(super) async fn run_chat_with_tools(
     config: AiConfig,
     request_options: ChatRequestOptions,
     http_client: reqwest::Client,
-) -> Result<(), String> {
+) -> Result<(String, String), String> {
     let openai_config = OpenAIConfig::new()
         .with_api_base(config.base_url.clone())
         .with_api_key(config.api_key.clone());
@@ -63,6 +63,10 @@ pub(super) async fn run_chat_with_tools(
         .and_then(|v| v.trim().parse::<usize>().ok())
         .unwrap_or(5)
         .clamp(1, 50);
+
+    // Accumulate what the UI receives across tool rounds.
+    let mut all_text = String::new();
+    let mut all_reasoning = String::new();
 
     'rounds: for _round in 0..max_tool_rounds {
         // Use streaming API
@@ -129,6 +133,7 @@ pub(super) async fn run_chat_with_tools(
                         if !reasoning.is_empty() {
                             emitted_any = true;
                             accumulated_reasoning.push_str(&reasoning);
+                            all_reasoning.push_str(&reasoning);
                             let _ = app.emit(
                                 EVT_CHAT_STREAM,
                                 ChatStreamPayload {
@@ -146,6 +151,7 @@ pub(super) async fn run_chat_with_tools(
                         if !content.is_empty() {
                             emitted_any = true;
                             accumulated_content.push_str(&content);
+                            all_text.push_str(&content);
                             let _ = app.emit(
                                 EVT_CHAT_STREAM,
                                 ChatStreamPayload {
@@ -241,15 +247,17 @@ pub(super) async fn run_chat_with_tools(
                         continue;
                     }
 
+                    let indicator = prompts::tool_call_indicator(name);
                     let _ = app.emit(
                         EVT_CHAT_STREAM,
                         ChatStreamPayload {
                             request_id: request_id.to_string(),
-                            delta: prompts::tool_call_indicator(name),
+                            delta: indicator.clone(),
                             kind: ChatDeltaKind::Reasoning,
                             done: false,
                         },
                     );
+                    all_reasoning.push_str(&indicator);
 
                     let arguments: serde_json::Value =
                         serde_json::from_str(args).unwrap_or(serde_json::json!({}));
@@ -270,7 +278,7 @@ pub(super) async fn run_chat_with_tools(
             }
 
             // No tool calls - we're done
-            return Ok(());
+            return Ok((all_text, all_reasoning));
         }
 
         return Err(last_error.unwrap_or_else(|| "Retry limit exceeded".to_string()));

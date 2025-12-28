@@ -14,9 +14,11 @@ mod stream;
 mod tools;
 mod types;
 
-pub use commands::{chat_abort, chat_simple, chat_stream, chat_stream_with_tools};
+pub use commands::{
+    chat_abort, chat_abort_conversation, chat_simple, chat_stream, chat_stream_with_tools,
+};
 pub use manager::AiStreamManager;
 pub use types::{
-    ChatDeltaKind, ChatErrorPayload, ChatMessage, ChatRequestOptions, ChatStreamPayload,
-    EVT_CHAT_DONE, EVT_CHAT_ERROR, EVT_CHAT_STREAM,
+    ChatDeltaKind, ChatDonePayload, ChatErrorPayload, ChatMessage, ChatRequestOptions,
+    ChatStreamPayload, EVT_CHAT_DONE, EVT_CHAT_ERROR, EVT_CHAT_STREAM,
 };

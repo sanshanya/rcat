@@ -8,6 +8,14 @@ pub const EVT_CHAT_DONE: &str = "chat-done";
 /// Event name for stream error
 pub const EVT_CHAT_ERROR: &str = "chat-error";
 
+/// Stream completion payload (used for history refresh / notifications).
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatDonePayload {
+    pub request_id: String,
+    pub conversation_id: Option<String>,
+}
+
 /// Message format received from frontend
 #[cfg_attr(feature = "typegen", derive(specta::Type))]
 #[derive(Clone, Deserialize)]
@@ -84,4 +92,3 @@ pub(super) struct StreamFunctionDelta {
     pub(super) name: Option<String>,
     pub(super) arguments: Option<String>,
 }
-

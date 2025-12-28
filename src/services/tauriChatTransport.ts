@@ -7,6 +7,8 @@ import { isTauriContext, reportPromiseError } from "@/utils";
 type TauriChatTransportOptions = {
   getModel?: () => string;
   getToolMode?: () => boolean;
+  getConversationId?: () => string | undefined;
+  onRequestCreated?: (meta: { requestId: string; conversationId?: string }) => void;
 };
 
 type TauriChatStreamPayload = {
@@ -67,6 +69,9 @@ export const createTauriChatTransport = (
         const requestId = createRequestId();
 
         const model = options.getModel?.();
+        const conversationId = options.getConversationId?.();
+
+        options.onRequestCreated?.({ requestId, conversationId });
 
         const textPartId = createPartId();
         const reasoningPartId = createPartId();
@@ -187,6 +192,7 @@ export const createTauriChatTransport = (
           messages: apiMessages,
         };
         if (model) invokeParams.model = model;
+        if (conversationId) invokeParams.conversationId = conversationId;
 
         // Choose the appropriate command based on tool mode
         const useTools = options.getToolMode?.() ?? false;

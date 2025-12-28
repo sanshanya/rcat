@@ -9,9 +9,9 @@ import deepseekIconUrl from "../../deepseek-color.svg";
 
 interface CapsuleProps {
   isThinking: boolean;
-  messageCount: number;
   modelId: string;
   windowMode: WindowMode;
+  hasNotification?: boolean;
   onClick: () => void;
   disabled: boolean;
 }
@@ -52,9 +52,9 @@ const renderModelIcon = (modelId: string, className?: string) => {
 
 const Capsule = ({
   isThinking,
-  messageCount,
   modelId,
   windowMode,
+  hasNotification = false,
   onClick,
   disabled,
 }: CapsuleProps) => {
@@ -124,7 +124,7 @@ const Capsule = ({
       type="button"
       aria-label={isMini ? "Open" : "Ask AI"}
       className={cn(
-        "relative flex h-14 select-none items-center rounded-full",
+        "relative flex h-14 shrink-0 select-none items-center rounded-full",
         isMini ? "w-14 justify-center" : "w-fit gap-2 pr-5",
         "bg-background/95 text-foreground shadow-md ring-1 ring-inset ring-white/10",
         "text-[15px] font-semibold tracking-[0.5px] transition-colors duration-200",
@@ -152,8 +152,8 @@ const Capsule = ({
     >
       <span className="relative inline-flex h-14 w-14 items-center justify-center">
         {renderModelIcon(modelId, "h-7 w-7")}
-        {messageCount > 0 && (
-          <span className="pointer-events-none absolute right-2 top-2 h-2 w-2 rounded-full bg-primary shadow" />
+        {hasNotification && (
+          <span className="pointer-events-none absolute right-2 top-2 h-2 w-2 rounded-full bg-red-500 shadow" />
         )}
       </span>
 

@@ -33,4 +33,3 @@ pub fn get_smart_window() -> Result<Option<WindowInfo>, String> {
 pub async fn capture_smart() -> Result<ScreenCaptureResult, String> {
     crate::plugins::vision::capture_smart().await
 }
-

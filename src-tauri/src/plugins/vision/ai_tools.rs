@@ -8,11 +8,17 @@ pub(super) fn tools_schema(config: &AiConfig) -> serde_json::Value {
     // Allow an explicit env override for other providers during testing.
     let strict_from_env = std::env::var("AI_TOOL_STRICT")
         .ok()
-        .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .map(|v| {
+            matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
         .unwrap_or(false);
 
     let base = config.base_url.trim().trim_end_matches('/');
-    let strict_from_base = matches!(config.provider, AiProvider::DeepSeek) && base.ends_with("/beta");
+    let strict_from_base =
+        matches!(config.provider, AiProvider::DeepSeek) && base.ends_with("/beta");
 
     prompts::build_vision_tools_schema(strict_from_env || strict_from_base)
 }
@@ -37,7 +43,9 @@ pub(super) async fn execute_tool_call(
                 .ok_or_else(|| "Missing window_title argument".to_string())?;
 
             let result = capture_screen_text(Some(window_title.to_string())).await?;
-            let window_name = result.window_name.unwrap_or_else(|| window_title.to_string());
+            let window_name = result
+                .window_name
+                .unwrap_or_else(|| window_title.to_string());
             Ok(prompts::format_window_capture(&window_name, &result.text))
         }
         name if name == prompts::tool_capture_focused::NAME => {
@@ -48,4 +56,3 @@ pub(super) async fn execute_tool_call(
         _ => Err(format!("Unknown tool: {}", name)),
     }
 }
-

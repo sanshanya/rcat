@@ -4,3 +4,4 @@
 export * from './measureText';
 export * from './reportError';
 export * from './tauri';
+export * from './aiMessages';
