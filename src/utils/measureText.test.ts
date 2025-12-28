@@ -1,21 +1,53 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { measureTextWidth } from './measureText';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { measureTextWidth } from "./measureText";
 
 describe('measureTextWidth', () => {
-    let canvasContextMock: { measureText: ReturnType<typeof vi.fn> };
+    const canvasContextMock = {
+        measureText: vi.fn(),
+    };
+
+    const canvasMock = {
+        getContext: vi.fn(() => canvasContextMock),
+    };
+
+    beforeAll(() => {
+        // `bun test` doesn't provide a DOM by default (no `document`/`window`).
+        // Provide minimal shims so the unit test can run in both Bun and Vitest(jsdom).
+        if (typeof document === "undefined") {
+            Object.defineProperty(globalThis, "document", {
+                value: { createElement: () => ({}) },
+                writable: true,
+                configurable: true,
+            });
+        }
+        if (typeof window === "undefined") {
+            Object.defineProperty(globalThis, "window", {
+                value: { getComputedStyle: () => ({ font: "16px serif" }) },
+                writable: true,
+                configurable: true,
+            });
+        }
+    });
 
     beforeEach(() => {
-        // Mock canvas and context
-        canvasContextMock = {
-            measureText: vi.fn(),
-        };
-        const canvasMock = {
-            getContext: vi.fn(() => canvasContextMock),
-        };
-        vi.spyOn(document, 'createElement').mockReturnValue(canvasMock as unknown as HTMLElement);
-        vi.spyOn(window, 'getComputedStyle').mockReturnValue({
-            font: '16px serif',
+        canvasContextMock.measureText.mockReset();
+        canvasMock.getContext.mockClear();
+
+        const originalCreateElement = document.createElement.bind(document);
+        vi.spyOn(document, "createElement").mockImplementation((tagName: string) => {
+            if (tagName.toLowerCase() === "canvas") {
+                return canvasMock as unknown as HTMLElement;
+            }
+            return originalCreateElement(tagName);
+        });
+
+        vi.spyOn(window, "getComputedStyle").mockReturnValue({
+            font: "16px serif",
         } as unknown as CSSStyleDeclaration);
+    });
+
+    afterEach(() => {
+        vi.restoreAllMocks();
     });
 
     it('should return 0 if input element is null', () => {

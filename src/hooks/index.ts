@@ -3,3 +3,6 @@
 
 export * from './useWindowManager';
 export * from './useTauriEvents';
+export * from './useAutoWindowFit';
+export * from './useAiPublicConfig';
+export * from './useSpeechRecognition';

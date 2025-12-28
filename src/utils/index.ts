@@ -2,4 +2,5 @@
 // Barrel export for utilities
 
 export * from './measureText';
+export * from './reportError';
 export * from './tauri';

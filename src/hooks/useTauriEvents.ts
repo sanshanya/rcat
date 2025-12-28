@@ -3,7 +3,7 @@
 
 import { useEffect, useMemo, useRef } from 'react';
 import { listen, type UnlistenFn, type Event } from '@tauri-apps/api/event';
-import { isTauriContext } from '../utils';
+import { isTauriContext, reportPromiseError } from '../utils';
 
 /**
  * Event handler type
@@ -53,19 +53,21 @@ export function useTauriEvents(handlers: EventHandlers): void {
             );
 
             if (!active) {
-                await Promise.all(registered.map((unlisten) => unlisten().catch(() => undefined)));
+                registered.forEach((unlisten) => unlisten());
                 return;
             }
 
             unlisteners.push(...registered);
         };
 
-        void setupListeners().catch(() => undefined);
+        void setupListeners().catch(
+            reportPromiseError('useTauriEvents', { onceKey: 'useTauriEvents' })
+        );
 
         return () => {
             active = false;
             unlisteners.forEach((unlisten) => {
-                void unlisten().catch(() => undefined);
+                unlisten();
             });
         };
     }, [eventNamesKey]);
@@ -103,19 +105,21 @@ export function useTauriEvent<T>(
             });
 
             if (!active) {
-                await cleanup().catch(() => undefined);
+                cleanup();
                 return;
             }
 
             unlisten = cleanup;
         };
 
-        void setupListener().catch(() => undefined);
+        void setupListener().catch(
+            reportPromiseError(`useTauriEvent:${eventName}`, { onceKey: `useTauriEvent:${eventName}` })
+        );
 
         return () => {
             active = false;
             if (unlisten) {
-                void unlisten().catch(() => undefined);
+                unlisten();
                 unlisten = null;
             }
         };

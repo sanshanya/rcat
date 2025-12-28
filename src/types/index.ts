@@ -11,11 +11,3 @@ export interface WindowSize {
   w: number;
   h: number;
 }
-
-/**
- * Constraints for resize operations.
- */
-export interface ResizeConstraints {
-  maxW: number;
-  maxH: number;
-}

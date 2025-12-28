@@ -16,6 +16,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Window/bridge shared types
     types.register::<app_lib::WindowMode>();
 
+    // AI config types
+    types.register::<app_lib::services::config::AiProvider>();
+    types.register::<app_lib::services::config::AiPublicConfig>();
+
     // Vision module types
     types.register::<app_lib::services::vision::ScreenCaptureResult>();
     types.register::<app_lib::services::vision::VlmAnalysisResult>();

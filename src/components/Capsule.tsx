@@ -1,39 +1,172 @@
+import { useRef, type PointerEvent } from "react";
 import { motion } from "framer-motion";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+
 import type { WindowMode } from "@/types";
+import { cn } from "@/lib/utils";
+import { isTauriContext, reportPromiseError } from "@/utils";
+import deepseekIconUrl from "../../deepseek-color.svg";
 
 interface CapsuleProps {
   isThinking: boolean;
   messageCount: number;
+  modelId: string;
   windowMode: WindowMode;
   onClick: () => void;
   disabled: boolean;
 }
 
-const Capsule = ({ isThinking, messageCount, windowMode, onClick, disabled }: CapsuleProps) => {
+type DragState = {
+  pointerId: number;
+  startX: number;
+  startY: number;
+  didDrag: boolean;
+} | null;
+
+const DRAG_THRESHOLD_PX = 6;
+
+const renderModelIcon = (modelId: string, className?: string) => {
+  const lower = modelId.trim().toLowerCase();
+  if (lower.startsWith("deepseek")) {
+    return (
+      <img
+        src={deepseekIconUrl}
+        alt="DeepSeek"
+        className={cn("select-none", className)}
+        draggable={false}
+      />
+    );
+  }
+
   return (
-    <motion.div
-      layoutId="capsule"
-      className={`capsule ${windowMode !== 'mini' ? "active" : ""}`}
-      onClick={!disabled ? onClick : undefined}
+    <span
+      className={cn(
+        "inline-flex select-none items-center justify-center rounded-full bg-white/10 text-xs font-semibold uppercase text-foreground/90",
+        className
+      )}
+    >
+      {(modelId.trim()[0] ?? "?").toUpperCase()}
+    </span>
+  );
+};
+
+const Capsule = ({
+  isThinking,
+  messageCount,
+  modelId,
+  windowMode,
+  onClick,
+  disabled,
+}: CapsuleProps) => {
+  const isMini = windowMode === "mini";
+  const isActive = !isMini;
+  const dragStateRef = useRef<DragState>(null);
+  const suppressClickRef = useRef(false);
+
+  const handlePointerDown = (e: PointerEvent<HTMLButtonElement>) => {
+    if (e.button !== 0) return;
+    if (disabled) return;
+    if (!isTauriContext()) return;
+
+    suppressClickRef.current = false;
+    dragStateRef.current = {
+      pointerId: e.pointerId,
+      startX: e.clientX,
+      startY: e.clientY,
+      didDrag: false,
+    };
+
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {
+      // Ignore pointer capture failures.
+    }
+  };
+
+  const handlePointerMove = (e: PointerEvent<HTMLButtonElement>) => {
+    const state = dragStateRef.current;
+    if (!state) return;
+    if (state.pointerId !== e.pointerId) return;
+    if (state.didDrag) return;
+
+    const dx = e.clientX - state.startX;
+    const dy = e.clientY - state.startY;
+    if (Math.hypot(dx, dy) < DRAG_THRESHOLD_PX) return;
+
+    state.didDrag = true;
+    suppressClickRef.current = true;
+    e.preventDefault();
+    e.stopPropagation();
+    void getCurrentWindow().startDragging().catch(
+      reportPromiseError("Capsule.startDragging", {
+        onceKey: "Capsule.startDragging",
+        devOnly: true,
+      })
+    );
+  };
+
+  const handlePointerUp = (e: PointerEvent<HTMLButtonElement>) => {
+    const state = dragStateRef.current;
+    if (!state) return;
+    if (state.pointerId !== e.pointerId) return;
+
+    dragStateRef.current = null;
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    } catch {
+      // Ignore pointer release failures.
+    }
+  };
+
+  return (
+    <motion.button
+      layout
+      type="button"
+      aria-label={isMini ? "Open" : "Ask AI"}
+      className={cn(
+        "relative flex h-14 select-none items-center rounded-full",
+        isMini ? "w-14 justify-center" : "w-fit gap-2 pr-5",
+        "bg-background/95 text-foreground shadow-md ring-1 ring-inset ring-white/10",
+        "text-[15px] font-semibold tracking-[0.5px] transition-colors duration-200",
+        isActive && "bg-muted/50",
+        disabled
+          ? "cursor-not-allowed border border-white/10 bg-background/80 shadow-none"
+          : "cursor-pointer hover:bg-background active:scale-[0.99]"
+      )}
+      onClick={(e) => {
+        if (disabled) return;
+        if (suppressClickRef.current) {
+          suppressClickRef.current = false;
+          e.preventDefault();
+          e.stopPropagation();
+          return;
+        }
+        onClick();
+      }}
+      onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMove}
+      onPointerUp={handlePointerUp}
+      onPointerCancel={handlePointerUp}
       initial={false}
       transition={{ type: "spring", stiffness: 300, damping: 30 }}
     >
-      <motion.span 
-        style={{ fontSize: "18px", marginRight: "8px" }}
-        key={isThinking ? "think" : messageCount > 0 ? "chat" : "idle"}
-        initial={{ y: -10, opacity: 0 }}
-        animate={{ y: 0, opacity: 1 }}
-        exit={{ y: 10, opacity: 0 }}
-      >
-        {isThinking ? "⏳" : (messageCount > 0 ? "💬" : (windowMode !== 'mini' ? "🤖" : "💊"))}
-      </motion.span>
-      <motion.span
-        layout
-        key="text"
-      >
-        {isThinking ? "Thinking..." : (windowMode !== 'mini' ? "Ask AI" : "Rust Capsule")}
-      </motion.span>
-    </motion.div>
+      <span className="relative inline-flex h-14 w-14 items-center justify-center">
+        {renderModelIcon(modelId, "h-7 w-7")}
+        {messageCount > 0 && (
+          <span className="pointer-events-none absolute right-2 top-2 h-2 w-2 rounded-full bg-primary shadow" />
+        )}
+      </span>
+
+      {!isMini && (
+        <motion.span layout key="label" className="whitespace-nowrap">
+          {isThinking ? "Thinking..." : "Ask AI"}
+        </motion.span>
+      )}
+
+      {isThinking && (
+        <span className="pointer-events-none absolute inset-0 rounded-full ring-2 ring-inset ring-primary/60 animate-pulse" />
+      )}
+    </motion.button>
   );
 };
 

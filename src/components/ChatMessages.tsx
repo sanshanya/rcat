@@ -1,25 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import type { ChatStatus, UIMessage } from "ai";
-import {
-  CheckIcon,
-  CopyIcon,
-  PencilIcon,
-  RefreshCcwIcon,
-  XIcon,
-} from "lucide-react";
-import {
-  Message,
-  MessageAction,
-  MessageActions,
-  MessageContent,
-  MessageResponse,
-} from "@/components/ai-elements/message";
-import {
-  Reasoning,
-  ReasoningContent,
-  ReasoningTrigger,
-} from "@/components/ai-elements/reasoning";
+import { Message, MessageContent } from "@/components/ai-elements/message";
 import { ThinkingIndicator } from "@/components/ai-elements/thinking-indicator";
+
+import AssistantMessage from "./chat/AssistantMessage";
+import UserMessage from "./chat/UserMessage";
+import { getMessageText } from "./chat/messageText";
 
 interface ChatMessagesProps {
   messages: UIMessage[];
@@ -79,15 +65,6 @@ const ChatMessages = ({
       });
   };
 
-  const getMessageText = (message: UIMessage): string => {
-    return message.parts
-      .filter(
-        (part): part is { type: "text"; text: string } => part.type === "text"
-      )
-      .map((part) => part.text)
-      .join("\n");
-  };
-
   const startEditing = (message: UIMessage) => {
     setEditingMessageId(message.id);
     setEditText(getMessageText(message));
@@ -110,7 +87,10 @@ const ChatMessages = ({
     .find((message) => message.role === "assistant")?.id;
 
   return (
-    <div className="chat-panel select-text cursor-text pr-2" ref={scrollRef}>
+    <div
+      className="flex min-h-0 w-full flex-1 flex-col gap-3 overflow-y-auto rounded-xl border border-border/50 bg-muted/30 p-3 pr-2 text-sm leading-relaxed text-foreground/90 [overflow-wrap:anywhere] select-text cursor-text"
+      ref={scrollRef}
+    >
       {messages
         .filter((message) => message.role !== "system")
         .map((message) => {
@@ -121,158 +101,33 @@ const ChatMessages = ({
           const isEditing = editingMessageId === message.id;
           const isCopied = copiedMessageId === message.id;
 
+          if (message.role === "user") {
+            return (
+              <UserMessage
+                key={message.id}
+                message={message}
+                isEditing={isEditing}
+                editText={editText}
+                onEditTextChange={setEditText}
+                onCancelEditing={cancelEditing}
+                onConfirmEditing={() => confirmEdit(message.id)}
+                onStartEditing={() => startEditing(message)}
+                onCopy={() => handleCopy(message.id, getMessageText(message))}
+                isCopied={isCopied}
+                canEdit={Boolean(onEditMessage)}
+              />
+            );
+          }
+
           return (
-            <Message key={message.id} from={message.role}>
-              <MessageContent className="select-text">
-                {message.role === "user" ? (
-                  // User message - simple text in bubble
-                  isEditing ? (
-                    <div className="flex flex-col gap-2">
-                      <input
-                        type="text"
-                        className="px-3 py-1.5 rounded bg-slate-800 border border-slate-600 text-slate-100 text-sm focus:outline-none focus:border-slate-400"
-                        value={editText}
-                        onChange={(e) => setEditText(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter" && !e.shiftKey) {
-                            e.preventDefault();
-                            confirmEdit(message.id);
-                          } else if (e.key === "Escape") {
-                            cancelEditing();
-                          }
-                        }}
-                        autoFocus
-                      />
-                      <div className="flex gap-1 justify-end">
-                        <MessageAction
-                          label="Cancel"
-                          tooltip="Cancel (Esc)"
-                          onClick={cancelEditing}
-                        >
-                          <XIcon className="size-3" />
-                        </MessageAction>
-                        <MessageAction
-                          label="Confirm"
-                          tooltip="Confirm (Enter)"
-                          onClick={() => confirmEdit(message.id)}
-                        >
-                          <CheckIcon className="size-3" />
-                        </MessageAction>
-                      </div>
-                    </div>
-                  ) : (
-                    <span className="select-text">{getMessageText(message)}</span>
-                  )
-                ) : (
-                  // Assistant message - rendered with Streamdown
-                  message.parts.map((part, index) => {
-                    if (part.type === "text") {
-                      return (
-                        <MessageResponse
-                          key={index}
-                          isAnimating={isStreaming}
-                          shikiTheme={["github-dark", "github-dark"]}
-                        >
-                          {part.text}
-                        </MessageResponse>
-                      );
-                    }
-
-                    if (part.type === "reasoning") {
-                      return (
-                        <Reasoning
-                          key={index}
-                          isStreaming={
-                            isStreaming && index === message.parts.length - 1
-                          }
-                        >
-                          <ReasoningTrigger />
-                          <ReasoningContent>{part.text}</ReasoningContent>
-                        </Reasoning>
-                      );
-                    }
-
-                    if (part.type === "source-url") {
-                      return (
-                        <div key={index} className="chat-source">
-                          <a href={part.url} target="_blank" rel="noreferrer">
-                            {part.title || part.url}
-                          </a>
-                        </div>
-                      );
-                    }
-
-                    if (part.type === "file") {
-                      return (
-                        <div key={index} className="chat-attachment">
-                          <a href={part.url} target="_blank" rel="noreferrer">
-                            {part.mediaType}
-                          </a>
-                        </div>
-                      );
-                    }
-
-                    return null;
-                  })
-                )}
-              </MessageContent>
-
-              {/* User message actions - Copy and Edit */}
-              {message.role === "user" && !isEditing && (
-                <MessageActions>
-                  <MessageAction
-                    label="Copy"
-                    tooltip={isCopied ? "Copied!" : "Copy to clipboard"}
-                    onClick={() =>
-                      handleCopy(message.id, getMessageText(message))
-                    }
-                  >
-                    {isCopied ? (
-                      <CheckIcon className="size-3 text-green-400" />
-                    ) : (
-                      <CopyIcon className="size-3" />
-                    )}
-                  </MessageAction>
-                  {onEditMessage && (
-                    <MessageAction
-                      label="Edit"
-                      tooltip="Edit and resend"
-                      onClick={() => startEditing(message)}
-                    >
-                      <PencilIcon className="size-3" />
-                    </MessageAction>
-                  )}
-                </MessageActions>
-              )}
-
-              {/* Assistant message actions - Copy and Retry (all) */}
-              {message.role === "assistant" && !isStreaming && (
-                <MessageActions>
-                  {onRegenerate && (
-                    <MessageAction
-                      label="Retry"
-                      tooltip="Regenerate response"
-                      onClick={() => onRegenerate(message.id)}
-                    >
-                      <RefreshCcwIcon className="size-3" />
-                    </MessageAction>
-                  )}
-                  <MessageAction
-                    label="Copy"
-                    tooltip={isCopied ? "Copied!" : "Copy to clipboard"}
-                    onClick={() =>
-                      handleCopy(message.id, getMessageText(message))
-                    }
-                  >
-                    {isCopied ? (
-                      <CheckIcon className="size-3 text-green-400" />
-                    ) : (
-                      <CopyIcon className="size-3" />
-                    )}
-                  </MessageAction>
-                </MessageActions>
-              )}
-            </Message>
+            <AssistantMessage
+              key={message.id}
+              message={message}
+              isStreaming={isStreaming}
+              onCopy={() => handleCopy(message.id, getMessageText(message))}
+              isCopied={isCopied}
+              onRegenerate={onRegenerate ? () => onRegenerate(message.id) : undefined}
+            />
           );
         })}
 

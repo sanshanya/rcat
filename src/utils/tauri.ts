@@ -3,22 +3,15 @@
 export const isTauriContext = (): boolean => {
   if (typeof window === "undefined") return false;
 
-  type TauriInternals = {
-    invoke?: unknown;
-    metadata?: {
-      currentWindow?: {
-        label?: unknown;
-      };
-    };
-  };
-
-  const internals = (window as unknown as { __TAURI_INTERNALS__?: TauriInternals })
+  // Primary: modern Tauri APIs rely on `__TAURI_INTERNALS__`.
+  const internals = (window as unknown as { __TAURI_INTERNALS__?: { invoke?: unknown } })
     .__TAURI_INTERNALS__;
-  if (!internals) return false;
+  if (typeof internals?.invoke === "function") return true;
 
-  const hasInvoke = typeof internals.invoke === "function";
-  const hasCurrentWindowLabel =
-    typeof internals.metadata?.currentWindow?.label === "string";
+  // Optional: when `app.withGlobalTauri` is enabled, APIs are exposed on `window.__TAURI__`.
+  const globalTauri = (window as unknown as { __TAURI__?: { core?: { invoke?: unknown } } })
+    .__TAURI__;
+  if (typeof globalTauri?.core?.invoke === "function") return true;
 
-  return hasInvoke && hasCurrentWindowLabel;
+  return false;
 };

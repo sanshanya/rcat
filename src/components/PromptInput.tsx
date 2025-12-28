@@ -4,11 +4,10 @@ import {
   useEffect,
   useImperativeHandle,
   useRef,
-  useState,
   type FormEvent,
 } from "react";
 import { Eye, EyeOff, Mic, MicOff, Plus, Settings, Trash2 } from "lucide-react";
-import { invoke } from "@tauri-apps/api/core";
+import { cn } from "@/lib/utils";
 import {
   Select,
   SelectContent,
@@ -23,34 +22,20 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { INPUT_HEIGHT_COLLAPSED, INPUT_HEIGHT_EXPANDED, MODEL_OPTIONS } from "@/constants";
-import type { WindowMode } from "@/types";
-import { isTauriContext } from "@/utils";
+import type { ModelOption } from "@/constants";
+import { useSpeechRecognition } from "@/hooks";
 
-const MAX_TEXTAREA_HEIGHT_PX = 200;
+const TEXTAREA_MAX_HEIGHT_SCREEN_RATIO = 0.25;
+const MIN_TEXTAREA_MAX_HEIGHT_PX = 160;
 
-type SpeechRecognitionResultLike = {
-  0: { transcript: string };
-  isFinal: boolean;
-  length: number;
+const getTextareaMaxHeightPx = () => {
+  if (typeof window === "undefined") return 200;
+  const screenHeight = window.screen?.availHeight ?? window.innerHeight ?? 800;
+  return Math.max(
+    MIN_TEXTAREA_MAX_HEIGHT_PX,
+    Math.floor(screenHeight * TEXTAREA_MAX_HEIGHT_SCREEN_RATIO)
+  );
 };
-
-type SpeechRecognitionEventLike = {
-  results: ArrayLike<SpeechRecognitionResultLike>;
-};
-
-type SpeechRecognitionLike = {
-  continuous: boolean;
-  interimResults: boolean;
-  lang: string;
-  onresult: ((event: SpeechRecognitionEventLike) => void) | null;
-  onerror: ((event: { error: string }) => void) | null;
-  onend: (() => void) | null;
-  start: () => void;
-  stop: () => void;
-};
-
-type SpeechRecognitionConstructor = new () => SpeechRecognitionLike;
 
 interface PromptInputProps {
   value: string;
@@ -61,8 +46,8 @@ interface PromptInputProps {
   isStreaming?: boolean;
   isSubmitting?: boolean;
   disabled?: boolean;
-  windowMode: WindowMode;
   model: string;
+  modelOptions: ModelOption[];
   onModelChange: (model: string) => void;
   toolMode?: boolean;
   onToolModeChange?: (enabled: boolean) => void;
@@ -79,8 +64,8 @@ export const PromptInput = forwardRef<HTMLTextAreaElement, PromptInputProps>(
       isStreaming = false,
       isSubmitting = false,
       disabled = false,
-      windowMode,
       model,
+      modelOptions,
       onModelChange,
       toolMode = false,
       onToolModeChange,
@@ -90,26 +75,14 @@ export const PromptInput = forwardRef<HTMLTextAreaElement, PromptInputProps>(
     const textareaRef = useRef<HTMLTextAreaElement>(null);
     useImperativeHandle(ref, () => textareaRef.current as HTMLTextAreaElement);
 
-    const [isListening, setIsListening] = useState(false);
-    const [modelSelectOpen, setModelSelectOpen] = useState(false);
-    const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
-    const listeningBaseValueRef = useRef("");
+    const { isListening, toggleListening } = useSpeechRecognition({
+      value,
+      onChange,
+      disabled,
+      lang: "zh-CN",
+    });
 
     const isBusy = isStreaming || isSubmitting;
-    const isModelSelectExpandedRef = useRef(false);
-    const isModelSelectOpeningRef = useRef(false);
-    const modelSelectOpenTimeoutRef = useRef<number | null>(null);
-
-    const autoResize = (el: HTMLTextAreaElement) => {
-      el.style.height = "auto";
-      el.style.height = `${Math.min(el.scrollHeight, MAX_TEXTAREA_HEIGHT_PX)}px`;
-    };
-
-    useEffect(() => {
-      const el = textareaRef.current;
-      if (!el) return;
-      autoResize(el);
-    }, [value]);
 
     const submitOrStop = () => {
       if (disabled) return;
@@ -122,145 +95,43 @@ export const PromptInput = forwardRef<HTMLTextAreaElement, PromptInputProps>(
       }
     };
 
-    const setInputWindowHeight = useCallback(
-      async (height: number) => {
-        if (!isTauriContext()) return;
-        if (windowMode !== "input") return;
-        try {
-          await invoke("resize_input_height", { desiredHeight: height });
-        } catch {
-          // Ignore resize failures
-        }
+    const autoResize = useCallback(
+      (el: HTMLTextAreaElement) => {
+        const maxHeightPx = getTextareaMaxHeightPx();
+        el.style.height = "auto";
+        const nextHeight = Math.min(el.scrollHeight, maxHeightPx);
+        el.style.height = `${nextHeight}px`;
       },
-      [windowMode]
+      []
     );
 
-    const expandForModelSelect = useCallback(() => {
-      if (isModelSelectExpandedRef.current) return;
-      isModelSelectExpandedRef.current = true;
-      return setInputWindowHeight(INPUT_HEIGHT_EXPANDED);
-    }, [setInputWindowHeight]);
-
-    const collapseAfterModelSelect = useCallback(() => {
-      if (!isModelSelectExpandedRef.current) return;
-      isModelSelectExpandedRef.current = false;
-      return setInputWindowHeight(INPUT_HEIGHT_COLLAPSED);
-    }, [setInputWindowHeight]);
-
     useEffect(() => {
-      if (windowMode !== "input") {
-        // Reset the expansion flag when leaving input mode so next open can expand again.
-        isModelSelectExpandedRef.current = false;
-        return;
-      }
-
-      if (modelSelectOpen) {
-        void expandForModelSelect();
-      } else {
-        void collapseAfterModelSelect();
-      }
-    }, [collapseAfterModelSelect, expandForModelSelect, modelSelectOpen, windowMode]);
-
-    useEffect(() => {
-      return () => {
-        if (modelSelectOpenTimeoutRef.current !== null) {
-          window.clearTimeout(modelSelectOpenTimeoutRef.current);
-          modelSelectOpenTimeoutRef.current = null;
-        }
-        isModelSelectOpeningRef.current = false;
-      };
-    }, []);
+      const el = textareaRef.current;
+      if (!el) return;
+      autoResize(el);
+    }, [autoResize, value]);
 
     const handleSubmit = (e: FormEvent<HTMLFormElement>) => {
       e.preventDefault();
       submitOrStop();
     };
 
-    const startListening = useCallback(() => {
-      const SpeechRecognition = (
-        window as Window & {
-          SpeechRecognition?: SpeechRecognitionConstructor;
-          webkitSpeechRecognition?: SpeechRecognitionConstructor;
-        }
-      ).SpeechRecognition
-        ?? (
-          window as Window & {
-            SpeechRecognition?: SpeechRecognitionConstructor;
-            webkitSpeechRecognition?: SpeechRecognitionConstructor;
-          }
-        ).webkitSpeechRecognition;
-
-      if (!SpeechRecognition) {
-        console.warn("Speech recognition not supported");
-        return;
-      }
-
-      const recognition = new SpeechRecognition();
-      recognition.continuous = true;
-      recognition.interimResults = true;
-      recognition.lang = "zh-CN";
-
-      recognition.onresult = (event: SpeechRecognitionEventLike) => {
-        let finalTranscript = "";
-        let interimTranscript = "";
-        for (let i = 0; i < event.results.length; i++) {
-          const result = event.results[i];
-          const text = result?.[0]?.transcript ?? "";
-          if (result?.isFinal) {
-            finalTranscript += text;
-          } else {
-            interimTranscript += text;
-          }
-        }
-        onChange(
-          `${listeningBaseValueRef.current}${finalTranscript}${interimTranscript}`
-        );
-      };
-
-      recognition.onerror = (event: { error: string }) => {
-        console.error("Speech recognition error:", event.error);
-        setIsListening(false);
-      };
-
-      recognition.onend = () => {
-        setIsListening(false);
-      };
-
-      recognitionRef.current = recognition;
-      listeningBaseValueRef.current = value;
-      recognition.start();
-      setIsListening(true);
-    }, [onChange, value]);
-
-    const stopListening = useCallback(() => {
-      if (recognitionRef.current) {
-        recognitionRef.current.stop();
-        setIsListening(false);
-      }
-    }, []);
-
-    const toggleListening = useCallback(() => {
-      if (disabled) return;
-      if (isListening) {
-        stopListening();
-      } else {
-        startListening();
-      }
-    }, [disabled, isListening, startListening, stopListening]);
-
-    useEffect(() => {
-      return () => {
-        if (recognitionRef.current) {
-          recognitionRef.current.stop();
-        }
-      };
-    }, []);
-
     return (
-      <form className="prompt-input-container" onSubmit={handleSubmit}>
+      <form
+        className={cn(
+          "flex w-full flex-col gap-2 rounded-2xl border border-border/50",
+          "bg-muted/60 p-3 shadow-md"
+        )}
+        onSubmit={handleSubmit}
+      >
         <textarea
           ref={textareaRef}
-          className="prompt-input-field"
+          className={cn(
+            "w-full min-h-[44px] resize-none overflow-y-auto",
+            "bg-transparent px-3 py-2 text-sm leading-relaxed text-foreground outline-none",
+            "placeholder:text-muted-foreground select-text"
+          )}
+          style={{ maxHeight: getTextareaMaxHeightPx() }}
           placeholder="Say something..."
           value={value}
           onChange={(e) => {
@@ -278,20 +149,24 @@ export const PromptInput = forwardRef<HTMLTextAreaElement, PromptInputProps>(
           rows={1}
         />
 
-        <div className="prompt-input-toolbar">
-          <div className="prompt-input-tools">
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1">
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <button
                   type="button"
-                  className="prompt-input-tool-btn"
+                  className={cn(
+                    "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md",
+                    "text-muted-foreground transition-colors hover:bg-white/10 hover:text-foreground",
+                    "disabled:pointer-events-none disabled:opacity-50"
+                  )}
                   disabled={disabled}
                   onPointerDown={(e) => e.stopPropagation()}
                 >
                   <Plus className="size-4" />
                 </button>
               </DropdownMenuTrigger>
-              <DropdownMenuContent align="start">
+              <DropdownMenuContent side="bottom" align="start" sideOffset={4}>
                 <DropdownMenuItem onClick={onClearChat}>
                   <Trash2 className="size-4" />
                   <span>清空对话</span>
@@ -306,7 +181,12 @@ export const PromptInput = forwardRef<HTMLTextAreaElement, PromptInputProps>(
 
             <button
               type="button"
-              className={`prompt-input-tool-btn ${toolMode ? "active" : ""}`}
+              className={cn(
+                "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md",
+                "text-muted-foreground transition-colors hover:bg-white/10 hover:text-foreground",
+                "disabled:pointer-events-none disabled:opacity-50",
+                toolMode && "bg-red-500/20 text-red-500 hover:bg-red-500/25 hover:text-red-500"
+              )}
               disabled={disabled}
               onClick={() => onToolModeChange?.(!toolMode)}
               onPointerDown={(e) => e.stopPropagation()}
@@ -321,7 +201,12 @@ export const PromptInput = forwardRef<HTMLTextAreaElement, PromptInputProps>(
 
             <button
               type="button"
-              className={`prompt-input-tool-btn ${isListening ? "active" : ""}`}
+              className={cn(
+                "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md",
+                "text-muted-foreground transition-colors hover:bg-white/10 hover:text-foreground",
+                "disabled:pointer-events-none disabled:opacity-50",
+                isListening && "bg-red-500/20 text-red-500 hover:bg-red-500/25 hover:text-red-500"
+              )}
               disabled={disabled}
               onClick={toggleListening}
               onPointerDown={(e) => e.stopPropagation()}
@@ -337,59 +222,16 @@ export const PromptInput = forwardRef<HTMLTextAreaElement, PromptInputProps>(
             <Select
               value={model}
               onValueChange={onModelChange}
-              disabled={disabled}
-              open={modelSelectOpen}
-              onOpenChange={(open) => {
-                // Ignore transient open/close toggles triggered by the same pointer gesture
-                // while we're resizing the Tauri window before opening the menu.
-                if (isModelSelectOpeningRef.current) return;
-                setModelSelectOpen(open);
-              }}
+              disabled={disabled || modelOptions.length === 0}
             >
               <SelectTrigger
-                className="prompt-input-model-select"
-                onPointerDown={(e) => {
-                  e.stopPropagation();
-                  if (disabled) return;
-                  if (windowMode !== "input") return;
-                  if (modelSelectOpen) return;
-                  if (isModelSelectOpeningRef.current) return;
-
-                  // Prevent Radix from opening immediately; resizing the Tauri window here
-                  // can cause the dropdown to instantly close due to pointer/focus changes.
-                  e.preventDefault();
-
-                  isModelSelectOpeningRef.current = true;
-
-                  const pointerEndPromise = new Promise<void>((resolve) => {
-                    const done = () => {
-                      window.removeEventListener("pointerup", onPointerEnd, true);
-                      window.removeEventListener("pointercancel", onPointerEnd, true);
-                      resolve();
-                    };
-                    const onPointerEnd = () => done();
-                    window.addEventListener("pointerup", onPointerEnd, true);
-                    window.addEventListener("pointercancel", onPointerEnd, true);
-                  });
-
-                  void Promise.all([
-                    expandForModelSelect() ?? Promise.resolve(),
-                    pointerEndPromise,
-                  ]).then(() => {
-                    // Defer to the next tick so the trigger's click event can't immediately
-                    // toggle the Select closed right after we programmatically open it.
-                    modelSelectOpenTimeoutRef.current = window.setTimeout(() => {
-                      modelSelectOpenTimeoutRef.current = null;
-                      setModelSelectOpen(true);
-                      isModelSelectOpeningRef.current = false;
-                    }, 0);
-                  });
-                }}
+                className="min-w-[100px] shrink"
+                onPointerDown={(e) => e.stopPropagation()}
               >
                 <SelectValue />
               </SelectTrigger>
-              <SelectContent side="top" align="end" sideOffset={4}>
-                {MODEL_OPTIONS.map((m) => (
+              <SelectContent side="bottom" align="end" sideOffset={4}>
+                {modelOptions.map((m) => (
                   <SelectItem key={m.id} value={m.id}>
                     {m.name}
                   </SelectItem>
@@ -400,7 +242,13 @@ export const PromptInput = forwardRef<HTMLTextAreaElement, PromptInputProps>(
 
           <button
             type="submit"
-            className={`prompt-input-submit ${isStreaming ? "stop" : ""}`}
+            className={cn(
+              "ml-auto h-8 shrink-0 rounded-lg px-4 text-xs font-semibold text-white transition-colors",
+              isStreaming
+                ? "bg-red-500/90 hover:bg-red-500"
+                : "bg-blue-500/90 hover:bg-blue-500",
+              "disabled:cursor-not-allowed disabled:opacity-50"
+            )}
             disabled={disabled || (!isStreaming && (isBusy || !value.trim()))}
             onPointerDown={(e) => e.stopPropagation()}
           >

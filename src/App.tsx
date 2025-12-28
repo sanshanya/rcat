@@ -4,100 +4,22 @@ import {
   useRef,
   useCallback,
   useMemo,
-  type PointerEvent,
 } from "react";
-import "./App.css";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import { MotionConfig } from "framer-motion";
 import { useChat } from "@ai-sdk/react";
 
-import { Capsule, ResizeHandle } from "./components";
+import { Capsule } from "./components";
 import ChatMessages from "./components/ChatMessages";
 import PromptInput from "./components/PromptInput";
 import {
   EVT_CLICK_THROUGH_STATE,
-  AUTO_RESIZE_MAX_WIDTH,
-  INPUT_PADDING,
+  DEFAULT_RESULT_SIZE,
+  getRegisteredModelOptions,
 } from "./constants";
-import { useWindowManager, useTauriEvent } from "./hooks";
-import { isTauriContext, measureTextWidth } from "./utils";
-import { createTauriChatTransport, captureScreenText, analyzeScreenVlm, listCapturableWindows, captureSmart, getSmartWindow } from "./services";
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
-
-// 暴露测试函数到全局 window 对象，方便控制台调试
-if (typeof window !== 'undefined') {
-  // @ts-expect-error - 临时测试用
-  window.visionTest = {
-    captureScreenText,
-    analyzeScreenVlm,
-    listCapturableWindows,
-    captureSmart,
-    getSmartWindow,
-    // 便捷测试函数
-    async testOCR() {
-      console.log('🔍 开始 OCR 测试...');
-      const result = await captureScreenText();
-      console.log('✅ OCR 结果:', result);
-      return result;
-    },
-    async testSmart() {
-      console.log('🧠 开始智能捕获...');
-      const result = await captureSmart();
-      console.log('✅ 智能捕获结果:', result);
-      return result;
-    },
-    async testVLM(prompt = '描述这个屏幕上的内容') {
-      console.log('🤖 开始 VLM 分析...');
-      const result = await analyzeScreenVlm(prompt);
-      console.log('✅ VLM 结果:', result);
-      return result;
-    },
-    async listWindows() {
-      const windows = await listCapturableWindows();
-      console.log('📋 可用窗口 (按Z序):', windows);
-      return windows;
-    },
-    async smartWindow() {
-      const win = await getSmartWindow();
-      console.log('🎯 智能选中窗口:', win);
-      return win;
-    },
-    // AI 工具调用测试
-    async testToolChat(prompt = '请告诉我用户当前正在使用哪些应用程序') {
-      console.log('🛠️ 开始工具调用测试...');
-      const requestId = `test_${Date.now()}`;
-
-      // 监听响应
-      const unlisten = await listen('chat-stream', (event: { payload: { delta: string; kind: string; done: boolean } }) => {
-        const { delta, kind, done } = event.payload;
-        if (done) {
-          console.log('✅ 完成');
-          return;
-        }
-        if (kind === 'reasoning') {
-          console.log('🔧', delta);
-        } else {
-          console.log('💬', delta);
-        }
-      });
-
-      try {
-        await invoke('chat_stream_with_tools', {
-          requestId,
-          messages: [{ role: 'user', content: prompt }],
-          model: null,
-          requestOptions: null
-        });
-        // 等待一段时间让流完成
-        await new Promise(resolve => setTimeout(resolve, 10000));
-      } finally {
-        unlisten();
-      }
-    }
-  };
-  console.log('💡 测试: visionTest.testToolChat("帮我看看QQ消息")');
-}
+import { useAiPublicConfig, useAutoWindowFit, useWindowManager, useTauriEvent } from "./hooks";
+import { createTauriChatTransport } from "./services";
+import { cn } from "@/lib/utils";
+import { reportPromiseError } from "@/utils";
 
 const createChatSessionId = () =>
   `chat_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
@@ -108,14 +30,18 @@ function App() {
   // Use custom hooks for cleaner separation of concerns
   const {
     mode: windowMode,
-    inputWidth,
     changeMode,
     reset: resetWindow,
-    startResize,
-    applyResize,
-    requestAutoResize,
   } = useWindowManager();
-  const [selectedModel, setSelectedModel] = useState("deepseek-reasoner");
+  const aiConfig = useAiPublicConfig();
+  const modelOptions = useMemo(
+    () => getRegisteredModelOptions(aiConfig?.provider, aiConfig?.model),
+    [aiConfig?.provider, aiConfig?.model]
+  );
+  const [selectedModel, setSelectedModel] = useState(
+    () => modelOptions[0]?.id ?? "deepseek-reasoner"
+  );
+  const didInitModelFromBackendRef = useRef(false);
   const selectedModelRef = useRef(selectedModel);
   const [toolMode, setToolMode] = useState(false);
   const toolModeRef = useRef(toolMode);
@@ -123,6 +49,36 @@ function App() {
   useEffect(() => {
     selectedModelRef.current = selectedModel;
   }, [selectedModel]);
+
+  useEffect(() => {
+    // Initialize model from backend config once it is available, and keep the
+    // selected value valid when provider/options change.
+    const configured = aiConfig?.model?.trim();
+    if (!aiConfig) return;
+
+    if (!didInitModelFromBackendRef.current) {
+      didInitModelFromBackendRef.current = true;
+      if (configured && modelOptions.some((m) => m.id === configured)) {
+        setSelectedModel(configured);
+        return;
+      }
+      if (modelOptions.length > 0) {
+        setSelectedModel(modelOptions[0].id);
+      }
+      return;
+    }
+
+    const allowed = modelOptions.some((m) => m.id === selectedModel);
+    if (allowed) return;
+
+    if (configured && modelOptions.some((m) => m.id === configured)) {
+      setSelectedModel(configured);
+      return;
+    }
+    if (modelOptions.length > 0) {
+      setSelectedModel(modelOptions[0].id);
+    }
+  }, [aiConfig?.model, modelOptions, selectedModel]);
 
   useEffect(() => {
     toolModeRef.current = toolMode;
@@ -142,6 +98,8 @@ function App() {
     transport,
   });
   const isBusy = status === "submitted" || status === "streaming";
+  const shellRef = useRef<HTMLDivElement>(null);
+  useAutoWindowFit(shellRef, windowMode);
 
   // Handle editing a user message and resending
   const handleEditMessage = useCallback(
@@ -200,7 +158,6 @@ function App() {
 
   // Input ref for focus handling + width measurement
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const contentWrapperRef = useRef<HTMLDivElement>(null);
   const [inputValue, setInputValue] = useState("");
 
   const handleReset = useCallback(() => {
@@ -227,31 +184,6 @@ function App() {
 
   useTauriEvent<boolean>(EVT_CLICK_THROUGH_STATE, handleClickThroughChange);
 
-  // Auto-resize input width based on text content
-  const resizeTimeoutRef = useRef<number | null>(null);
-
-  useEffect(() => {
-    if (windowMode !== "input") return;
-    if (inputWidth !== null) return; // Skip if manual override
-
-    if (resizeTimeoutRef.current) {
-      clearTimeout(resizeTimeoutRef.current);
-    }
-
-    resizeTimeoutRef.current = window.setTimeout(() => {
-      const textWidth = measureTextWidth(inputValue, inputRef.current);
-      const desiredWidth = Math.min(
-        textWidth + INPUT_PADDING,
-        AUTO_RESIZE_MAX_WIDTH
-      );
-      requestAutoResize(desiredWidth);
-    }, 50);
-
-    return () => {
-      if (resizeTimeoutRef.current) clearTimeout(resizeTimeoutRef.current);
-    };
-  }, [inputValue, inputWidth, requestAutoResize, windowMode]);
-
   const toggleExpand = async () => {
     if (windowMode !== "mini") {
       handleReset();
@@ -261,29 +193,28 @@ function App() {
     }
   };
 
-  const startDrag = (e: PointerEvent) => {
-    if ("button" in e && e.button !== 0) return;
-    if (isClickThrough) return;
-    if (!isTauriContext()) return;
-    e.preventDefault();
-    e.stopPropagation();
-    void getCurrentWindow().startDragging().catch(() => undefined);
-  };
-
   return (
-    <div className={`container ${isClickThrough ? "click-through-mode" : ""}`}>
-      <div className="drag-handle" onPointerDown={startDrag}>
-        <div className="handle-bar"></div>
-      </div>
-
-      {/* Content wrapper for proper resize handle positioning */}
-      <div className="content-wrapper" ref={contentWrapperRef}>
+    <div
+      className={cn(
+        "group relative h-full w-full bg-transparent text-foreground",
+        isClickThrough && "opacity-60 grayscale"
+      )}
+    >
+      <div
+        ref={shellRef}
+        className={cn(
+          "flex flex-col items-stretch gap-2 p-0",
+          windowMode === "mini" ? "w-fit" : "w-full",
+          windowMode === "result" && "h-full min-h-0"
+        )}
+      >
         <MotionConfig
           transition={{ type: "spring", stiffness: 350, damping: 30 }}
         >
           <Capsule
             isThinking={isBusy}
             messageCount={messages.length}
+            modelId={selectedModel}
             windowMode={windowMode}
             onClick={toggleExpand}
             disabled={isClickThrough}
@@ -302,12 +233,12 @@ function App() {
                 sendMessage({ text: textToSend });
 
                 if (windowMode === "input") {
-                  const inheritWidth = inputWidth;
-                  void changeMode(
-                    "result",
-                    inheritWidth ? { w: inheritWidth, h: 500 } : undefined
-                  )
-                    .catch(() => undefined);
+                  void changeMode("result", {
+                    w: window.innerWidth,
+                    h: DEFAULT_RESULT_SIZE.h,
+                  }).catch(
+                    reportPromiseError("App.changeMode", { onceKey: "App.changeMode" })
+                  );
                 }
               }}
               onStop={stop}
@@ -315,8 +246,8 @@ function App() {
               isStreaming={status === "streaming"}
               isSubmitting={status === "submitted"}
               disabled={isClickThrough}
-              windowMode={windowMode}
               model={selectedModel}
+              modelOptions={modelOptions}
               onModelChange={setSelectedModel}
               toolMode={toolMode}
               onToolModeChange={setToolMode}
@@ -333,17 +264,10 @@ function App() {
           )}
 
           {status === "error" && error && (
-            <div className="chat-error">{error.message || String(error)}</div>
+            <div className="rounded-md border border-red-500/30 bg-red-950/35 px-3 py-2 text-xs text-red-100/90">
+              {error.message || String(error)}
+            </div>
           )}
-
-          {/* Resize handle positioned relative to content-wrapper */}
-          {(windowMode === "input" || windowMode === "result") &&
-            !isClickThrough && (
-              <ResizeHandle
-                onResize={applyResize}
-                onResizeStart={startResize}
-              />
-            )}
         </MotionConfig>
       </div>
     </div>

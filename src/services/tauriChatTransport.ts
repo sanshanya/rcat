@@ -2,7 +2,7 @@ import { createUIMessageStream, type ChatTransport, type UIMessage } from "ai";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { EVT_CHAT_ERROR, EVT_CHAT_STREAM } from "@/constants";
-import { isTauriContext } from "@/utils";
+import { isTauriContext, reportPromiseError } from "@/utils";
 
 type TauriChatTransportOptions = {
   getModel?: () => string;
@@ -126,7 +126,9 @@ export const createTauriChatTransport = (
 
         const handleAbort = () => {
           writer.write({ type: "abort" });
-          void invoke("chat_abort", { requestId }).catch(() => undefined);
+          void invoke("chat_abort", { requestId }).catch(
+            reportPromiseError("chat_abort", { onceKey: "chat_abort" })
+          );
           finish();
         };
 

@@ -15,6 +15,19 @@
   color-scheme: dark;
 }
 
+@layer base {
+  html,
+  body,
+  #root {
+    background-color: transparent;
+    width: 100vw;
+    height: 100vh;
+    overflow: hidden;
+    user-select: none;
+    cursor: default;
+  }
+}
+
 /* Custom Scrollbar for Webkit (Chrome, Edge, Tauri) */
 ::-webkit-scrollbar {
   width: 8px; /* Slimmer scrollbar */
@@ -35,7 +48,7 @@
 }
 
 /* Inline code styling for visibility on dark background */
-.chat-message.assistant code:not([data-streamdown]) {
+.is-assistant code:not([data-streamdown]) {
   background-color: hsl(0 0% 20%);
   color: hsl(0 0% 90%);
   padding: 0.125rem 0.375rem;
@@ -43,7 +56,7 @@
 }
 
 /* Blockquote styling */
-.chat-message.assistant blockquote {
+.is-assistant blockquote {
   background-color: hsl(0 0% 15%);
   border-left-color: hsl(0 0% 40%);
   color: hsl(0 0% 85%);

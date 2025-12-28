@@ -1,15 +1,12 @@
 use serde::{Deserialize, Serialize};
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc,
-};
-use tauri::{
-    menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem},
-    tray::{MouseButton, TrayIconBuilder, TrayIconEvent},
-    Emitter, Manager,
-};
+use tauri::Manager;
 
+mod plugins;
 pub mod services;
+mod tray;
+mod window_state;
+
+use window_state::WindowStateStore;
 
 #[cfg_attr(feature = "typegen", derive(specta::Type))]
 #[cfg_attr(feature = "typegen", specta(rename_all = "lowercase"))]
@@ -22,87 +19,76 @@ pub enum WindowMode {
 }
 
 impl WindowMode {
+    pub(crate) fn as_u8(self) -> u8 {
+        match self {
+            WindowMode::Mini => 0,
+            WindowMode::Input => 1,
+            WindowMode::Result => 2,
+        }
+    }
+
+    pub(crate) fn from_u8(value: u8) -> Self {
+        match value {
+            1 => WindowMode::Input,
+            2 => WindowMode::Result,
+            _ => WindowMode::Mini,
+        }
+    }
+
     pub fn get_size(&self) -> (f64, f64) {
         match self {
-            WindowMode::Mini => (220.0, 80.0),
+            // Mini mode is an unobtrusive launcher; frontend will auto-fit precisely.
+            WindowMode::Mini => (64.0, 64.0),
             WindowMode::Input => (MIN_INPUT_W, INPUT_H_COLLAPSED),
             WindowMode::Result => (400.0, 500.0),
         }
     }
 }
 
-// ✅ 输入态动态宽度常量
-const MIN_INPUT_W: f64 = 380.0;
-const MAX_INPUT_W: f64 = 8000.0; // Effectively unlimited, constrained by monitor width logic below
+// Input mode minimum width (used for Rust-side constraints and persistence)
+pub(crate) const MIN_INPUT_W: f64 = 380.0;
 // Default input window height (compact; avoids blocking clicks behind)
 const INPUT_H_COLLAPSED: f64 = 220.0;
-// Expanded input window height (used temporarily for menus like model Select)
-const INPUT_H_EXPANDED: f64 = 380.0;
-const EDGE_MARGIN: f64 = 12.0;
-
-fn get_current_logical_size(window: &tauri::WebviewWindow) -> Option<(f64, f64)> {
-    let size = window.inner_size().ok()?;
-    let scale = window
-        .current_monitor()
-        .ok()
-        .flatten()
-        .map(|m| m.scale_factor())
-        .unwrap_or(1.0);
-
-    Some((size.width as f64 / scale, size.height as f64 / scale))
-}
+pub(crate) const EDGE_MARGIN: f64 = 12.0;
 
 // ✅ 窗口模式切换命令
 #[tauri::command]
-fn set_window_mode(app: tauri::AppHandle, mode: WindowMode) {
+fn set_window_mode(
+    app: tauri::AppHandle,
+    window_state: tauri::State<WindowStateStore>,
+    mode: WindowMode,
+) {
+    window_state.set_current_mode(mode);
     if let Some(window) = app.get_webview_window("main") {
-        let (width, height) = mode.get_size();
-        let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize { width, height }));
-    }
-}
-
-// ✅ 输入态动态宽度调整 (带屏幕边界约束)
-#[tauri::command]
-fn resize_input_width(app: tauri::AppHandle, desired_width: f64) {
-    if let Some(window) = app.get_webview_window("main") {
-        // 1. 先 clamp 到 min/max
-        let clamped = desired_width.clamp(MIN_INPUT_W, MAX_INPUT_W);
-
-        // Preserve current height to avoid resetting dynamic input height.
-        let current_h = get_current_logical_size(&window)
-            .map(|(_, h)| h)
-            .unwrap_or(INPUT_H_COLLAPSED)
-            .max(INPUT_H_COLLAPSED);
-
-        // 2. 获取窗口位置和显示器信息
-        let pos = window.outer_position().ok();
-        let monitor = window.current_monitor().ok().flatten();
-
-        let final_width = if let (Some(p), Some(m)) = (pos, monitor) {
-            let scale = m.scale_factor();
-            let monitor_width = m.size().width as f64 / scale;
-            let window_x = p.x as f64 / scale;
-
-            // 3. 计算右侧剩余空间
-            let space_right = monitor_width - window_x - EDGE_MARGIN;
-
-            // 4. 如果会溢出，考虑左移窗口
-            if clamped > space_right {
-                let new_x = (monitor_width - clamped - EDGE_MARGIN).max(EDGE_MARGIN);
-                let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition {
-                    x: new_x,
-                    y: p.y as f64 / scale,
-                }));
+        let (mut width, mut height) = mode.get_size();
+        match mode {
+            WindowMode::Input => {
+                if let Some(saved) = window_state.get_input_width() {
+                    width = saved.max(MIN_INPUT_W);
+                }
             }
+            WindowMode::Result => {
+                if let Some(saved) = window_state.get_result_size() {
+                    width = saved.w.max(MIN_INPUT_W);
+                    height = saved.h.max(1.0);
+                }
+            }
+            WindowMode::Mini => {}
+        }
 
-            // 最终宽度仍然受 max 限制
-            let max_w = (monitor_width - 2.0 * EDGE_MARGIN).max(100.0);
-            clamped.min(max_w)
-        } else {
-            clamped
+        let min_size = match mode {
+            WindowMode::Mini => (width, height),
+            WindowMode::Input => (MIN_INPUT_W, 1.0),
+            WindowMode::Result => (MIN_INPUT_W, 1.0),
         };
 
-        safe_resize(&window, final_width, current_h);
+        // Decorations are controlled by tauri.conf.json; we don't toggle them at runtime.
+        let _ = window.set_resizable(!matches!(mode, WindowMode::Mini));
+        let _ = window.set_min_size(Some(tauri::Size::Logical(tauri::LogicalSize {
+            width: min_size.0,
+            height: min_size.1,
+        })));
+        safe_resize(&window, width, height);
     }
 }
 
@@ -110,21 +96,24 @@ fn resize_input_width(app: tauri::AppHandle, desired_width: f64) {
 #[tauri::command]
 fn resize_input_height(app: tauri::AppHandle, desired_height: f64) {
     if let Some(window) = app.get_webview_window("main") {
-        let (current_w, _) =
-            get_current_logical_size(&window).unwrap_or((MIN_INPUT_W, INPUT_H_COLLAPSED));
+        if !desired_height.is_finite() {
+            return;
+        }
+
+        let (current_w, _) = window_state::get_current_logical_size(&window)
+            .unwrap_or((MIN_INPUT_W, INPUT_H_COLLAPSED));
 
         let monitor = window.current_monitor().ok().flatten();
 
         // Clamp height to monitor bounds (with margins) when possible.
+        let desired_height = desired_height.max(1.0);
         let clamped_h = if let Some(m) = monitor {
             let scale = m.scale_factor();
             let monitor_height = m.size().height as f64 / scale;
             let max_h = (monitor_height - 2.0 * EDGE_MARGIN).max(100.0);
-            desired_height
-                .clamp(INPUT_H_COLLAPSED, INPUT_H_EXPANDED)
-                .min(max_h)
+            desired_height.min(max_h)
         } else {
-            desired_height.clamp(INPUT_H_COLLAPSED, INPUT_H_EXPANDED)
+            desired_height
         };
 
         // Keep width stable (respect current/auto-resized width).
@@ -133,43 +122,43 @@ fn resize_input_height(app: tauri::AppHandle, desired_height: f64) {
     }
 }
 
-/// Helper function: Safely resize window with screen edge constraints.
-/// Shifts window position if it would extend beyond monitor bounds.
+/// Helper function: Resize window with screen edge constraints.
+/// Clamps the size to fit within the virtual desktop without moving the window.
 fn safe_resize(window: &tauri::WebviewWindow, width: f64, height: f64) {
     let pos = window.outer_position().ok();
-    let monitor = window.current_monitor().ok().flatten();
 
-    if let (Some(p), Some(m)) = (pos, monitor) {
-        let scale = m.scale_factor();
-        let monitor_width = m.size().width as f64 / scale;
-        let monitor_height = m.size().height as f64 / scale;
-        let window_x = p.x as f64 / scale;
-        let window_y = p.y as f64 / scale;
+    let scale = window
+        .current_monitor()
+        .ok()
+        .flatten()
+        .or_else(|| window.primary_monitor().ok().flatten())
+        .map(|m| m.scale_factor())
+        .unwrap_or(1.0);
 
-        let mut new_x = window_x;
-        let mut new_y = window_y;
+    // Keep the window inside the virtual desktop bounds (all monitors combined),
+    // but preserve its position to avoid "jumping" when auto-fitting content.
+    let bounds = window_state::get_virtual_monitor_bounds(window);
 
-        // Check right edge
-        let space_right = monitor_width - window_x - EDGE_MARGIN;
-        if width > space_right {
-            new_x = (monitor_width - width - EDGE_MARGIN).max(EDGE_MARGIN);
-        }
+    if let (Some(p), Some((_virtual_left, _virtual_top, virtual_right, virtual_bottom))) =
+        (pos, bounds)
+    {
+        let margin = EDGE_MARGIN * scale;
 
-        // Check bottom edge
-        let space_bottom = monitor_height - window_y - EDGE_MARGIN;
-        if height > space_bottom {
-            new_y = (monitor_height - height - EDGE_MARGIN).max(EDGE_MARGIN);
-        }
+        // Compute the maximum size we can fit to the right/bottom, without moving the window.
+        let max_w = (virtual_right - margin - p.x as f64).max(1.0);
+        let max_h = (virtual_bottom - margin - p.y as f64).max(1.0);
 
-        // Shift position if needed
-        if new_x != window_x || new_y != window_y {
-            let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition {
-                x: new_x,
-                y: new_y,
-            }));
-        }
+        let target_w = (width * scale).clamp(1.0, max_w).round();
+        let target_h = (height * scale).clamp(1.0, max_h).round();
+
+        let _ = window.set_size(tauri::Size::Physical(tauri::PhysicalSize {
+            width: target_w.clamp(1.0, u32::MAX as f64) as u32,
+            height: target_h.clamp(1.0, u32::MAX as f64) as u32,
+        }));
+        return;
     }
 
+    // Fallback: if we can't get monitor/position, resize in logical pixels.
     let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize { width, height }));
 }
 
@@ -182,38 +171,67 @@ fn resize_window(app: tauri::AppHandle, width: f64, height: f64) {
 }
 
 #[tauri::command]
-fn get_drag_constraints(app: tauri::AppHandle) -> (f64, f64) {
+fn set_window_min_size(app: tauri::AppHandle, min_width: f64, min_height: f64) {
     if let Some(window) = app.get_webview_window("main") {
-        if let (Ok(pos), Ok(Some(monitor))) = (window.outer_position(), window.current_monitor()) {
-            let scale = monitor.scale_factor();
-            let m_size = monitor.size();
+        let width = if min_width.is_finite() && min_width > 0.0 {
+            Some(min_width.max(1.0))
+        } else {
+            None
+        };
+        let height = if min_height.is_finite() && min_height > 0.0 {
+            Some(min_height.max(1.0))
+        } else {
+            None
+        };
 
-            // Calculate remaining space in logical pixels
-            let max_w = (m_size.width as f64 - pos.x as f64) / scale;
-            let max_h = (m_size.height as f64 - pos.y as f64) / scale;
-
-            return (max_w.max(100.0), max_h.max(100.0));
+        if width.is_none() && height.is_none() {
+            return;
         }
+
+        // When width is omitted by the frontend, keep input's minimum width in Rust as the
+        // single source of truth to avoid constant drift between Rust and TS.
+        let width = width.unwrap_or(MIN_INPUT_W);
+        let height = height.unwrap_or(1.0);
+
+        let _ = window.set_min_size(Some(tauri::Size::Logical(tauri::LogicalSize {
+            width,
+            height,
+        })));
     }
-    (8000.0, 8000.0)
 }
 
-const EVT_CLICK_THROUGH_STATE: &str = "click-through-state";
+pub(crate) const EVT_CLICK_THROUGH_STATE: &str = "click-through-state";
 
 pub fn run() {
     tauri::Builder::default()
+        .plugin(
+            tauri_plugin_log::Builder::new()
+                // Keep dependencies quiet by default; enable debug logs only for our crate in dev.
+                .level(log::LevelFilter::Info)
+                .level_for(
+                    "app_lib",
+                    if cfg!(debug_assertions) {
+                        log::LevelFilter::Debug
+                    } else {
+                        log::LevelFilter::Info
+                    },
+                )
+                // Tao/Winit sometimes emits internal ordering warnings on Windows; they are not actionable.
+                .level_for("tao", log::LevelFilter::Error)
+                .build(),
+        )
         .manage(services::ai::AiStreamManager::default())
+        .manage(WindowStateStore::new())
         .invoke_handler(tauri::generate_handler![
             set_window_mode,
-            resize_input_width,
             resize_input_height,
             resize_window,
-            get_drag_constraints,
-            services::ai::chat_stream,
-            services::ai::chat_abort,
-            services::ai::chat_simple,
-            services::ai::get_ai_public_config,
-            services::ai::chat_stream_with_tools,
+            set_window_min_size,
+            services::ai::commands::chat_stream,
+            services::ai::commands::chat_abort,
+            services::ai::commands::chat_simple,
+            services::config::get_ai_public_config,
+            services::ai::commands::chat_stream_with_tools,
             // Vision commands
             services::vision::capture_screen_text,
             services::vision::analyze_screen_vlm,
@@ -221,98 +239,49 @@ pub fn run() {
             services::vision::get_smart_window,
             services::vision::capture_smart
         ])
+        .on_window_event(|window, event| {
+            if window.label() != "main" {
+                return;
+            }
+
+            let app = window.app_handle();
+            let window_state = app.state::<WindowStateStore>();
+
+            match event {
+                tauri::WindowEvent::Moved(pos) => {
+                    window_state.update_anchor(pos.x, pos.y);
+                }
+                tauri::WindowEvent::Resized(_)
+                | tauri::WindowEvent::ScaleFactorChanged { .. } => {
+                    if let Some(w) = app.get_webview_window("main") {
+                        window_state.update_size_from_window(&w);
+                    }
+                }
+                tauri::WindowEvent::CloseRequested { .. }
+                | tauri::WindowEvent::Destroyed => {
+                    window_state.flush(&app);
+                }
+                _ => {}
+            }
+        })
         .setup(|app| {
-            setup_tray(app)?;
+            tray::setup_tray(app)?;
+
+            let app_handle = app.handle().clone();
+            let window_state = app.state::<WindowStateStore>();
+            window_state.load_from_disk(&app_handle);
+            window_state.spawn_persist_task(app_handle.clone());
+
+            if let Some(window) = app.get_webview_window("main") {
+                window_state.restore_anchor_to_window(&window);
+            }
+
+            // The window is created as resizable (to allow native resize in input/result),
+            // but mini mode should remain fixed-size.
+            set_window_mode(app_handle.clone(), app.state::<WindowStateStore>(), WindowMode::Mini);
+
             Ok(())
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
-}
-
-// TODO: Refactor tray state management into a dedicated TrayState struct
-// when tray logic grows more complex (e.g., more menu items, dynamic state).
-fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
-    let click_through = CheckMenuItem::with_id(
-        app,
-        "click_through",
-        "点击穿透 (只看不用)",
-        true,
-        false,
-        None::<&str>,
-    )?;
-    let quit_i = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-    let sep = PredefinedMenuItem::separator(app)?;
-    let menu = Menu::with_items(app, &[&click_through, &sep, &quit_i])?;
-    let icon = app.default_window_icon().cloned();
-
-    let click_through_for_menu = click_through.clone();
-    let click_through_for_tray = click_through.clone();
-    let is_through = Arc::new(AtomicBool::new(false));
-
-    let is_through_menu = is_through.clone();
-    let is_through_tray = is_through.clone();
-
-    let mut builder = TrayIconBuilder::new()
-        .menu(&menu)
-        .show_menu_on_left_click(false)
-        .on_menu_event(move |app, event| {
-            let id = event.id().as_ref();
-
-            if id == "quit" {
-                app.exit(0);
-                return;
-            }
-
-            if id == "click_through" {
-                let current = is_through_menu.load(Ordering::SeqCst);
-                let new_state = !current;
-                is_through_menu.store(new_state, Ordering::SeqCst);
-
-                let _ = click_through_for_menu.set_checked(new_state);
-
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.set_ignore_cursor_events(new_state);
-                    let _ = window.set_focusable(!new_state);
-
-                    // ✅ 2. 使用常量发送事件
-                    let _ = window.emit(EVT_CLICK_THROUGH_STATE, new_state);
-                }
-            }
-        })
-        .on_tray_icon_event(move |tray, event| {
-            if let TrayIconEvent::Click {
-                button: MouseButton::Left,
-                ..
-            } = event
-            {
-                let app = tray.app_handle();
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.is_visible().and_then(|is_visible| {
-                        if is_visible {
-                            window.hide()?;
-                        } else {
-                            window.show()?;
-                            window.set_focus()?;
-
-                            let saved_state = is_through_tray.load(Ordering::SeqCst);
-
-                            let _ = click_through_for_tray.set_checked(saved_state);
-                            let _ = window.set_ignore_cursor_events(saved_state);
-                            let _ = window.set_focusable(!saved_state);
-
-                            // ✅ 3. 使用常量发送事件
-                            let _ = window.emit(EVT_CLICK_THROUGH_STATE, saved_state);
-                        }
-                        Ok(())
-                    });
-                }
-            }
-        });
-
-    if let Some(i) = icon {
-        builder = builder.icon(i);
-    }
-
-    builder.build(app)?;
-    Ok(())
 }
