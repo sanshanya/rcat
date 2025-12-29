@@ -2,7 +2,7 @@
 //!
 //! This module uses the `libsql` crate (async client) because it supports both:
 //! - Remote Turso/libSQL databases via `TURSO_DATABASE_URL` / `LIBSQL_DATABASE_URL` (+ token).
-//! - Local file fallback in the app data directory (`history.db`).
+//! - Local file fallback in the app `savedata` directory (`history.db`).
 
 use std::path::PathBuf;
 use std::ops::Deref;
@@ -11,7 +11,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use std::{future::Future, time::Duration};
 
 use libsql::{params, Builder, Database};
-use tauri::Manager;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use uuid::Uuid;
 
@@ -104,10 +103,7 @@ fn new_id(prefix: &str) -> String {
 }
 
 fn db_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Failed to resolve app data dir: {e}"))?;
+    let dir = crate::services::paths::data_dir(app)?;
     Ok(dir.join("history.db"))
 }
 
@@ -143,8 +139,6 @@ where
 }
 
 async fn open_database(app: &tauri::AppHandle) -> Result<(Database, DbMode), String> {
-    let _ = dotenvy::dotenv();
-
     let url = std::env::var("TURSO_DATABASE_URL")
         .or_else(|_| std::env::var("LIBSQL_DATABASE_URL"))
         .ok()

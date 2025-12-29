@@ -231,7 +231,10 @@ pub fn run() {
             services::ai::commands::chat_abort,
             services::ai::commands::chat_abort_conversation,
             services::ai::commands::chat_simple,
-            services::config::get_ai_public_config,
+            services::config::get_ai_config,
+            services::config::set_ai_provider,
+            services::config::set_ai_profile,
+            services::config::test_ai_profile,
             services::ai::commands::chat_stream_with_tools,
             // History commands
             services::history::history_bootstrap,
@@ -276,6 +279,12 @@ pub fn run() {
             tray::setup_tray(app)?;
 
             let app_handle = app.handle().clone();
+
+            // Initialize data directory early so all subsystems share the same root.
+            // Single source of truth: `<exe_dir>/savedata`.
+            let dir = services::paths::init_data_dir(&app_handle)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            log::info!("Data dir: {}", dir.display());
 
             // History store must be available before the frontend boots.
             let history_store = plugins::history::HistoryStore::init(&app_handle)?;

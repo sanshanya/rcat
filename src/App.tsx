@@ -9,16 +9,15 @@ import { MotionConfig } from "framer-motion";
 import type { ChatStatus } from "ai";
 import { useChat } from "@ai-sdk/react";
 
-import { Capsule } from "./components";
-import ChatMessages from "./components/ChatMessages";
-import PromptInput from "./components/PromptInput";
+import type { WindowMode } from "@/types";
+import { InputView, MiniView, ResultView, SettingsView } from "./components/views";
 import {
   EVT_CLICK_THROUGH_STATE,
   EVT_CHAT_DONE,
   getRegisteredModelOptions,
 } from "./constants";
 import {
-  useAiPublicConfig,
+  useAiConfig,
   useAutoWindowFit,
   useConversationHistory,
   useModelSelection,
@@ -39,6 +38,7 @@ const isChatBusy = (status: ChatStatus) => status === "submitted" || status === 
 
 function App() {
   const [isClickThrough, setIsClickThrough] = useState(false);
+  const [activeRoute, setActiveRoute] = useState<"main" | "settings">("main");
 
   // Use custom hooks for cleaner separation of concerns
   const {
@@ -46,10 +46,10 @@ function App() {
     changeMode,
     reset: resetWindow,
   } = useWindowManager();
-  const aiConfig = useAiPublicConfig();
+  const { config: aiConfig, refresh: refreshAiConfig } = useAiConfig();
   const modelOptions = useMemo(
-    () => getRegisteredModelOptions(aiConfig?.provider, aiConfig?.model),
-    [aiConfig?.provider, aiConfig?.model]
+    () => getRegisteredModelOptions(aiConfig?.provider, aiConfig?.model, aiConfig?.models),
+    [aiConfig?.model, aiConfig?.models, aiConfig?.provider]
   );
   const { selectedModel, setSelectedModel, selectedModelRef } = useModelSelection(
     aiConfig,
@@ -128,6 +128,7 @@ function App() {
     messageCount: messages.length,
     isActiveConversationGenerating,
     changeMode,
+    enabled: activeRoute === "main",
   });
 
   useEffect(() => {
@@ -187,9 +188,35 @@ function App() {
   // Input ref for focus handling + width measurement
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const [inputValue, setInputValue] = useState("");
+  const settingsReturnModeRef = useRef<WindowMode>("input");
+  const isSettingsOpen = activeRoute === "settings";
+
+  const openSettings = useCallback(() => {
+    // Keep the UX stable: open settings in result mode (fixed-ish window with internal scroll).
+    settingsReturnModeRef.current = windowMode === "mini" ? "input" : windowMode;
+    setActiveRoute("settings");
+    void changeMode("result").catch(
+      reportPromiseError("App.changeMode:openSettings", {
+        onceKey: "App.changeMode:openSettings",
+      })
+    );
+  }, [changeMode, windowMode]);
+
+  const closeSettings = useCallback(() => {
+    setActiveRoute("main");
+    const target = settingsReturnModeRef.current;
+    if (target !== windowMode) {
+      void changeMode(target).catch(
+        reportPromiseError("App.changeMode:closeSettings", {
+          onceKey: "App.changeMode:closeSettings",
+        })
+      );
+    }
+  }, [changeMode, windowMode]);
 
   const handleCollapse = useCallback(() => {
     setInputValue("");
+    setActiveRoute("main");
     resetWindow();
   }, [resetWindow]);
 
@@ -439,6 +466,74 @@ function App() {
     attachedConversationIdRef.current = null;
   }, [activeConversationId, busy]);
 
+  const errorText =
+    status === "error" && error ? error.message || String(error) : null;
+
+  const capsuleProps = {
+    isThinking: isAnyConversationGenerating,
+    modelId: selectedModel,
+    windowMode,
+    hasNotification: hasHistoryNotification,
+    onClick: toggleExpand,
+    disabled: isClickThrough,
+  };
+
+  const selectedModelSpec = useMemo(
+    () => aiConfig?.models?.find((m) => m.id === selectedModel) ?? null,
+    [aiConfig?.models, selectedModel]
+  );
+
+  const promptProps = {
+    ref: inputRef,
+    value: inputValue,
+    onChange: setInputValue,
+    onSubmit: async () => {
+      const textToSend = inputValue.trim();
+      if (!textToSend) return;
+
+      setInputValue("");
+      if (activeConversationId) {
+        void markSeen(activeConversationId).catch(
+          reportPromiseError("App.markSeen:send", { onceKey: "App.markSeen:send" })
+        );
+
+        setGeneratingConversations((prev) => {
+          if (prev.has(activeConversationId)) return prev;
+          const next = new Set(prev);
+          next.add(activeConversationId);
+          return next;
+        });
+      }
+      sendMessage({ text: textToSend });
+    },
+    onStop: handleStop,
+    onOpenSettings: openSettings,
+    conversations,
+    activeConversationId,
+    onSelectConversation: handleSelectConversation,
+    onNewConversation: handleNewConversation,
+    onDeleteConversation: handleDeleteConversation,
+    isStreaming: status === "streaming",
+    isSubmitting: status === "submitted",
+    isConversationGenerating: isActiveConversationGenerating,
+    disabled: isClickThrough || !historyReady || !activeConversationId,
+    hasHistoryNotification,
+    model: selectedModel,
+    modelOptions,
+    onModelChange: setSelectedModel,
+    toolMode,
+    onToolModeChange: setToolMode,
+  };
+
+  const chatProps = {
+    conversationId: activeConversationId,
+    isBackgroundGenerating: isActiveConversationDetachedGenerating,
+    messages,
+    status: (busy ? status : "ready") as ChatStatus,
+    onRegenerate: handleRegenerateFrom,
+    onEditMessage: handleEditMessage,
+  };
+
   return (
     <div
       className={cn(
@@ -457,73 +552,30 @@ function App() {
         <MotionConfig
           transition={{ type: "spring", stiffness: 350, damping: 30 }}
         >
-          <Capsule
-            isThinking={isAnyConversationGenerating}
-            modelId={selectedModel}
-            windowMode={windowMode}
-            hasNotification={hasHistoryNotification}
-            onClick={toggleExpand}
-            disabled={isClickThrough}
-          />
-
-          {windowMode !== "mini" && (
-            <PromptInput
-              ref={inputRef}
-              value={inputValue}
-              onChange={setInputValue}
-              onSubmit={async () => {
-                const textToSend = inputValue.trim();
-                if (!textToSend) return;
-
-                setInputValue("");
-                if (activeConversationId) {
-                  void markSeen(activeConversationId).catch(
-                    reportPromiseError("App.markSeen:send", { onceKey: "App.markSeen:send" })
-                  );
-
-                  setGeneratingConversations((prev) => {
-                    if (prev.has(activeConversationId)) return prev;
-                    const next = new Set(prev);
-                    next.add(activeConversationId);
-                    return next;
-                  });
-                }
-                sendMessage({ text: textToSend });
-              }}
-              onStop={handleStop}
-              conversations={conversations}
-              activeConversationId={activeConversationId}
-              onSelectConversation={handleSelectConversation}
-              onNewConversation={handleNewConversation}
-              onDeleteConversation={handleDeleteConversation}
-              isStreaming={status === "streaming"}
-              isSubmitting={status === "submitted"}
-              isConversationGenerating={isActiveConversationGenerating}
-              disabled={isClickThrough || !historyReady || !activeConversationId}
-              hasHistoryNotification={hasHistoryNotification}
-              model={selectedModel}
-              modelOptions={modelOptions}
-              onModelChange={setSelectedModel}
-              toolMode={toolMode}
-              onToolModeChange={setToolMode}
+          {isSettingsOpen ? (
+            <SettingsView
+              capsuleProps={capsuleProps}
+              aiConfig={aiConfig}
+              onRefreshAiConfig={refreshAiConfig}
+              onClose={closeSettings}
             />
-          )}
-
-          {windowMode === "result" && (messages.length > 0 || isActiveConversationGenerating) && (
-            <ChatMessages
-              conversationId={activeConversationId}
-              isBackgroundGenerating={isActiveConversationDetachedGenerating}
-              messages={messages}
-              status={busy ? status : "ready"}
-              onRegenerate={handleRegenerateFrom}
-              onEditMessage={handleEditMessage}
+          ) : windowMode === "mini" ? (
+            <MiniView capsuleProps={capsuleProps} />
+          ) : windowMode === "input" ? (
+            <InputView
+              capsuleProps={capsuleProps}
+              promptProps={promptProps}
+              errorText={errorText}
             />
-          )}
-
-          {windowMode !== "mini" && status === "error" && error && (
-            <div className="rounded-md border border-red-500/30 bg-red-950/35 px-3 py-2 text-xs text-red-100/90">
-              {error.message || String(error)}
-            </div>
+          ) : (
+            <ResultView
+              capsuleProps={capsuleProps}
+              promptProps={promptProps}
+              chatProps={chatProps}
+              showChat={messages.length > 0 || isActiveConversationGenerating}
+              modelSpec={selectedModelSpec}
+              errorText={errorText}
+            />
           )}
         </MotionConfig>
       </div>

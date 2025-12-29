@@ -8,6 +8,7 @@ This document records potential optimization/refactor directions for later work.
 - Treat long-running work as **background tasks**; UI can collapse without interrupting generation.
 - Keep per-feature code behind a stable boundary (`plugins/`, `services/`) to reduce coupling.
 - Optimize for “fast by default”: avoid holding scarce resources (DB connections, window locks) across network calls.
+- Keep Rust ↔ TS bridge types generated (see `docs/TYPEGEN.md`).
 
 ## Non-goals (deferred)
 

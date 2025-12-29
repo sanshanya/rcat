@@ -2,6 +2,7 @@
 pub mod ai;
 pub mod config;
 pub mod history;
+pub(crate) mod paths;
 pub mod prompts;
 pub mod retry;
 pub mod vision;

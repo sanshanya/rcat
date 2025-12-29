@@ -11,6 +11,7 @@ type Params = {
   messageCount: number;
   isActiveConversationGenerating: boolean;
   changeMode: (mode: WindowMode) => Promise<void>;
+  enabled?: boolean;
 };
 
 export function useSyncWindowModeWithConversation({
@@ -21,11 +22,13 @@ export function useSyncWindowModeWithConversation({
   messageCount,
   isActiveConversationGenerating,
   changeMode,
+  enabled = true,
 }: Params) {
   // Keep window mode aligned with the actual conversation content.
   // Without this, switching conversations can leave the app in `result` mode with an empty chat
   // (or `input` mode while there are messages), which breaks auto-fit/min-height behavior.
   useEffect(() => {
+    if (!enabled) return;
     if (windowMode === "mini") return;
     const listCount =
       conversations.find((c) => c.id === activeConversationId)?.messageCount ?? 0;
@@ -50,6 +53,7 @@ export function useSyncWindowModeWithConversation({
     activeConversationId,
     changeMode,
     conversations,
+    enabled,
     isActiveConversationGenerating,
     messageCount,
     windowMode,

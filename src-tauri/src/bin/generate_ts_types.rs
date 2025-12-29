@@ -18,7 +18,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // AI config types
     types.register::<app_lib::services::config::AiProvider>();
-    types.register::<app_lib::services::config::AiPublicConfig>();
+    types.register::<app_lib::services::config::AiModel>();
+    types.register::<app_lib::services::config::AiConfig>();
 
     // Vision module types
     types.register::<app_lib::services::vision::ScreenCaptureResult>();

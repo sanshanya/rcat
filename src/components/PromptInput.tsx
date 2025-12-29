@@ -17,6 +17,7 @@ interface PromptInputProps {
   onChange: (value: string) => void;
   onSubmit: () => void;
   onStop?: () => void;
+  onOpenSettings?: () => void;
   conversations?: ConversationSummary[];
   activeConversationId?: string | null;
   onSelectConversation?: (conversationId: string) => void;
@@ -41,6 +42,7 @@ export const PromptInput = forwardRef<HTMLTextAreaElement, PromptInputProps>(
       onChange,
       onSubmit,
       onStop,
+      onOpenSettings,
       conversations = [],
       activeConversationId,
       onSelectConversation,
@@ -92,7 +94,7 @@ export const PromptInput = forwardRef<HTMLTextAreaElement, PromptInputProps>(
         data-window-prompt
         className={cn(
           "flex w-full shrink-0 flex-col gap-2 rounded-2xl border border-border/50",
-          "bg-muted/60 p-3 shadow-md"
+          "bg-muted/80 p-3 shadow-md"
         )}
         onSubmit={handleSubmit}
       >
@@ -154,9 +156,10 @@ export const PromptInput = forwardRef<HTMLTextAreaElement, PromptInputProps>(
                 "text-muted-foreground transition-colors hover:bg-white/10 hover:text-foreground",
                 "disabled:pointer-events-none disabled:opacity-50"
               )}
-              disabled={true}
+              disabled={disabled || !onOpenSettings}
+              onClick={onOpenSettings}
               onPointerDown={(e) => e.stopPropagation()}
-              title="设置 (即将推出)"
+              title="设置"
             >
               <Settings className="size-4" />
             </button>

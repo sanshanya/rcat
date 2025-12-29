@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 
 import type { ModelOption } from "@/constants";
-import type { AiPublicConfig } from "@/services";
+import type { AiConfig } from "@/services";
 
 const DEFAULT_MODEL_ID = "deepseek-reasoner";
 
 export function useModelSelection(
-  aiConfig: AiPublicConfig | null,
+  aiConfig: AiConfig | null,
   modelOptions: ModelOption[]
 ) {
   const [selectedModel, setSelectedModel] = useState(

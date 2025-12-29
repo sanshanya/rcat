@@ -206,7 +206,7 @@ const ChatMessages = ({
 
   return (
     <div
-      className="min-h-[220px] w-full flex-1 overflow-y-auto rounded-xl border border-border/50 bg-muted/30 p-3 pr-2 text-sm leading-relaxed text-foreground/90 [overflow-wrap:anywhere] select-text cursor-text"
+      className="min-h-[220px] w-full flex-1 overflow-y-auto rounded-xl border border-border/50 bg-muted/45 p-3 pr-2 text-sm leading-relaxed text-foreground/90 [overflow-wrap:anywhere] select-text cursor-text"
       ref={scrollRef}
       onScroll={handleScroll}
     >

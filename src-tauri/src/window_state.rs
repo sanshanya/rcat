@@ -5,7 +5,6 @@ use std::sync::{
     Arc, Mutex,
 };
 use std::{fs, time::Duration};
-use tauri::Manager;
 use tokio::sync::Notify;
 
 use crate::{WindowMode, EDGE_MARGIN, MIN_INPUT_W};
@@ -226,7 +225,7 @@ impl WindowStateStore {
 }
 
 fn window_state_path(app: &tauri::AppHandle) -> Option<PathBuf> {
-    let dir = app.path().app_data_dir().ok()?;
+    let dir = crate::services::paths::data_dir(app).ok()?;
     Some(dir.join(WINDOW_STATE_FILE))
 }
 
