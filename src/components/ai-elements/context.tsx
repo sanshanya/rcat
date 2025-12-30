@@ -107,21 +107,21 @@ export const ContextUsageIndicator = ({
 
   return (
     <div className={cn("shrink-0", className)} {...props}>
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>{trigger}</DropdownMenuTrigger>
-        <DropdownMenuContent align="end" side="top" sideOffset={6} className="w-72 p-2">
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>{trigger}</DropdownMenuTrigger>
+          <DropdownMenuContent align="end" side="top" sideOffset={6} className="w-72 p-2">
           <div className="flex items-center justify-between px-1 py-1.5">
-            <div className="text-xs font-semibold text-slate-100">
+            <div className="text-xs font-semibold text-foreground">
               Context{estimated ? " (≈)" : ""}
             </div>
-            <div className="text-[11px] tabular-nums text-slate-300">
+            <div className="text-[11px] tabular-nums text-muted-foreground">
               {formatCompact(numbers.totalTokens)}
               {max ? ` / ${formatCompact(max)}` : ""}
             </div>
           </div>
 
           {max ? (
-            <div className="mb-2 mt-1 h-1.5 w-full overflow-hidden rounded-full bg-slate-700">
+            <div className="mb-2 mt-1 h-1.5 w-full overflow-hidden rounded-full bg-muted/70">
               <div
                 className={cn("h-full", barClass)}
                 style={{ width: `${barWidth}%` }}
@@ -131,15 +131,15 @@ export const ContextUsageIndicator = ({
 
           <div className="grid gap-1 px-1 text-xs">
             <div className="flex items-center justify-between">
-              <span className="text-slate-300">Input</span>
-              <span className="tabular-nums text-slate-100">
+              <span className="text-muted-foreground">Input</span>
+              <span className="tabular-nums text-foreground">
                 {formatCompact(numbers.inputTokens)}
               </span>
             </div>
 
             <div className="flex items-center justify-between">
-              <span className="text-slate-300">Output</span>
-              <span className="tabular-nums text-slate-100">
+              <span className="text-muted-foreground">Output</span>
+              <span className="tabular-nums text-foreground">
                 {formatCompact(numbers.outputTokens)}
                 {outputLimit ? ` / ${formatCompact(outputLimit)}` : ""}
               </span>
@@ -147,8 +147,8 @@ export const ContextUsageIndicator = ({
 
             {showReasoning ? (
               <div className="flex items-center justify-between">
-                <span className="text-slate-300">Reasoning</span>
-                <span className="tabular-nums text-slate-100">
+                <span className="text-muted-foreground">Reasoning</span>
+                <span className="tabular-nums text-foreground">
                   {formatCompact(numbers.reasoningTokens)}
                 </span>
               </div>
@@ -156,8 +156,8 @@ export const ContextUsageIndicator = ({
 
             {numbers.cacheReadTokens > 0 || numbers.cacheWriteTokens > 0 ? (
               <div className="flex items-center justify-between">
-                <span className="text-slate-300">Cache</span>
-                <span className="tabular-nums text-slate-100">
+                <span className="text-muted-foreground">Cache</span>
+                <span className="tabular-nums text-foreground">
                   {formatCompact(numbers.cacheReadTokens + numbers.cacheWriteTokens)}
                 </span>
               </div>
@@ -167,8 +167,8 @@ export const ContextUsageIndicator = ({
           <DropdownMenuSeparator className="my-2" />
 
           <div className="flex items-center justify-between px-1 pb-0.5 text-xs">
-            <span className="text-slate-300">Total</span>
-            <span className="tabular-nums font-semibold text-slate-100">
+            <span className="text-muted-foreground">Total</span>
+            <span className="tabular-nums font-semibold text-foreground">
               {formatCompact(numbers.totalTokens)}
             </span>
           </div>

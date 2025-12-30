@@ -1,32 +1,24 @@
-import { useMemo, type ComponentProps } from "react";
+import { useMemo } from "react";
 import { Shrink } from "lucide-react";
 
+import { ContextUsageIndicator } from "@/components/ai-elements/context";
 import { Capsule } from "@/components";
 import ChatMessages from "@/components/ChatMessages";
 import PromptInput from "@/components/PromptInput";
-import { ContextUsageIndicator } from "@/components/ai-elements/context";
-import type { AiModel } from "@/types";
+import { useChatUi } from "@/contexts/ChatUiContext";
 import { estimateLanguageModelUsageFromMessages } from "@/utils";
 
 export type ResultViewProps = {
-  capsuleProps: ComponentProps<typeof Capsule>;
-  promptProps: ComponentProps<typeof PromptInput>;
-  chatProps: ComponentProps<typeof ChatMessages>;
-  showChat: boolean;
-  modelSpec?: AiModel | null;
   errorText?: string | null;
 };
 
-export function ResultView({
-  capsuleProps,
-  promptProps,
-  chatProps,
-  showChat,
-  modelSpec = null,
-  errorText,
-}: ResultViewProps) {
+export function ResultView({ errorText }: ResultViewProps) {
+  const { capsuleProps, promptProps, chatProps, showChat, modelSpec } =
+    useChatUi();
   const isGenerating = Boolean(
-    promptProps.isConversationGenerating || promptProps.isStreaming || promptProps.isSubmitting
+    promptProps.isConversationGenerating ||
+    promptProps.isStreaming ||
+    promptProps.isSubmitting
   );
   const showStatusBar = (chatProps.messages?.length ?? 0) > 0 || isGenerating;
 

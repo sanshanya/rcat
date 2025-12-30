@@ -4,13 +4,13 @@
 //! - Remote Turso/libSQL databases via `TURSO_DATABASE_URL` / `LIBSQL_DATABASE_URL` (+ token).
 //! - Local file fallback in the app `savedata` directory (`history.db`).
 
-use std::path::PathBuf;
 use std::ops::Deref;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{future::Future, time::Duration};
 
-use libsql::{params, Builder, Database};
+use libsql::{params, Builder, Database, Value};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use uuid::Uuid;
 
@@ -20,12 +20,15 @@ use super::title;
 use super::types::{
     ConversationDetail, ConversationMessage, ConversationSummary, HistoryBootstrap,
 };
+use super::HistoryError;
 
 const APP_STATE_ACTIVE_CONVERSATION_ID: &str = "active_conversation_id";
 const HISTORY_DB_BUSY_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_POOLED_CONNECTIONS: usize = 8;
 const MAX_REMOTE_CONNECTIONS: usize = 8;
 const MAX_LOCAL_CONNECTIONS: usize = 4;
+const DEFAULT_PAGE_LIMIT: u32 = 80;
+const MAX_PAGE_LIMIT: u32 = 500;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DbMode {
@@ -107,27 +110,17 @@ fn db_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(dir.join("history.db"))
 }
 
-fn is_db_locked_error(err: &str) -> bool {
-    let lower = err.to_ascii_lowercase();
-    lower.contains("database is locked")
-        || lower.contains("sqlite failure: `database is locked`")
-        || lower.contains("sqlite_busy")
-        || lower.contains("sqlite busy")
-        || lower.contains("database is busy")
-        || lower.contains("locked")
-}
-
-async fn retry_db_locked<T, Fut, F>(mut op: F) -> Result<T, String>
+async fn retry_db_locked<T, Fut, F>(mut op: F) -> Result<T, HistoryError>
 where
     F: FnMut() -> Fut,
-    Fut: Future<Output = Result<T, String>>,
+    Fut: Future<Output = Result<T, HistoryError>>,
 {
     let mut delay = Duration::from_millis(25);
     for attempt in 0..5 {
         match op().await {
             Ok(v) => return Ok(v),
             Err(err) => {
-                if attempt >= 4 || !is_db_locked_error(&err) {
+                if attempt >= 4 || !matches!(err, HistoryError::Locked { .. }) {
                     return Err(err);
                 }
                 tokio::time::sleep(delay).await;
@@ -135,7 +128,7 @@ where
             }
         }
     }
-    Err("History DB retry exhausted".to_string())
+    Err(HistoryError::locked("History DB retry exhausted"))
 }
 
 async fn open_database(app: &tauri::AppHandle) -> Result<(Database, DbMode), String> {
@@ -190,19 +183,19 @@ impl HistoryStore {
                     conn_pool: Mutex::new(Vec::new()),
                 }),
             };
-            store.migrate().await?;
+            store.migrate().await.map_err(|e| e.to_string())?;
             Ok(store)
         })
     }
 
-    async fn connect(&self) -> Result<PooledConnection, String> {
+    async fn connect(&self) -> Result<PooledConnection, HistoryError> {
         let permit = self
             .inner
             .conn_gate
             .clone()
             .acquire_owned()
             .await
-            .map_err(|_| "History DB connection gate closed".to_string())?;
+            .map_err(|_| HistoryError::internal("History DB connection gate closed"))?;
 
         if let Ok(mut pool) = self.inner.conn_pool.lock() {
             if let Some(conn) = pool.pop() {
@@ -214,7 +207,7 @@ impl HistoryStore {
             }
         }
 
-        let conn = self.inner.db.connect().map_err(|e| e.to_string())?;
+        let conn = self.inner.db.connect()?;
 
         // Best-effort per-connection pragmas.
         // - Local mode: reduce SQLITE_BUSY + enable FK constraints.
@@ -233,7 +226,7 @@ impl HistoryStore {
         })
     }
 
-    async fn write_permit(&self) -> Result<Option<OwnedSemaphorePermit>, String> {
+    async fn write_permit(&self) -> Result<Option<OwnedSemaphorePermit>, HistoryError> {
         let Some(gate) = self.inner.write_gate.as_ref() else {
             return Ok(None);
         };
@@ -241,10 +234,10 @@ impl HistoryStore {
             .acquire_owned()
             .await
             .map(Some)
-            .map_err(|_| "History DB write gate closed".to_string())
+            .map_err(|_| HistoryError::internal("History DB write gate closed"))
     }
 
-    async fn migrate(&self) -> Result<(), String> {
+    async fn migrate(&self) -> Result<(), HistoryError> {
         let conn = self.connect().await?;
 
         // Reduce lock contention for the local SQLite file.
@@ -257,41 +250,36 @@ impl HistoryStore {
             "CREATE TABLE IF NOT EXISTS app_state (\n  key TEXT PRIMARY KEY NOT NULL,\n  value TEXT NOT NULL\n);",
             (),
         )
-        .await
-        .map_err(|e| e.to_string())?;
+        .await?;
 
         conn.execute(
             "CREATE TABLE IF NOT EXISTS conversations (\n  id TEXT PRIMARY KEY NOT NULL,\n  title TEXT NOT NULL,\n  title_auto INTEGER NOT NULL DEFAULT 0,\n  created_at_ms INTEGER NOT NULL,\n  updated_at_ms INTEGER NOT NULL,\n  last_seen_at_ms INTEGER NOT NULL,\n  archived INTEGER NOT NULL DEFAULT 0\n);",
             (),
         )
-        .await
-        .map_err(|e| e.to_string())?;
+        .await?;
 
         conn.execute(
             "CREATE TABLE IF NOT EXISTS messages (\n  id TEXT PRIMARY KEY NOT NULL,\n  conversation_id TEXT NOT NULL,\n  seq INTEGER NOT NULL,\n  role TEXT NOT NULL,\n  content TEXT NOT NULL,\n  reasoning TEXT,\n  created_at_ms INTEGER NOT NULL,\n  FOREIGN KEY(conversation_id) REFERENCES conversations(id) ON DELETE CASCADE\n);",
             (),
         )
-        .await
-        .map_err(|e| e.to_string())?;
+        .await?;
 
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_messages_conversation_seq ON messages(conversation_id, seq);",
             (),
         )
-        .await
-        .map_err(|e| e.to_string())?;
+        .await?;
 
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_conversations_updated ON conversations(updated_at_ms);",
             (),
         )
-        .await
-        .map_err(|e| e.to_string())?;
+        .await?;
 
         Ok(())
     }
 
-    pub(crate) async fn bootstrap(&self) -> Result<HistoryBootstrap, String> {
+    pub(crate) async fn bootstrap(&self) -> Result<HistoryBootstrap, HistoryError> {
         let active_id = match self.get_active_conversation_id().await? {
             Some(id) if self.conversation_exists(&id).await? => id,
             _ => self.create_conversation(None, true).await?.id,
@@ -305,27 +293,30 @@ impl HistoryStore {
         })
     }
 
-    pub(crate) async fn list_conversations(&self) -> Result<Vec<ConversationSummary>, String> {
+    pub(crate) async fn list_conversations(
+        &self,
+    ) -> Result<Vec<ConversationSummary>, HistoryError> {
         let conn = self.connect().await?;
         let active_id = self.get_active_conversation_id_from_conn(&conn).await?;
 
         let mut rows = conn
             .query(
-                "SELECT c.id, c.title, c.title_auto, c.created_at_ms, c.updated_at_ms, c.last_seen_at_ms,\n        COALESCE(COUNT(m.id), 0)\n   FROM conversations c\n   LEFT JOIN messages m ON m.conversation_id = c.id\n  WHERE c.archived = 0\n  GROUP BY c.id\n  ORDER BY c.updated_at_ms DESC\n  LIMIT 50;",
+                "SELECT c.id, c.title, c.title_auto, c.created_at_ms, c.updated_at_ms, c.last_seen_at_ms,\n        COALESCE(MAX(m.seq), 0)\n   FROM conversations c\n   LEFT JOIN messages m ON m.conversation_id = c.id\n  WHERE c.archived = 0\n  GROUP BY c.id\n  ORDER BY c.updated_at_ms DESC\n  LIMIT 50;",
                 (),
             )
-            .await
-            .map_err(|e| e.to_string())?;
+            .await?;
 
         let mut out = Vec::new();
-        while let Some(row) = rows.next().await.map_err(|e| e.to_string())? {
-            let id: String = row.get(0).map_err(|e| e.to_string())?;
-            let title: String = row.get(1).map_err(|e| e.to_string())?;
-            let title_auto_i: i64 = row.get(2).map_err(|e| e.to_string())?;
-            let created_at_ms: i64 = row.get(3).map_err(|e| e.to_string())?;
-            let updated_at_ms: i64 = row.get(4).map_err(|e| e.to_string())?;
-            let last_seen_at_ms: i64 = row.get(5).map_err(|e| e.to_string())?;
-            let message_count: i64 = row.get(6).map_err(|e| e.to_string())?;
+        while let Some(row) = rows.next().await? {
+            let id: String = row.get(0)?;
+            let title: String = row.get(1)?;
+            let title_auto_i: i64 = row.get(2)?;
+            let created_at_ms: i64 = row.get(3)?;
+            let updated_at_ms: i64 = row.get(4)?;
+            let last_seen_at_ms: i64 = row.get(5)?;
+            // Note: we use MAX(seq) as a cheap proxy for message count.
+            // Seq is 1-based and contiguous under normal operations (append + tail truncation).
+            let max_seq: i64 = row.get(6)?;
 
             let has_unseen = updated_at_ms > last_seen_at_ms;
             let is_active = active_id.as_deref() == Some(id.as_str());
@@ -333,11 +324,11 @@ impl HistoryStore {
             out.push(ConversationSummary {
                 id,
                 title,
-                title_auto: title_auto_i != 0,
+                title_auto: title_auto_i == 1,
                 created_at_ms: created_at_ms.max(0) as u64,
                 updated_at_ms: updated_at_ms.max(0) as u64,
                 last_seen_at_ms: last_seen_at_ms.max(0) as u64,
-                message_count: message_count.max(0) as u32,
+                message_count: max_seq.max(0) as u32,
                 has_unseen,
                 is_active,
             });
@@ -349,47 +340,48 @@ impl HistoryStore {
     pub(crate) async fn get_conversation(
         &self,
         conversation_id: &str,
-    ) -> Result<ConversationDetail, String> {
+    ) -> Result<ConversationDetail, HistoryError> {
         let conn = self.connect().await?;
         let active_id = self.get_active_conversation_id_from_conn(&conn).await?;
 
         let mut conv_rows = conn
             .query(
-                "SELECT id, title, title_auto, created_at_ms, updated_at_ms, last_seen_at_ms\n   FROM conversations\n  WHERE id = ?1 AND archived = 0\n  LIMIT 1;",
+                "SELECT id, title, title_auto, created_at_ms, updated_at_ms, last_seen_at_ms, archived\n   FROM conversations\n  WHERE id = ?1\n  LIMIT 1;",
                 params![conversation_id],
             )
-            .await
-            .map_err(|e| e.to_string())?;
+            .await?;
 
         let conv_row = conv_rows
             .next()
-            .await
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| "Conversation not found".to_string())?;
+            .await?
+            .ok_or_else(|| HistoryError::not_found("Conversation not found"))?;
 
-        let id: String = conv_row.get(0).map_err(|e| e.to_string())?;
-        let title_str: String = conv_row.get(1).map_err(|e| e.to_string())?;
-        let title_auto_i: i64 = conv_row.get(2).map_err(|e| e.to_string())?;
-        let created_at_ms: i64 = conv_row.get(3).map_err(|e| e.to_string())?;
-        let updated_at_ms: i64 = conv_row.get(4).map_err(|e| e.to_string())?;
-        let last_seen_at_ms: i64 = conv_row.get(5).map_err(|e| e.to_string())?;
+        let id: String = conv_row.get(0)?;
+        let title_str: String = conv_row.get(1)?;
+        let title_auto_i: i64 = conv_row.get(2)?;
+        let created_at_ms: i64 = conv_row.get(3)?;
+        let updated_at_ms: i64 = conv_row.get(4)?;
+        let last_seen_at_ms: i64 = conv_row.get(5)?;
+        let archived: i64 = conv_row.get(6)?;
+        if archived != 0 {
+            return Err(HistoryError::archived("Conversation is archived"));
+        }
 
         let mut msg_rows = conn
             .query(
                 "SELECT id, seq, role, content, reasoning, created_at_ms\n   FROM messages\n  WHERE conversation_id = ?1\n  ORDER BY seq ASC;",
                 params![conversation_id],
             )
-            .await
-            .map_err(|e| e.to_string())?;
+            .await?;
 
         let mut messages = Vec::new();
-        while let Some(row) = msg_rows.next().await.map_err(|e| e.to_string())? {
-            let id: String = row.get(0).map_err(|e| e.to_string())?;
-            let seq: i64 = row.get(1).map_err(|e| e.to_string())?;
-            let role: String = row.get(2).map_err(|e| e.to_string())?;
-            let content: String = row.get(3).map_err(|e| e.to_string())?;
+        while let Some(row) = msg_rows.next().await? {
+            let id: String = row.get(0)?;
+            let seq: i64 = row.get(1)?;
+            let role: String = row.get(2)?;
+            let content: String = row.get(3)?;
             let reasoning: Option<String> = row.get(4).ok();
-            let created_at_ms: i64 = row.get(5).map_err(|e| e.to_string())?;
+            let created_at_ms: i64 = row.get(5)?;
 
             messages.push(ConversationMessage {
                 id,
@@ -410,7 +402,7 @@ impl HistoryStore {
             conversation: ConversationSummary {
                 id,
                 title: title_str,
-                title_auto: title_auto_i != 0,
+                title_auto: title_auto_i == 1,
                 created_at_ms: created_at_ms.max(0) as u64,
                 updated_at_ms: updated_at_ms.max(0) as u64,
                 last_seen_at_ms: last_seen_at_ms.max(0) as u64,
@@ -422,11 +414,115 @@ impl HistoryStore {
         })
     }
 
+    pub(crate) async fn get_conversation_page(
+        &self,
+        conversation_id: &str,
+        before_seq: Option<u32>,
+        limit: Option<u32>,
+    ) -> Result<ConversationDetail, HistoryError> {
+        let conn = self.connect().await?;
+        let active_id = self.get_active_conversation_id_from_conn(&conn).await?;
+
+        let mut conv_rows = conn
+            .query(
+                "SELECT id, title, title_auto, created_at_ms, updated_at_ms, last_seen_at_ms, archived\n   FROM conversations\n  WHERE id = ?1\n  LIMIT 1;",
+                params![conversation_id],
+            )
+            .await?;
+
+        let conv_row = conv_rows
+            .next()
+            .await?
+            .ok_or_else(|| HistoryError::not_found("Conversation not found"))?;
+
+        let id: String = conv_row.get(0)?;
+        let title_str: String = conv_row.get(1)?;
+        let title_auto_i: i64 = conv_row.get(2)?;
+        let created_at_ms: i64 = conv_row.get(3)?;
+        let updated_at_ms: i64 = conv_row.get(4)?;
+        let last_seen_at_ms: i64 = conv_row.get(5)?;
+        let archived: i64 = conv_row.get(6)?;
+        if archived != 0 {
+            return Err(HistoryError::archived("Conversation is archived"));
+        }
+
+        let page_limit = limit.unwrap_or(DEFAULT_PAGE_LIMIT).clamp(1, MAX_PAGE_LIMIT) as i64;
+
+        let mut msg_rows = match before_seq {
+            Some(before_seq) if before_seq > 0 => {
+                conn.query(
+                    "SELECT id, seq, role, content, reasoning, created_at_ms\n   FROM messages\n  WHERE conversation_id = ?1 AND seq < ?2\n  ORDER BY seq DESC\n  LIMIT ?3;",
+                    params![conversation_id, before_seq as i64, page_limit],
+                )
+                .await?
+            }
+            _ => {
+                conn.query(
+                    "SELECT id, seq, role, content, reasoning, created_at_ms\n   FROM messages\n  WHERE conversation_id = ?1\n  ORDER BY seq DESC\n  LIMIT ?2;",
+                    params![conversation_id, page_limit],
+                )
+                .await?
+            }
+        };
+
+        let mut messages_desc = Vec::new();
+        while let Some(row) = msg_rows.next().await? {
+            let id: String = row.get(0)?;
+            let seq: i64 = row.get(1)?;
+            let role: String = row.get(2)?;
+            let content: String = row.get(3)?;
+            let reasoning: Option<String> = row.get(4).ok();
+            let created_at_ms: i64 = row.get(5)?;
+
+            messages_desc.push(ConversationMessage {
+                id,
+                conversation_id: conversation_id.to_string(),
+                seq: seq.max(0) as u32,
+                role,
+                content,
+                reasoning,
+                created_at_ms: created_at_ms.max(0) as u64,
+            });
+        }
+        messages_desc.reverse();
+
+        let mut count_rows = conn
+            .query(
+                "SELECT COALESCE(MAX(seq), 0) FROM messages WHERE conversation_id = ?1;",
+                params![conversation_id],
+            )
+            .await?;
+        let max_seq: u32 = count_rows
+            .next()
+            .await?
+            .and_then(|row| row.get::<i64>(0).ok())
+            .unwrap_or(0)
+            .max(0) as u32;
+
+        let has_unseen = updated_at_ms > last_seen_at_ms;
+        let is_active = active_id.as_deref() == Some(conversation_id);
+
+        Ok(ConversationDetail {
+            conversation: ConversationSummary {
+                id,
+                title: title_str,
+                title_auto: title_auto_i == 1,
+                created_at_ms: created_at_ms.max(0) as u64,
+                updated_at_ms: updated_at_ms.max(0) as u64,
+                last_seen_at_ms: last_seen_at_ms.max(0) as u64,
+                message_count: max_seq,
+                has_unseen,
+                is_active,
+            },
+            messages: messages_desc,
+        })
+    }
+
     pub(crate) async fn create_conversation(
         &self,
         title: Option<String>,
         set_active: bool,
-    ) -> Result<ConversationSummary, String> {
+    ) -> Result<ConversationSummary, HistoryError> {
         let id = new_id("conv");
         let now = now_ms() as i64;
         let title = title
@@ -438,25 +534,23 @@ impl HistoryStore {
         retry_db_locked(|| async {
             let _write = self.write_permit().await?;
             let conn = self.connect().await?;
-            let tx = conn.transaction().await.map_err(|e| e.to_string())?;
+            let tx = conn.transaction().await?;
 
             tx.execute(
                 "INSERT INTO conversations (id, title, title_auto, created_at_ms, updated_at_ms, last_seen_at_ms, archived)\nVALUES (?1, ?2, 0, ?3, ?3, ?3, 0);",
                 params![id.as_str(), title.as_str(), now],
             )
-            .await
-            .map_err(|e| e.to_string())?;
+            .await?;
 
             if set_active {
                 tx.execute(
                     "INSERT INTO app_state (key, value) VALUES (?1, ?2)\nON CONFLICT(key) DO UPDATE SET value = excluded.value;",
                     params![APP_STATE_ACTIVE_CONVERSATION_ID, id.as_str()],
                 )
-                .await
-                .map_err(|e| e.to_string())?;
+                .await?;
             }
 
-            tx.commit().await.map_err(|e| e.to_string())?;
+            tx.commit().await?;
 
             Ok(ConversationSummary {
                 id: id.clone(),
@@ -473,12 +567,130 @@ impl HistoryStore {
         .await
     }
 
+    pub(crate) async fn fork_conversation(
+        &self,
+        source_conversation_id: &str,
+        upto_seq: Option<u32>,
+        set_active: bool,
+    ) -> Result<ConversationSummary, HistoryError> {
+        let source_conversation_id = source_conversation_id.trim().to_string();
+        if source_conversation_id.is_empty() {
+            return Err(HistoryError::invalid_input("conversationId is required"));
+        }
+
+        let id = new_id("conv");
+        let now = now_ms() as i64;
+        let upto_seq = upto_seq.map(|v| v as i64);
+
+        retry_db_locked(|| {
+            let source_conversation_id = source_conversation_id.clone();
+            let id = id.clone();
+            async move {
+                let _write = self.write_permit().await?;
+                let conn = self.connect().await?;
+
+                let mut src_rows = conn
+                    .query(
+                        "SELECT title, archived FROM conversations WHERE id = ?1 LIMIT 1;",
+                        params![source_conversation_id.as_str()],
+                    )
+                    .await?;
+                let Some(row) = src_rows.next().await? else {
+                    return Err(HistoryError::not_found("Conversation not found"));
+                };
+
+                let src_title: String = row.get(0)?;
+                let archived: i64 = row.get(1)?;
+                if archived != 0 {
+                    return Err(HistoryError::archived("Conversation is archived"));
+                }
+
+                let src_title = src_title.trim();
+                let new_title = if src_title.is_empty() || src_title == "新对话" {
+                    "分支对话".to_string()
+                } else {
+                    format!("{} (分支)", src_title)
+                };
+
+                let seq_limit = match upto_seq {
+                    Some(v) => v.max(0),
+                    None => {
+                        let mut max_rows = conn
+                            .query(
+                                "SELECT COALESCE(MAX(seq), 0) FROM messages WHERE conversation_id = ?1;",
+                                params![source_conversation_id.as_str()],
+                            )
+                            .await?;
+                        max_rows
+                            .next()
+                            .await
+                            ?
+                            .map(|r| r.get::<i64>(0).unwrap_or(0))
+                            .unwrap_or(0)
+                            .max(0)
+                    }
+                };
+
+                let tx = conn.transaction().await?;
+                tx.execute(
+                    "INSERT INTO conversations (id, title, title_auto, created_at_ms, updated_at_ms, last_seen_at_ms, archived)\nVALUES (?1, ?2, 0, ?3, ?3, ?3, 0);",
+                    params![id.as_str(), new_title.as_str(), now],
+                )
+                .await?;
+
+                if set_active {
+                    tx.execute(
+                        "INSERT INTO app_state (key, value) VALUES (?1, ?2)\nON CONFLICT(key) DO UPDATE SET value = excluded.value;",
+                        params![APP_STATE_ACTIVE_CONVERSATION_ID, id.as_str()],
+                    )
+                    .await?;
+                }
+
+                if seq_limit > 0 {
+                    tx.execute(
+                        "INSERT INTO messages (id, conversation_id, seq, role, content, reasoning, created_at_ms)\nSELECT (?1 || ':' || seq) AS id,\n       ?1 AS conversation_id,\n       seq,\n       role,\n       content,\n       reasoning,\n       created_at_ms\n  FROM messages\n WHERE conversation_id = ?2 AND seq <= ?3\n ORDER BY seq ASC;",
+                        params![id.as_str(), source_conversation_id.as_str(), seq_limit],
+                    )
+                    .await?;
+                }
+
+                let mut count_rows = tx
+                    .query(
+                        "SELECT COALESCE(COUNT(id), 0) FROM messages WHERE conversation_id = ?1;",
+                        params![id.as_str()],
+                    )
+                    .await?;
+                let message_count: i64 = count_rows
+                    .next()
+                    .await
+                    ?
+                    .map(|r| r.get::<i64>(0).unwrap_or(0))
+                    .unwrap_or(0);
+
+                tx.commit().await?;
+
+                Ok(ConversationSummary {
+                    id: id.clone(),
+                    title: new_title,
+                    title_auto: false,
+                    created_at_ms: now.max(0) as u64,
+                    updated_at_ms: now.max(0) as u64,
+                    last_seen_at_ms: now.max(0) as u64,
+                    message_count: message_count.max(0) as u32,
+                    has_unseen: false,
+                    is_active: set_active,
+                })
+            }
+        })
+        .await
+    }
+
     pub(crate) async fn set_active_conversation_id(
         &self,
         conversation_id: &str,
-    ) -> Result<(), String> {
+    ) -> Result<(), HistoryError> {
         if !self.conversation_exists(conversation_id).await? {
-            return Err("Conversation not found".to_string());
+            return Err(HistoryError::not_found("Conversation not found"));
         }
 
         retry_db_locked(|| async {
@@ -488,14 +700,13 @@ impl HistoryStore {
                 "INSERT INTO app_state (key, value) VALUES (?1, ?2)\nON CONFLICT(key) DO UPDATE SET value = excluded.value;",
                 params![APP_STATE_ACTIVE_CONVERSATION_ID, conversation_id],
             )
-            .await
-            .map_err(|e| e.to_string())?;
+            .await?;
             Ok(())
         })
         .await
     }
 
-    pub(crate) async fn mark_seen(&self, conversation_id: &str) -> Result<(), String> {
+    pub(crate) async fn mark_seen(&self, conversation_id: &str) -> Result<(), HistoryError> {
         retry_db_locked(|| async {
             let _write = self.write_permit().await?;
             let conn = self.connect().await?;
@@ -503,36 +714,56 @@ impl HistoryStore {
                 "UPDATE conversations SET last_seen_at_ms = updated_at_ms WHERE id = ?1;",
                 params![conversation_id],
             )
-            .await
-            .map_err(|e| e.to_string())?;
+            .await?;
             Ok(())
         })
         .await
     }
 
-    #[allow(dead_code)]
     pub(crate) async fn rename_conversation(
         &self,
         conversation_id: &str,
         title: &str,
-    ) -> Result<(), String> {
-        let title = title.trim();
-        if title.is_empty() {
-            return Err("Title is empty".to_string());
+    ) -> Result<(), HistoryError> {
+        let conversation_id = conversation_id.trim();
+        if conversation_id.is_empty() {
+            return Err(HistoryError::invalid_input("conversationId is required"));
         }
 
-        let _write = self.write_permit().await?;
-        let conn = self.connect().await?;
-        conn.execute(
-            "UPDATE conversations SET title = ?2, title_auto = 0, updated_at_ms = updated_at_ms WHERE id = ?1;",
-            params![conversation_id, title],
-        )
+        let title = title.lines().next().unwrap_or(title).trim();
+        if title.is_empty() {
+            return Err(HistoryError::invalid_input("Title is empty"));
+        }
+
+        retry_db_locked(|| async {
+            let _write = self.write_permit().await?;
+            let conn = self.connect().await?;
+
+            let mut rows = conn
+                .query(
+                    "SELECT archived FROM conversations WHERE id = ?1 LIMIT 1;",
+                    params![conversation_id],
+                )
+                .await?;
+            let Some(row) = rows.next().await? else {
+                return Err(HistoryError::not_found("Conversation not found"));
+            };
+            let archived: i64 = row.get(0)?;
+            if archived != 0 {
+                return Err(HistoryError::archived("Conversation is archived"));
+            }
+
+            conn.execute(
+                "UPDATE conversations SET title = ?2, title_auto = 2 WHERE id = ?1;",
+                params![conversation_id, title],
+            )
+            .await?;
+            Ok(())
+        })
         .await
-        .map_err(|e| e.to_string())?;
-        Ok(())
     }
 
-    pub(crate) async fn clear_messages(&self, conversation_id: &str) -> Result<(), String> {
+    pub(crate) async fn clear_messages(&self, conversation_id: &str) -> Result<(), HistoryError> {
         retry_db_locked(|| async {
             let _write = self.write_permit().await?;
             let conn = self.connect().await?;
@@ -540,16 +771,14 @@ impl HistoryStore {
                 "DELETE FROM messages WHERE conversation_id = ?1;",
                 params![conversation_id],
             )
-            .await
-            .map_err(|e| e.to_string())?;
+            .await?;
 
             let now = now_ms() as i64;
             conn.execute(
                 "UPDATE conversations SET updated_at_ms = ?2, last_seen_at_ms = ?2 WHERE id = ?1;",
                 params![conversation_id, now],
             )
-            .await
-            .map_err(|e| e.to_string())?;
+            .await?;
             Ok(())
         })
         .await
@@ -558,7 +787,7 @@ impl HistoryStore {
     pub(crate) async fn delete_conversation(
         &self,
         conversation_id: &str,
-    ) -> Result<HistoryBootstrap, String> {
+    ) -> Result<HistoryBootstrap, HistoryError> {
         let active_conversation_id = retry_db_locked(|| async {
             let _write = self.write_permit().await?;
             let conn = self.connect().await?;
@@ -568,15 +797,9 @@ impl HistoryStore {
                     "SELECT 1 FROM conversations WHERE id = ?1 AND archived = 0 LIMIT 1;",
                     params![conversation_id],
                 )
-                .await
-                .map_err(|e| e.to_string())?;
-            if exists_rows
-                .next()
-                .await
-                .map_err(|e| e.to_string())?
-                .is_none()
-            {
-                return Err("Conversation not found".to_string());
+                .await?;
+            if exists_rows.next().await?.is_none() {
+                return Err(HistoryError::not_found("Conversation not found"));
             }
 
             let mut active_rows = conn
@@ -584,12 +807,10 @@ impl HistoryStore {
                     "SELECT value FROM app_state WHERE key = ?1 LIMIT 1;",
                     params![APP_STATE_ACTIVE_CONVERSATION_ID],
                 )
-                .await
-                .map_err(|e| e.to_string())?;
+                .await?;
             let mut active_id = active_rows
                 .next()
-                .await
-                .map_err(|e| e.to_string())?
+                .await?
                 .and_then(|row| row.get::<String>(0).ok())
                 .filter(|id| !id.trim().is_empty());
 
@@ -600,14 +821,8 @@ impl HistoryStore {
                         "SELECT 1 FROM conversations WHERE id = ?1 AND archived = 0 LIMIT 1;",
                         params![id],
                     )
-                    .await
-                    .map_err(|e| e.to_string())?;
-                if valid_rows
-                    .next()
-                    .await
-                    .map_err(|e| e.to_string())?
-                    .is_none()
-                {
+                    .await?;
+                if valid_rows.next().await?.is_none() {
                     active_id = None;
                 }
             }
@@ -616,13 +831,12 @@ impl HistoryStore {
                 active_id.as_deref() == Some(conversation_id) || active_id.is_none();
 
             let now = now_ms() as i64;
-            let tx = conn.transaction().await.map_err(|e| e.to_string())?;
+            let tx = conn.transaction().await?;
             tx.execute(
                 "UPDATE conversations SET archived = 1 WHERE id = ?1;",
                 params![conversation_id],
             )
-            .await
-            .map_err(|e| e.to_string())?;
+            .await?;
 
             let next_active_id = if needs_new_active {
                 let mut next_rows = tx
@@ -630,13 +844,11 @@ impl HistoryStore {
                         "SELECT id FROM conversations WHERE archived = 0 AND id <> ?1 ORDER BY updated_at_ms DESC LIMIT 1;",
                         params![conversation_id],
                     )
-                    .await
-                    .map_err(|e| e.to_string())?;
+                    .await?;
 
                 let next_id = next_rows
                     .next()
-                    .await
-                    .map_err(|e| e.to_string())?
+                    .await?
                     .and_then(|row| row.get::<String>(0).ok())
                     .filter(|id| !id.trim().is_empty());
 
@@ -648,8 +860,7 @@ impl HistoryStore {
                         "INSERT INTO conversations (id, title, title_auto, created_at_ms, updated_at_ms, last_seen_at_ms, archived)\nVALUES (?1, '新对话', 0, ?2, ?2, ?2, 0);",
                         params![id.as_str(), now],
                     )
-                    .await
-                    .map_err(|e| e.to_string())?;
+                    .await?;
                     id
                 }
             } else {
@@ -661,11 +872,10 @@ impl HistoryStore {
                     "INSERT INTO app_state (key, value) VALUES (?1, ?2)\nON CONFLICT(key) DO UPDATE SET value = excluded.value;",
                     params![APP_STATE_ACTIVE_CONVERSATION_ID, next_active_id.as_str()],
                 )
-                .await
-                .map_err(|e| e.to_string())?;
+                .await?;
             }
 
-            tx.commit().await.map_err(|e| e.to_string())?;
+            tx.commit().await?;
             Ok(next_active_id)
         })
         .await?;
@@ -681,7 +891,8 @@ impl HistoryStore {
         &self,
         conversation_id: &str,
         messages: &[ChatMessage],
-    ) -> Result<(), String> {
+        truncate_after_seq: Option<u32>,
+    ) -> Result<(), HistoryError> {
         retry_db_locked(|| async {
             let _write = self.write_permit().await?;
             let conn = self.connect().await?;
@@ -692,12 +903,11 @@ impl HistoryStore {
                     "SELECT archived FROM conversations WHERE id = ?1 LIMIT 1;",
                     params![conversation_id],
                 )
-                .await
-                .map_err(|e| e.to_string())?;
-            if let Some(row) = meta_rows.next().await.map_err(|e| e.to_string())? {
-                let archived: i64 = row.get(0).map_err(|e| e.to_string())?;
+                .await?;
+            if let Some(row) = meta_rows.next().await? {
+                let archived: i64 = row.get(0)?;
                 if archived != 0 {
-                    return Err("Conversation is archived".to_string());
+                    return Err(HistoryError::archived("Conversation is archived"));
                 }
             }
 
@@ -706,45 +916,114 @@ impl HistoryStore {
                 "INSERT OR IGNORE INTO conversations (id, title, title_auto, created_at_ms, updated_at_ms, last_seen_at_ms, archived)\nVALUES (?1, '新对话', 0, ?2, ?2, ?2, 0);",
                 params![conversation_id, now],
             )
-            .await
-            .map_err(|e| e.to_string())?;
+            .await?;
 
-            let tx = conn.transaction().await.map_err(|e| e.to_string())?;
+            let tx = conn.transaction().await?;
             let non_system: Vec<&ChatMessage> =
                 messages.iter().filter(|m| m.role != "system").collect();
-            let desired_len = non_system.len() as i64;
+            let all_have_seq = non_system.iter().all(|m| m.seq.is_some());
 
-            // Truncate any messages past the provided history (supports edit/regenerate flows).
-            tx.execute(
-                "DELETE FROM messages WHERE conversation_id = ?1 AND seq > ?2;",
-                params![conversation_id, desired_len],
-            )
-            .await
-            .map_err(|e| e.to_string())?;
+            if all_have_seq {
+                if let Some(truncate_after_seq) = truncate_after_seq {
+                    tx.execute(
+                        "DELETE FROM messages WHERE conversation_id = ?1 AND seq > ?2;",
+                        params![conversation_id, truncate_after_seq as i64],
+                    )
+                    .await?;
+                }
+            } else {
+                let desired_len = non_system.len() as i64;
+                tx.execute(
+                    "DELETE FROM messages WHERE conversation_id = ?1 AND seq > ?2;",
+                    params![conversation_id, desired_len],
+                )
+                .await?;
+            }
 
             // Upsert messages by stable (conversation_id:seq) key.
-            for (idx, m) in non_system.iter().enumerate() {
-                let seq = (idx + 1) as i64;
-                let id = format!("{conversation_id}:{seq}");
-                tx.execute(
-                    "INSERT INTO messages (id, conversation_id, seq, role, content, reasoning, created_at_ms)\nVALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6)\nON CONFLICT(id) DO UPDATE SET\n  role = excluded.role,\n  content = excluded.content,\n  reasoning = CASE\n    WHEN excluded.role = 'assistant' THEN COALESCE(messages.reasoning, excluded.reasoning)\n    ELSE NULL\n  END;",
-                    params![id.as_str(), conversation_id, seq, m.role.as_str(), m.content.as_str(), now],
-                )
-                .await
-                .map_err(|e| e.to_string())?;
+            // Batch insert to reduce remote RTT (important for Turso/libSQL remote mode).
+            const UPSERT_CHUNK_SIZE: usize = 120;
+            let mut to_upsert: Vec<(i64, &ChatMessage)> = if all_have_seq {
+                let mut items: Vec<(i64, &ChatMessage)> = non_system
+                    .iter()
+                    .filter_map(|m| m.seq.map(|seq| (seq as i64, *m)))
+                    .collect();
+                items.sort_by_key(|(seq, _)| *seq);
+                // Deduplicate by seq, keep last write from the frontend.
+                items.reverse();
+                items.dedup_by(|a, b| a.0 == b.0);
+                items.reverse();
+                items
+            } else {
+                non_system
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, m)| ((idx + 1) as i64, *m))
+                    .collect()
+            };
+
+            // Defensive: ignore invalid seq values.
+            to_upsert.retain(|(seq, _)| *seq > 0);
+
+            for chunk_start in (0..to_upsert.len()).step_by(UPSERT_CHUNK_SIZE) {
+                let chunk_end = (chunk_start + UPSERT_CHUNK_SIZE).min(to_upsert.len());
+                let chunk = &to_upsert[chunk_start..chunk_end];
+
+                let mut sql = String::from(
+                    "INSERT INTO messages (id, conversation_id, seq, role, content, reasoning, created_at_ms)\nVALUES ",
+                );
+                let mut params: Vec<Value> = Vec::with_capacity(chunk.len() * 6);
+
+                for (seq, m) in chunk.iter() {
+                    let seq = *seq;
+                    let id = format!("{conversation_id}:{seq}");
+
+                    if !params.is_empty() {
+                        sql.push(',');
+                    }
+                    let p = params.len();
+                    sql.push_str(&format!(
+                        "(?{}, ?{}, ?{}, ?{}, ?{}, NULL, ?{})",
+                        p + 1,
+                        p + 2,
+                        p + 3,
+                        p + 4,
+                        p + 5,
+                        p + 6
+                    ));
+
+                    params.push(Value::from(id));
+                    params.push(Value::from(conversation_id));
+                    params.push(Value::from(seq));
+                    params.push(Value::from(m.role.as_str()));
+                    params.push(Value::from(m.content.as_str()));
+                    params.push(Value::from(now));
+                }
+
+                sql.push_str(
+                    "\nON CONFLICT(id) DO UPDATE SET\n  role = excluded.role,\n  content = excluded.content,\n  reasoning = CASE\n    WHEN excluded.role = 'assistant' THEN COALESCE(messages.reasoning, excluded.reasoning)\n    ELSE NULL\n  END;",
+                );
+
+                tx.execute(&sql, params).await?;
             }
 
             tx.execute(
                 "UPDATE conversations SET updated_at_ms = ?2 WHERE id = ?1;",
                 params![conversation_id, now],
             )
-            .await
-            .map_err(|e| e.to_string())?;
+            .await?;
 
-            tx.commit().await.map_err(|e| e.to_string())?;
+            tx.commit().await?;
 
             // Set title to the first user prompt when the conversation is still placeholder.
-            if let Some(first_user) = messages.iter().find(|m| m.role == "user") {
+            let first_user = if all_have_seq {
+                messages
+                    .iter()
+                    .find(|m| m.role == "user" && m.seq == Some(1))
+            } else {
+                messages.iter().find(|m| m.role == "user")
+            };
+            if let Some(first_user) = first_user {
                 self.maybe_set_title_from_first_user_with_conn(
                     &conn,
                     conversation_id,
@@ -763,7 +1042,7 @@ impl HistoryStore {
         conversation_id: &str,
         content: String,
         reasoning: Option<String>,
-    ) -> Result<(), String> {
+    ) -> Result<(), HistoryError> {
         let conversation_id = conversation_id.to_string();
         retry_db_locked(|| {
             let conversation_id = conversation_id.clone();
@@ -773,21 +1052,20 @@ impl HistoryStore {
                 let _write = self.write_permit().await?;
                 let conn = self.connect().await?;
 
-                let tx = conn.transaction().await.map_err(|e| e.to_string())?;
+                let tx = conn.transaction().await?;
 
                 let mut meta_rows = tx
                     .query(
                         "SELECT archived FROM conversations WHERE id = ?1 LIMIT 1;",
                         params![conversation_id.as_str()],
                     )
-                    .await
-                    .map_err(|e| e.to_string())?;
-                let Some(meta) = meta_rows.next().await.map_err(|e| e.to_string())? else {
-                    return Err("Conversation not found".to_string());
+                    .await?;
+                let Some(meta) = meta_rows.next().await? else {
+                    return Err(HistoryError::not_found("Conversation not found"));
                 };
-                let archived: i64 = meta.get(0).map_err(|e| e.to_string())?;
+                let archived: i64 = meta.get(0)?;
                 if archived != 0 {
-                    return Err("Conversation is archived".to_string());
+                    return Err(HistoryError::archived("Conversation is archived"));
                 }
 
                 let now = now_ms() as i64;
@@ -795,17 +1073,15 @@ impl HistoryStore {
                     "WITH next(seq) AS (\n  SELECT COALESCE(MAX(seq), 0) + 1\n    FROM messages\n   WHERE conversation_id = ?1\n)\nINSERT INTO messages (id, conversation_id, seq, role, content, reasoning, created_at_ms)\nSELECT ?1 || ':' || next.seq, ?1, next.seq, 'assistant', ?2, ?3, ?4\n  FROM next;",
                     params![conversation_id.as_str(), content, reasoning, now],
                 )
-                .await
-                .map_err(|e| e.to_string())?;
+                .await?;
 
                 tx.execute(
                     "UPDATE conversations SET updated_at_ms = ?2 WHERE id = ?1;",
                     params![conversation_id.as_str(), now],
                 )
-                .await
-                .map_err(|e| e.to_string())?;
+                .await?;
 
-                tx.commit().await.map_err(|e| e.to_string())?;
+                tx.commit().await?;
                 Ok(())
             }
         })
@@ -820,20 +1096,19 @@ impl HistoryStore {
         conn: &libsql::Connection,
         conversation_id: &str,
         content: &str,
-    ) -> Result<(), String> {
+    ) -> Result<(), HistoryError> {
         let mut rows = conn
             .query(
                 "SELECT title, title_auto FROM conversations WHERE id = ?1 LIMIT 1;",
                 params![conversation_id],
             )
-            .await
-            .map_err(|e| e.to_string())?;
-        let Some(row) = rows.next().await.map_err(|e| e.to_string())? else {
+            .await?;
+        let Some(row) = rows.next().await? else {
             return Ok(());
         };
 
-        let title_current: String = row.get(0).map_err(|e| e.to_string())?;
-        let title_auto_i: i64 = row.get(1).map_err(|e| e.to_string())?;
+        let title_current: String = row.get(0)?;
+        let title_auto_i: i64 = row.get(1)?;
         let is_placeholder =
             title_auto_i == 0 && (title_current.trim().is_empty() || title_current == "新对话");
         if !is_placeholder {
@@ -849,8 +1124,7 @@ impl HistoryStore {
             "UPDATE conversations SET title = ?2, title_auto = 0 WHERE id = ?1;",
             params![conversation_id, next_title],
         )
-        .await
-        .map_err(|e| e.to_string())?;
+        .await?;
         Ok(())
     }
 
@@ -868,7 +1142,10 @@ impl HistoryStore {
         });
     }
 
-    async fn generate_and_set_title_if_needed(&self, conversation_id: &str) -> Result<(), String> {
+    async fn generate_and_set_title_if_needed(
+        &self,
+        conversation_id: &str,
+    ) -> Result<(), HistoryError> {
         // Important: do not hold a DB connection while calling the AI model for title generation
         // (network-bound). That would reduce DB concurrency and can amplify lock contention in
         // local mode.
@@ -880,14 +1157,13 @@ impl HistoryStore {
                     "SELECT title_auto FROM conversations WHERE id = ?1 LIMIT 1;",
                     params![conversation_id],
                 )
-                .await
-                .map_err(|e| e.to_string())?;
-            let Some(meta) = meta_rows.next().await.map_err(|e| e.to_string())? else {
-                return Err("Conversation not found".to_string());
+                .await?;
+            let Some(meta) = meta_rows.next().await? else {
+                return Err(HistoryError::not_found("Conversation not found"));
             };
-            let title_auto_i: i64 = meta.get(0).map_err(|e| e.to_string())?;
+            let title_auto_i: i64 = meta.get(0)?;
             if title_auto_i != 0 {
-                return Err("Title already auto-generated".to_string());
+                return Err(HistoryError::internal("Title already set"));
             }
 
             let mut count_rows = conn
@@ -895,17 +1171,17 @@ impl HistoryStore {
                     "SELECT COALESCE(SUM(CASE WHEN role='user' THEN 1 ELSE 0 END), 0) FROM messages WHERE conversation_id = ?1;",
                     params![conversation_id],
                 )
-                .await
-                .map_err(|e| e.to_string())?;
+                .await?;
             let user_count: i64 = count_rows
                 .next()
-                .await
-                .map_err(|e| e.to_string())?
+                .await?
                 .map(|r| r.get::<i64>(0).unwrap_or(0))
                 .unwrap_or(0);
 
             if user_count < 2 {
-                return Err("Not enough turns for title generation".to_string());
+                return Err(HistoryError::internal(
+                    "Not enough turns for title generation",
+                ));
             }
 
             let mut msg_rows = conn
@@ -913,11 +1189,10 @@ impl HistoryStore {
                     "SELECT id, seq, role, content, reasoning, created_at_ms\n   FROM messages\n  WHERE conversation_id = ?1\n  ORDER BY seq ASC\n  LIMIT 12;",
                     params![conversation_id],
                 )
-                .await
-                .map_err(|e| e.to_string())?;
+                .await?;
 
             let mut messages = Vec::new();
-            while let Some(row) = msg_rows.next().await.map_err(|e| e.to_string())? {
+            while let Some(row) = msg_rows.next().await? {
                 messages.push(ConversationMessage {
                     id: row.get(0).unwrap_or_default(),
                     conversation_id: conversation_id.to_string(),
@@ -932,11 +1207,13 @@ impl HistoryStore {
             messages
         };
 
-        let generated = title::generate_title(&messages).await?;
+        let generated = title::generate_title(&messages)
+            .await
+            .map_err(HistoryError::internal)?;
         let generated = truncate_title(&generated);
 
         if generated.is_empty() {
-            return Err("Generated title is empty".to_string());
+            return Err(HistoryError::internal("Generated title is empty"));
         }
 
         let _write = self.write_permit().await?;
@@ -945,8 +1222,7 @@ impl HistoryStore {
             "UPDATE conversations SET title = ?2, title_auto = 1 WHERE id = ?1 AND title_auto = 0;",
             params![conversation_id, generated],
         )
-        .await
-        .map_err(|e| e.to_string())?;
+        .await?;
 
         Ok(())
     }
@@ -954,36 +1230,34 @@ impl HistoryStore {
     async fn get_active_conversation_id_from_conn(
         &self,
         conn: &libsql::Connection,
-    ) -> Result<Option<String>, String> {
+    ) -> Result<Option<String>, HistoryError> {
         let mut rows = conn
             .query(
                 "SELECT value FROM app_state WHERE key = ?1 LIMIT 1;",
                 params![APP_STATE_ACTIVE_CONVERSATION_ID],
             )
-            .await
-            .map_err(|e| e.to_string())?;
+            .await?;
 
-        let Some(row) = rows.next().await.map_err(|e| e.to_string())? else {
+        let Some(row) = rows.next().await? else {
             return Ok(None);
         };
-        let id: String = row.get(0).map_err(|e| e.to_string())?;
+        let id: String = row.get(0)?;
         Ok(Some(id))
     }
 
-    async fn get_active_conversation_id(&self) -> Result<Option<String>, String> {
+    async fn get_active_conversation_id(&self) -> Result<Option<String>, HistoryError> {
         let conn = self.connect().await?;
         self.get_active_conversation_id_from_conn(&conn).await
     }
 
-    async fn conversation_exists(&self, conversation_id: &str) -> Result<bool, String> {
+    async fn conversation_exists(&self, conversation_id: &str) -> Result<bool, HistoryError> {
         let conn = self.connect().await?;
         let mut rows = conn
             .query(
                 "SELECT 1 FROM conversations WHERE id = ?1 AND archived = 0 LIMIT 1;",
                 params![conversation_id],
             )
-            .await
-            .map_err(|e| e.to_string())?;
-        Ok(rows.next().await.map_err(|e| e.to_string())?.is_some())
+            .await?;
+        Ok(rows.next().await?.is_some())
     }
 }

@@ -31,6 +31,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     types.register::<app_lib::services::history::ConversationMessage>();
     types.register::<app_lib::services::history::ConversationDetail>();
     types.register::<app_lib::services::history::HistoryBootstrap>();
+    types.register::<app_lib::services::history::HistoryError>();
 
     let mut exporter = Typescript::new()
         // We use millisecond timestamps (u64) within JS-safe range in practice.

@@ -28,16 +28,24 @@ export const estimateTokens = (text: string): number => {
   return cjk + Math.ceil(other / 4);
 };
 
-const joinParts = (message: UIMessage, type: "text" | "reasoning") =>
+type MessagePart = UIMessage["parts"][number];
+type TextPart = Extract<MessagePart, { type: "text"; text: string }>;
+type ReasoningPart = Extract<MessagePart, { type: "reasoning"; text: string }>;
+
+const isTextPart = (part: MessagePart): part is TextPart =>
+  part.type === "text";
+const isReasoningPart = (part: MessagePart): part is ReasoningPart =>
+  part.type === "reasoning";
+
+const joinTextParts = (message: UIMessage) =>
   message.parts
-    .filter(
-      (
-        part
-      ): part is {
-        type: typeof type;
-        text: string;
-      } => part.type === type
-    )
+    .filter(isTextPart)
+    .map((part) => part.text)
+    .join("\n");
+
+const joinReasoningParts = (message: UIMessage) =>
+  message.parts
+    .filter(isReasoningPart)
     .map((part) => part.text)
     .join("\n");
 
@@ -53,7 +61,7 @@ export const estimateLanguageModelUsageFromMessages = ({
   isGenerating = false,
 }: EstimateUsageOptions): LanguageModelUsage => {
   const activeAssistantId = isGenerating
-    ? [...messages].reverse().find((m) => m.role === "assistant")?.id ?? null
+    ? ([...messages].reverse().find((m) => m.role === "assistant")?.id ?? null)
     : null;
 
   let inputTokens = 0;
@@ -63,10 +71,10 @@ export const estimateLanguageModelUsageFromMessages = ({
   for (const message of messages) {
     if (message.role === "system") continue;
 
-    const text = joinParts(message, "text");
+    const text = joinTextParts(message);
     if (message.id === activeAssistantId) {
       outputTextTokens += estimateTokens(text);
-      outputReasoningTokens += estimateTokens(joinParts(message, "reasoning"));
+      outputReasoningTokens += estimateTokens(joinReasoningParts(message));
     } else {
       // Prototype behavior: we only send "text" parts back to the model (no reasoning).
       inputTokens += estimateTokens(text);
@@ -95,4 +103,3 @@ export const estimateLanguageModelUsageFromMessages = ({
     totalTokens,
   };
 };
-

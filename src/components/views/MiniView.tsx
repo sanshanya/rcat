@@ -1,14 +1,9 @@
-import type { ComponentProps } from "react";
-
 import { Capsule } from "@/components";
+import { useChatUi } from "@/contexts/ChatUiContext";
 
-export type MiniViewProps = {
-  capsuleProps: ComponentProps<typeof Capsule>;
-};
-
-export function MiniView({ capsuleProps }: MiniViewProps) {
+export function MiniView() {
+  const { capsuleProps } = useChatUi();
   return <Capsule {...capsuleProps} />;
 }
 
 export default MiniView;
-

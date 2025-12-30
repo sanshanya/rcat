@@ -9,6 +9,7 @@ export type {
   ConversationDetail,
   ConversationMessage,
   ConversationSummary,
+  HistoryError,
   HistoryBootstrap,
   WindowMode,
 } from '@/bindings/tauri-types';

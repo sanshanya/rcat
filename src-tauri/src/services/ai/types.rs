@@ -20,6 +20,10 @@ pub struct ChatDonePayload {
 #[cfg_attr(feature = "typegen", derive(specta::Type))]
 #[derive(Clone, Deserialize)]
 pub struct ChatMessage {
+    /// Optional history sequence number (1-based, non-system messages only).
+    ///
+    /// When provided, history sync can safely operate on paged/partial message sets.
+    pub seq: Option<u32>,
     pub role: String,
     pub content: String,
 }

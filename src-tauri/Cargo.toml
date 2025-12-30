@@ -27,7 +27,6 @@ tauri-plugin-log = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 async-openai = { version = "0.32.2", features = ["byot", "chat-completion"] }
 futures-util = "0.3"
-dotenvy = "0.15"
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls-native-roots"] }
 # libSQL (Turso) async client: supports remote (HTTP/WS) and local file fallback.
 libsql = { version = "0.9.29", default-features = false, features = ["core", "remote", "tls"] }

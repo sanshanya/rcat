@@ -48,8 +48,8 @@ export const MessageContent = ({
   <div
     className={cn(
       "flex w-fit max-w-full min-w-0 flex-col gap-2 overflow-hidden text-sm rounded-lg px-4 py-3",
-      "group-[.is-user]:ml-auto group-[.is-user]:bg-slate-700 group-[.is-user]:text-slate-100",
-      "group-[.is-assistant]:bg-black/90 group-[.is-assistant]:border-l-2 group-[.is-assistant]:border-slate-500 group-[.is-assistant]:text-foreground",
+      "group-[.is-user]:ml-auto group-[.is-user]:bg-muted group-[.is-user]:text-foreground",
+      "group-[.is-assistant]:bg-background/70 group-[.is-assistant]:border-l-2 group-[.is-assistant]:border-border/70 group-[.is-assistant]:text-foreground",
       className
     )}
     {...props}

@@ -17,6 +17,14 @@ export type ConversationSummary = { id: string; title: string; titleAuto: boolea
 
 export type HistoryBootstrap = { activeConversationId: string; conversations: ConversationSummary[] }
 
+export type HistoryError =
+  | { type: "notFound"; message: string }
+  | { type: "archived"; message: string }
+  | { type: "locked"; message: string }
+  | { type: "invalidInput"; message: string }
+  | { type: "database"; message: string }
+  | { type: "internal"; message: string }
+
 export type ScreenCaptureResult = { text: string; confidence: number | null; timestamp: number; window_name: string | null }
 
 export type VlmAnalysisResult = { content: string; timestamp: number }

@@ -2,14 +2,15 @@ import { useRef, type PointerEvent } from "react";
 import { motion } from "framer-motion";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
-import type { WindowMode } from "@/types";
+import type { AiProvider, WindowMode } from "@/types";
 import { cn } from "@/lib/utils";
+import ProviderLogo from "@/components/icons/ProviderLogo";
 import { isTauriContext, reportPromiseError } from "@/utils";
-import deepseekIconUrl from "../../deepseek-color.svg";
 
 interface CapsuleProps {
   isThinking: boolean;
   modelId: string;
+  provider?: AiProvider | null;
   windowMode: WindowMode;
   hasNotification?: boolean;
   onClick: () => void;
@@ -25,15 +26,26 @@ type DragState = {
 
 const DRAG_THRESHOLD_PX = 6;
 
-const renderModelIcon = (modelId: string, className?: string) => {
+const renderModelIcon = (
+  provider: AiProvider | null | undefined,
+  modelId: string,
+  className?: string
+) => {
+  if (provider) {
+    return (
+      <ProviderLogo
+        provider={provider}
+        className={cn("select-none text-foreground/90", className)}
+      />
+    );
+  }
+
   const lower = modelId.trim().toLowerCase();
   if (lower.startsWith("deepseek")) {
     return (
-      <img
-        src={deepseekIconUrl}
-        alt="DeepSeek"
-        className={cn("select-none", className)}
-        draggable={false}
+      <ProviderLogo
+        provider="deepseek"
+        className={cn("select-none text-foreground/90", className)}
       />
     );
   }
@@ -53,6 +65,7 @@ const renderModelIcon = (modelId: string, className?: string) => {
 const Capsule = ({
   isThinking,
   modelId,
+  provider,
   windowMode,
   hasNotification = false,
   onClick,
@@ -151,7 +164,7 @@ const Capsule = ({
       transition={{ type: "spring", stiffness: 300, damping: 30 }}
     >
       <span className="relative inline-flex h-14 w-14 items-center justify-center">
-        {renderModelIcon(modelId, "h-7 w-7")}
+        {renderModelIcon(provider, modelId, "h-7 w-7")}
         {hasNotification && (
           <span className="pointer-events-none absolute right-2 top-2 h-2 w-2 rounded-full bg-red-500 shadow" />
         )}

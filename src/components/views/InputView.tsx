@@ -1,15 +1,13 @@
-import type { ComponentProps } from "react";
-
 import { Capsule } from "@/components";
 import PromptInput from "@/components/PromptInput";
+import { useChatUi } from "@/contexts/ChatUiContext";
 
 export type InputViewProps = {
-  capsuleProps: ComponentProps<typeof Capsule>;
-  promptProps: ComponentProps<typeof PromptInput>;
   errorText?: string | null;
 };
 
-export function InputView({ capsuleProps, promptProps, errorText }: InputViewProps) {
+export function InputView({ errorText }: InputViewProps) {
+  const { capsuleProps, promptProps } = useChatUi();
   return (
     <>
       <Capsule {...capsuleProps} />
@@ -24,4 +22,3 @@ export function InputView({ capsuleProps, promptProps, errorText }: InputViewPro
 }
 
 export default InputView;
-

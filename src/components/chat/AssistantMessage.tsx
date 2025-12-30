@@ -1,5 +1,11 @@
 import type { UIMessage } from "ai";
-import { CheckIcon, CopyIcon, RefreshCcwIcon } from "lucide-react";
+import {
+  CheckIcon,
+  CopyIcon,
+  GitBranchIcon,
+  Loader2,
+  RefreshCcwIcon,
+} from "lucide-react";
 
 import {
   Message,
@@ -20,6 +26,9 @@ type AssistantMessageProps = {
   onCopy: () => void;
   isCopied: boolean;
   onRegenerate?: () => void;
+  onBranch?: () => void;
+  isBranching?: boolean;
+  isBranched?: boolean;
 };
 
 export default function AssistantMessage({
@@ -28,6 +37,9 @@ export default function AssistantMessage({
   onCopy,
   isCopied,
   onRegenerate,
+  onBranch,
+  isBranching = false,
+  isBranched = false,
 }: AssistantMessageProps) {
   return (
     <Message from="assistant">
@@ -100,6 +112,29 @@ export default function AssistantMessage({
               onClick={onRegenerate}
             >
               <RefreshCcwIcon className="size-3" />
+            </MessageAction>
+          )}
+          {onBranch && (
+            <MessageAction
+              label="Branch"
+              tooltip={
+                isBranching
+                  ? "Branching…"
+                  : isBranched
+                    ? "Branched!"
+                    : "Branch conversation"
+              }
+              onClick={onBranch}
+              disabled={isBranching}
+              aria-busy={isBranching}
+            >
+              {isBranching ? (
+                <Loader2 className="size-3 animate-spin" />
+              ) : isBranched ? (
+                <CheckIcon className="size-3 text-green-400" />
+              ) : (
+                <GitBranchIcon className="size-3" />
+              )}
             </MessageAction>
           )}
           <MessageAction

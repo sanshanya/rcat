@@ -34,12 +34,11 @@ export function ModelSelector({
       </SelectTrigger>
       <SelectContent side="bottom" align="end" sideOffset={4}>
         {modelOptions.map((m) => (
-          <SelectItem key={m.id} value={m.id}>
-            {m.name}
+          <SelectItem key={m.id} value={m.id} title={m.name}>
+            {m.id}
           </SelectItem>
         ))}
       </SelectContent>
     </Select>
   );
 }
-

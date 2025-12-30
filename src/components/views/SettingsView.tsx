@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ComponentProps } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { Eye, EyeOff, Pencil, Plus, XIcon } from "lucide-react";
 
@@ -8,15 +8,21 @@ import {
   Select,
   SelectContent,
   SelectItem,
+  SelectItemText,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import ProviderLogo from "@/components/icons/ProviderLogo";
+import {
+  ModelEditorDialog,
+  type ModelEditorDraft,
+} from "@/components/settings/ModelEditorDialog";
+import { useChatUi } from "@/contexts/ChatUiContext";
 import type { AiConfig, AiModel, AiProvider } from "@/types";
 import { cn } from "@/lib/utils";
 import { setAiProfile, setAiProvider, testAiProfile } from "@/services";
 
 export type SettingsViewProps = {
-  capsuleProps: ComponentProps<typeof Capsule>;
   aiConfig: AiConfig | null;
   onRefreshAiConfig: () => Promise<AiConfig | null>;
   onClose: () => void;
@@ -28,22 +34,12 @@ const PROVIDER_LABELS: Record<AiProvider, string> = {
   compatible: "OpenAI-compatible",
 };
 
-type ModelEditorDraft = {
-  originalId: string | null;
-  id: string;
-  maxContext: string;
-  maxOutput: string;
-  supportsVision: boolean;
-  supportsThink: boolean;
-  special: string;
-};
-
 export function SettingsView({
-  capsuleProps,
   aiConfig,
   onRefreshAiConfig,
   onClose,
 }: SettingsViewProps) {
+  const { capsuleProps } = useChatUi();
   const initialProvider: AiProvider = useMemo(() => {
     return aiConfig?.provider ?? "deepseek";
   }, [aiConfig?.provider]);
@@ -177,7 +173,8 @@ export function SettingsView({
 
     const parsePositiveIntOrNull = (raw: string, label: string) => {
       const trimmed = raw.trim();
-      if (!trimmed) return { value: null as number | null, error: null as string | null };
+      if (!trimmed)
+        return { value: null as number | null, error: null as string | null };
       const n = Number(trimmed);
       if (!Number.isFinite(n) || !Number.isInteger(n) || n <= 0) {
         return { value: null as number | null, error: `${label} 需要为正整数` };
@@ -185,13 +182,19 @@ export function SettingsView({
       return { value: n, error: null as string | null };
     };
 
-    const maxContextParsed = parsePositiveIntOrNull(modelEditor.maxContext, "最大上下文");
+    const maxContextParsed = parsePositiveIntOrNull(
+      modelEditor.maxContext,
+      "最大上下文"
+    );
     if (maxContextParsed.error) {
       setModelEditorError(maxContextParsed.error);
       return;
     }
 
-    const maxOutputParsed = parsePositiveIntOrNull(modelEditor.maxOutput, "最大输出");
+    const maxOutputParsed = parsePositiveIntOrNull(
+      modelEditor.maxOutput,
+      "最大输出"
+    );
     if (maxOutputParsed.error) {
       setModelEditorError(maxOutputParsed.error);
       return;
@@ -344,12 +347,57 @@ export function SettingsView({
                   disabled={busy}
                 >
                   <SelectTrigger className="h-7 px-2 py-1 text-xs">
-                    <SelectValue />
+                    <div className="flex items-center gap-2">
+                      <ProviderLogo
+                        provider={provider}
+                        className="size-3.5 shrink-0"
+                      />
+                      <SelectValue />
+                    </div>
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="deepseek">{PROVIDER_LABELS.deepseek}</SelectItem>
-                    <SelectItem value="openai">{PROVIDER_LABELS.openai}</SelectItem>
-                    <SelectItem value="compatible">{PROVIDER_LABELS.compatible}</SelectItem>
+                    <SelectItem
+                      value="deepseek"
+                      textValue={PROVIDER_LABELS.deepseek}
+                    >
+                      <div className="flex items-center gap-2">
+                        <ProviderLogo
+                          provider="deepseek"
+                          className="size-3.5 shrink-0"
+                        />
+                        <SelectItemText>
+                          {PROVIDER_LABELS.deepseek}
+                        </SelectItemText>
+                      </div>
+                    </SelectItem>
+                    <SelectItem
+                      value="openai"
+                      textValue={PROVIDER_LABELS.openai}
+                    >
+                      <div className="flex items-center gap-2">
+                        <ProviderLogo
+                          provider="openai"
+                          className="size-3.5 shrink-0"
+                        />
+                        <SelectItemText>
+                          {PROVIDER_LABELS.openai}
+                        </SelectItemText>
+                      </div>
+                    </SelectItem>
+                    <SelectItem
+                      value="compatible"
+                      textValue={PROVIDER_LABELS.compatible}
+                    >
+                      <div className="flex items-center gap-2">
+                        <ProviderLogo
+                          provider="compatible"
+                          className="size-3.5 shrink-0"
+                        />
+                        <SelectItemText>
+                          {PROVIDER_LABELS.compatible}
+                        </SelectItemText>
+                      </div>
+                    </SelectItem>
                   </SelectContent>
                 </Select>
               </div>
@@ -372,50 +420,52 @@ export function SettingsView({
                 <div className="grid gap-1">
                   <div className="text-xs opacity-70">Models</div>
                   <div className="flex flex-wrap gap-1">
-                    {normalizedModels.map((m) => (
-                      <div
-                        key={m.id}
-                        className={cn(
-                          "inline-flex items-center gap-1 rounded-md border border-border/50 bg-background/30 px-1 py-1",
-                          m.id === model && "border-primary/60 bg-primary/10"
-                        )}
-                      >
-                        <button
-                          type="button"
+                    {normalizedModels.map((m) => {
+                      return (
+                        <div
+                          key={m.id}
                           className={cn(
-                            "max-w-[210px] truncate px-1 text-xs text-foreground/90",
-                            m.id !== model && "opacity-80 hover:opacity-100"
+                            "inline-flex items-center gap-1 rounded-md border border-border/50 bg-background/30 px-1 py-1",
+                            m.id === model && "border-primary/60 bg-primary/10"
                           )}
-                          onClick={() => setModel(m.id)}
-                          disabled={busy}
-                          title={m.id}
                         >
-                          {m.id}
-                        </button>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon-sm"
-                          className="h-6 w-6"
-                          onClick={() => openEditModel(m)}
-                          disabled={busy}
-                          title="编辑"
-                        >
-                          <Pencil className="size-3" />
-                        </Button>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon-sm"
-                          className="h-6 w-6"
-                          onClick={() => handleRemoveModel(m.id)}
-                          disabled={busy || normalizedModels.length <= 1}
-                          title="删除"
-                        >
-                          <XIcon className="size-3" />
-                        </Button>
-                      </div>
-                    ))}
+                          <button
+                            type="button"
+                            className={cn(
+                              "max-w-[210px] truncate px-1 text-xs text-foreground/90",
+                              m.id !== model && "opacity-80 hover:opacity-100"
+                            )}
+                            onClick={() => setModel(m.id)}
+                            disabled={busy}
+                            title={m.id}
+                          >
+                            {m.id}
+                          </button>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon-sm"
+                            className="h-6 w-6"
+                            onClick={() => openEditModel(m)}
+                            disabled={busy}
+                            title="编辑"
+                          >
+                            <Pencil className="size-3" />
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon-sm"
+                            className="h-6 w-6"
+                            onClick={() => handleRemoveModel(m.id)}
+                            disabled={busy || normalizedModels.length <= 1}
+                            title="删除"
+                          >
+                            <XIcon className="size-3" />
+                          </Button>
+                        </div>
+                      );
+                    })}
                   </div>
 
                   <Button
@@ -459,7 +509,9 @@ export function SettingsView({
                   </div>
                 </div>
 
-                {error ? <div className="text-xs text-red-200/90">{error}</div> : null}
+                {error ? (
+                  <div className="text-xs text-red-200/90">{error}</div>
+                ) : null}
                 {success ? (
                   <div className="text-xs text-emerald-200/90">{success}</div>
                 ) : null}
@@ -496,146 +548,13 @@ export function SettingsView({
       </div>
 
       {modelEditor ? (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
-          onMouseDown={closeModelEditor}
-        >
-          <div
-            className="w-full max-w-sm rounded-xl border border-border/50 bg-background/90 p-3 shadow-xl"
-            onMouseDown={(e) => e.stopPropagation()}
-          >
-            <div className="flex items-center justify-between gap-2">
-              <div className="text-sm font-semibold text-foreground">
-                {modelEditor.originalId ? "编辑模型" : "添加模型"}
-              </div>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon-sm"
-                onClick={closeModelEditor}
-                title="关闭"
-              >
-                <XIcon className="size-4" />
-              </Button>
-            </div>
-
-            <div className="mt-3 grid gap-2 text-sm text-muted-foreground">
-              <div className="grid gap-1">
-                <div className="text-xs opacity-70">Model ID</div>
-                <input
-                  className={cn(
-                    "h-8 w-full rounded-md border border-border/50 bg-background/40 px-2 text-xs text-foreground",
-                    "placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
-                  )}
-                  value={modelEditor.id}
-                  onChange={(e) =>
-                    setModelEditor((prev) =>
-                      prev ? { ...prev, id: e.target.value } : prev
-                    )
-                  }
-                  placeholder="例如 deepseek-chat"
-                  autoFocus
-                />
-              </div>
-
-              <div className="grid grid-cols-2 gap-2">
-                <div className="grid gap-1">
-                  <div className="text-xs opacity-70">最大上下文</div>
-                  <input
-                    className={cn(
-                      "h-8 w-full rounded-md border border-border/50 bg-background/40 px-2 text-xs text-foreground",
-                      "placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
-                    )}
-                    value={modelEditor.maxContext}
-                    onChange={(e) =>
-                      setModelEditor((prev) =>
-                        prev ? { ...prev, maxContext: e.target.value } : prev
-                      )
-                    }
-                    placeholder="可选"
-                    inputMode="numeric"
-                  />
-                </div>
-                <div className="grid gap-1">
-                  <div className="text-xs opacity-70">最大输出</div>
-                  <input
-                    className={cn(
-                      "h-8 w-full rounded-md border border-border/50 bg-background/40 px-2 text-xs text-foreground",
-                      "placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
-                    )}
-                    value={modelEditor.maxOutput}
-                    onChange={(e) =>
-                      setModelEditor((prev) =>
-                        prev ? { ...prev, maxOutput: e.target.value } : prev
-                      )
-                    }
-                    placeholder="可选"
-                    inputMode="numeric"
-                  />
-                </div>
-              </div>
-
-              <div className="flex flex-wrap items-center gap-3">
-                <label className="flex items-center gap-2 text-xs text-foreground/80">
-                  <input
-                    type="checkbox"
-                    className="h-4 w-4 accent-primary"
-                    checked={modelEditor.supportsVision}
-                    onChange={(e) =>
-                      setModelEditor((prev) =>
-                        prev ? { ...prev, supportsVision: e.target.checked } : prev
-                      )
-                    }
-                  />
-                  支持 Vision
-                </label>
-                <label className="flex items-center gap-2 text-xs text-foreground/80">
-                  <input
-                    type="checkbox"
-                    className="h-4 w-4 accent-primary"
-                    checked={modelEditor.supportsThink}
-                    onChange={(e) =>
-                      setModelEditor((prev) =>
-                        prev ? { ...prev, supportsThink: e.target.checked } : prev
-                      )
-                    }
-                  />
-                  支持 Think
-                </label>
-              </div>
-
-              <div className="grid gap-1">
-                <div className="text-xs opacity-70">Special（可选）</div>
-                <input
-                  className={cn(
-                    "h-8 w-full rounded-md border border-border/50 bg-background/40 px-2 text-xs text-foreground",
-                    "placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
-                  )}
-                  value={modelEditor.special}
-                  onChange={(e) =>
-                    setModelEditor((prev) =>
-                      prev ? { ...prev, special: e.target.value } : prev
-                    )
-                  }
-                  placeholder="例如: special"
-                />
-              </div>
-
-              {modelEditorError ? (
-                <div className="text-xs text-red-200/90">{modelEditorError}</div>
-              ) : null}
-
-              <div className="flex justify-end gap-2 pt-1">
-                <Button type="button" size="sm" variant="secondary" onClick={closeModelEditor}>
-                  取消
-                </Button>
-                <Button type="button" size="sm" onClick={handleSaveModelDraft}>
-                  确认
-                </Button>
-              </div>
-            </div>
-          </div>
-        </div>
+        <ModelEditorDialog
+          draft={modelEditor}
+          setDraft={setModelEditor}
+          errorText={modelEditorError}
+          onCancel={closeModelEditor}
+          onConfirm={handleSaveModelDraft}
+        />
       ) : null}
     </>
   );

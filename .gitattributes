@@ -1,0 +1,16 @@
+# Normalize line endings to reduce CRLF/LF diff noise across platforms.
+* text=auto eol=lf
+
+# Treat common binary formats as binary.
+*.lockb binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.icns binary
+*.pdf binary
+*.mp3 binary
+*.wav binary
+*.ogg binary

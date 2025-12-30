@@ -1,14 +1,16 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { ConversationDetail, ConversationSummary } from "@/types";
 import {
   historyBootstrap,
   historyClearConversation,
   historyDeleteConversation,
-  historyGetConversation,
+  historyForkConversation,
+  historyGetConversationPage,
   historyListConversations,
   historyMarkSeen,
   historyNewConversation,
+  historyRenameConversation,
   historySetActiveConversation,
 } from "@/services/history";
 import { isTauriContext, reportPromiseError } from "@/utils";
@@ -20,6 +22,8 @@ type ConversationHistoryState = {
   activeConversation: ConversationDetail | null;
 };
 
+const HISTORY_PAGE_SIZE = 80;
+
 export function useConversationHistory() {
   const [state, setState] = useState<ConversationHistoryState>({
     isReady: false,
@@ -27,6 +31,8 @@ export function useConversationHistory() {
     activeConversationId: null,
     activeConversation: null,
   });
+  const stateRef = useRef(state);
+  stateRef.current = state;
 
   const refreshList = useCallback(async () => {
     if (!isTauriContext()) return [];
@@ -37,13 +43,45 @@ export function useConversationHistory() {
 
   const loadConversation = useCallback(async (conversationId: string) => {
     if (!isTauriContext()) return null;
-    const detail = await historyGetConversation(conversationId);
+    const detail = await historyGetConversationPage(conversationId, null, HISTORY_PAGE_SIZE);
     setState((prev) => ({
       ...prev,
       activeConversationId: conversationId,
       activeConversation: detail,
     }));
     return detail;
+  }, []);
+
+  const loadOlderMessages = useCallback(async (conversationId: string) => {
+    if (!isTauriContext()) return null;
+    const snapshot = stateRef.current;
+    if (snapshot.activeConversationId !== conversationId || !snapshot.activeConversation)
+      return null;
+
+    const beforeSeq = snapshot.activeConversation.messages[0]?.seq ?? null;
+    if (!beforeSeq || beforeSeq <= 1) return null;
+
+    const page = await historyGetConversationPage(
+      conversationId,
+      beforeSeq,
+      HISTORY_PAGE_SIZE
+    );
+    setState((prev) => {
+      if (prev.activeConversationId !== conversationId || !prev.activeConversation) return prev;
+
+      const existing = prev.activeConversation.messages;
+      const existingIds = new Set(existing.map((m) => m.id));
+      const merged = [...page.messages.filter((m) => !existingIds.has(m.id)), ...existing];
+
+      return {
+        ...prev,
+        activeConversation: {
+          conversation: page.conversation,
+          messages: merged,
+        },
+      };
+    });
+    return page;
   }, []);
 
   const bootstrap = useCallback(async () => {
@@ -88,6 +126,17 @@ export function useConversationHistory() {
     return created;
   }, [loadConversation, refreshList]);
 
+  const forkConversation = useCallback(
+    async (conversationId: string, uptoSeq?: number | null) => {
+      if (!isTauriContext()) return null;
+      const created = await historyForkConversation(conversationId, uptoSeq ?? null);
+      await loadConversation(created.id);
+      await refreshList();
+      return created;
+    },
+    [loadConversation, refreshList]
+  );
+
   const markSeen = useCallback(
     async (conversationId: string) => {
       if (!isTauriContext()) return;
@@ -122,14 +171,45 @@ export function useConversationHistory() {
     [loadConversation]
   );
 
+  const renameConversation = useCallback(
+    async (conversationId: string, title: string) => {
+      if (!isTauriContext()) return;
+      const trimmed = title.trim();
+      if (!trimmed) return;
+
+      await historyRenameConversation(conversationId, trimmed);
+      setState((prev) => ({
+        ...prev,
+        conversations: prev.conversations.map((c) =>
+          c.id === conversationId ? { ...c, title: trimmed } : c
+        ),
+        activeConversation:
+          prev.activeConversation?.conversation.id === conversationId
+            ? {
+                ...prev.activeConversation,
+                conversation: {
+                  ...prev.activeConversation.conversation,
+                  title: trimmed,
+                },
+              }
+            : prev.activeConversation,
+      }));
+      await refreshList();
+    },
+    [refreshList]
+  );
+
   return {
     ...state,
     refreshList,
     loadConversation,
+    loadOlderMessages,
     selectConversation,
     newConversation,
+    forkConversation,
     markSeen,
     clearConversation,
     deleteConversation,
+    renameConversation,
   };
 }

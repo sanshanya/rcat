@@ -13,7 +13,10 @@ interface ChatMessagesProps {
   isBackgroundGenerating?: boolean;
   messages: UIMessage[];
   status: ChatStatus;
+  hasMoreHistory?: boolean;
+  onLoadMoreHistory?: () => void | Promise<unknown>;
   onRegenerate?: (messageId: string) => void;
+  onBranch?: (messageId: string) => void | Promise<unknown>;
   onEditMessage?: (messageId: string, newText: string) => void;
 }
 
@@ -31,12 +34,16 @@ const ChatMessages = ({
   isBackgroundGenerating = false,
   messages,
   status,
+  hasMoreHistory = false,
+  onLoadMoreHistory,
   onRegenerate,
+  onBranch,
   onEditMessage,
 }: ChatMessagesProps) => {
   const scrollRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const copyResetTimeoutRef = useRef<number | null>(null);
+  const branchResetTimeoutRef = useRef<number | null>(null);
   const stickToBottomRef = useRef(true);
   const autoScrollRafRef = useRef<number | null>(null);
   const forceStickUntilMsRef = useRef(0);
@@ -49,6 +56,9 @@ const ChatMessages = ({
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editText, setEditText] = useState("");
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
+  const [branchingMessageId, setBranchingMessageId] = useState<string | null>(null);
+  const [branchedMessageId, setBranchedMessageId] = useState<string | null>(null);
+  const [loadingMoreHistory, setLoadingMoreHistory] = useState(false);
 
   const scheduleScrollToBottomIfPinned = useCallback(() => {
     const now = Date.now();
@@ -79,6 +89,12 @@ const ChatMessages = ({
 
   // On conversation switch, always jump to bottom (no per-conversation scroll memory).
   useLayoutEffect(() => {
+    setBranchingMessageId(null);
+    setBranchedMessageId(null);
+    if (branchResetTimeoutRef.current) {
+      window.clearTimeout(branchResetTimeoutRef.current);
+      branchResetTimeoutRef.current = null;
+    }
     stickToBottomRef.current = true;
     forceStickUntilMsRef.current = Date.now() + 1800;
     const container = scrollRef.current;
@@ -160,6 +176,9 @@ const ChatMessages = ({
       if (copyResetTimeoutRef.current) {
         window.clearTimeout(copyResetTimeoutRef.current);
       }
+      if (branchResetTimeoutRef.current) {
+        window.clearTimeout(branchResetTimeoutRef.current);
+      }
     };
   }, []);
 
@@ -182,6 +201,58 @@ const ChatMessages = ({
         // Ignore clipboard failures (permission, unsupported, etc.)
       });
   };
+
+  const handleBranch = useCallback(
+    async (messageId: string) => {
+      if (!onBranch) return;
+      if (branchingMessageId) return;
+
+      setBranchingMessageId(messageId);
+      try {
+        await onBranch(messageId);
+        setBranchedMessageId(messageId);
+        if (branchResetTimeoutRef.current) {
+          window.clearTimeout(branchResetTimeoutRef.current);
+        }
+        branchResetTimeoutRef.current = window.setTimeout(() => {
+          setBranchedMessageId(null);
+          branchResetTimeoutRef.current = null;
+        }, 1200);
+      } catch {
+        // Backend errors are already reported; keep UI quiet and reset state.
+      } finally {
+        setBranchingMessageId(null);
+      }
+    },
+    [branchingMessageId, onBranch]
+  );
+
+  const handleLoadMoreHistory = useCallback(async () => {
+    if (!onLoadMoreHistory) return;
+    if (loadingMoreHistory) return;
+    if (status === "streaming" || status === "submitted") return;
+
+    const container = scrollRef.current;
+    const preserveScroll = container ? !isAtBottom(container) : false;
+    const prevHeight = container?.scrollHeight ?? 0;
+    const prevTop = container?.scrollTop ?? 0;
+
+    setLoadingMoreHistory(true);
+    try {
+      await onLoadMoreHistory();
+    } finally {
+      setLoadingMoreHistory(false);
+    }
+
+    if (!preserveScroll) return;
+    requestAnimationFrame(() => {
+      const el = scrollRef.current;
+      if (!el) return;
+      const delta = el.scrollHeight - prevHeight;
+      if (delta <= 0) return;
+      el.scrollTop = prevTop + delta;
+    });
+  }, [loadingMoreHistory, onLoadMoreHistory, status]);
 
   const startEditing = (message: UIMessage) => {
     setEditingMessageId(message.id);
@@ -206,11 +277,32 @@ const ChatMessages = ({
 
   return (
     <div
-      className="min-h-[220px] w-full flex-1 overflow-y-auto rounded-xl border border-border/50 bg-muted/45 p-3 pr-2 text-sm leading-relaxed text-foreground/90 [overflow-wrap:anywhere] select-text cursor-text"
+      className="min-h-[220px] w-full flex-1 overflow-y-auto rounded-xl border border-border/50 bg-muted/50 p-3 pr-2 text-sm leading-relaxed text-foreground/90 [overflow-wrap:anywhere] select-text cursor-text"
       ref={scrollRef}
       onScroll={handleScroll}
     >
       <div ref={contentRef} className="flex flex-col gap-3">
+        {hasMoreHistory && onLoadMoreHistory ? (
+          <div className="flex justify-center">
+            <button
+              type="button"
+              className="inline-flex items-center gap-2 rounded-md border border-border/60 bg-background/40 px-3 py-1 text-xs text-foreground/80 hover:bg-background/60 disabled:opacity-60"
+              onClick={() => void handleLoadMoreHistory()}
+              disabled={
+                loadingMoreHistory || status === "streaming" || status === "submitted"
+              }
+            >
+              {loadingMoreHistory ? (
+                <>
+                  <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
+                  <span>加载中…</span>
+                </>
+              ) : (
+                <span>加载更早消息</span>
+              )}
+            </button>
+          </div>
+        ) : null}
         {messages
           .filter((message) => message.role !== "system")
           .map((message) => {
@@ -220,6 +312,8 @@ const ChatMessages = ({
               message.id === lastAssistantId;
             const isEditing = editingMessageId === message.id;
             const isCopied = copiedMessageId === message.id;
+            const isBranching = branchingMessageId === message.id;
+            const isBranched = branchedMessageId === message.id;
 
             if (message.role === "user") {
               return (
@@ -247,6 +341,9 @@ const ChatMessages = ({
                 onCopy={() => handleCopy(message.id, getMessageText(message))}
                 isCopied={isCopied}
                 onRegenerate={onRegenerate ? () => onRegenerate(message.id) : undefined}
+                onBranch={onBranch ? () => void handleBranch(message.id) : undefined}
+                isBranching={isBranching}
+                isBranched={isBranched}
               />
             );
           })}

@@ -29,11 +29,40 @@ const createPartId = () =>
 const createRequestId = () =>
   `req_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
 
+type ApiChatMessage = {
+  seq?: number;
+  role: string;
+  content: string;
+};
+
+const parseHistorySeq = (conversationId: string, messageId: string): number | null => {
+  const [prefix, seqStr, ...rest] = messageId.split(":");
+  if (rest.length > 0) return null;
+  if (prefix !== conversationId) return null;
+  const seq = Number(seqStr);
+  if (!Number.isFinite(seq) || seq <= 0) return null;
+  return Math.floor(seq);
+};
+
 // Convert UIMessages to API message format
-const convertMessagesToApi = (messages: UIMessage[]) => {
-  return messages
+const convertMessagesToApi = (
+  messages: UIMessage[],
+  conversationId?: string
+): { apiMessages: ApiChatMessage[]; truncateAfterSeq?: number } => {
+  const persistedSeqs = conversationId
+    ? messages
+        .filter((m) => m.role !== "system")
+        .map((m) => parseHistorySeq(conversationId, m.id))
+        .filter((v): v is number => typeof v === "number")
+    : [];
+
+  const persistedMaxSeq =
+    persistedSeqs.length > 0 ? Math.max(...persistedSeqs) : 0;
+
+  const filtered = messages
     .filter((msg) => msg.role !== "system")
     .map((msg) => ({
+      id: msg.id,
       role: msg.role,
       content: msg.parts
         .filter(
@@ -43,6 +72,18 @@ const convertMessagesToApi = (messages: UIMessage[]) => {
         .join("\n"),
     }))
     .filter((msg) => msg.content.trim() !== "");
+
+  let nextSeq = persistedMaxSeq + 1;
+  const apiMessages: ApiChatMessage[] = filtered.map((m) => {
+    const parsed = conversationId ? parseHistorySeq(conversationId, m.id) : null;
+    const seq = parsed ?? nextSeq++;
+    return { seq, role: m.role, content: m.content };
+  });
+
+  return {
+    apiMessages,
+    truncateAfterSeq: conversationId ? persistedMaxSeq : undefined,
+  };
 };
 
 export const createTauriChatTransport = (
@@ -52,7 +93,11 @@ export const createTauriChatTransport = (
     return createUIMessageStream<UIMessage>({
       originalMessages: messages,
       execute: async ({ writer }) => {
-        const apiMessages = convertMessagesToApi(messages);
+        const conversationId = options.getConversationId?.();
+        const { apiMessages, truncateAfterSeq } = convertMessagesToApi(
+          messages,
+          conversationId
+        );
         if (apiMessages.length === 0) {
           writer.write({ type: "error", errorText: "No messages to send." });
           return;
@@ -69,7 +114,6 @@ export const createTauriChatTransport = (
         const requestId = createRequestId();
 
         const model = options.getModel?.();
-        const conversationId = options.getConversationId?.();
 
         options.onRequestCreated?.({ requestId, conversationId });
 
@@ -192,7 +236,12 @@ export const createTauriChatTransport = (
           messages: apiMessages,
         };
         if (model) invokeParams.model = model;
-        if (conversationId) invokeParams.conversationId = conversationId;
+        if (conversationId) {
+          invokeParams.conversationId = conversationId;
+          if (typeof truncateAfterSeq === "number") {
+            invokeParams.truncateAfterSeq = truncateAfterSeq;
+          }
+        }
 
         // Choose the appropriate command based on tool mode
         const useTools = options.getToolMode?.() ?? false;

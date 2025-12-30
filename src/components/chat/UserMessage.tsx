@@ -42,7 +42,7 @@ export default function UserMessage({
           <div className="flex flex-col gap-2">
             <input
               type="text"
-              className="rounded border border-slate-600 bg-slate-800 px-3 py-1.5 text-sm text-slate-100 focus:border-slate-400 focus:outline-none"
+              className="rounded border border-border/60 bg-background/40 px-3 py-1.5 text-sm text-foreground focus:border-border focus:outline-none"
               value={editText}
               onChange={(e) => onEditTextChange(e.target.value)}
               onKeyDown={(e) => {
@@ -104,4 +104,3 @@ export default function UserMessage({
     </Message>
   );
 }
-

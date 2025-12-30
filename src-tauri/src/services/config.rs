@@ -3,8 +3,8 @@
 //! Prototype note: configuration is persisted in `savedata/settings.json`.
 //! We intentionally treat the savedata folder as the single source of truth.
 
-use serde::{Deserialize, Serialize};
 use serde::de::Deserializer;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 #[cfg_attr(feature = "typegen", derive(specta::Type))]
@@ -73,10 +73,7 @@ impl Default for AiConfig {
             base_url: "https://api.openai.com/v1".to_string(),
             api_key: String::new(),
             model: "gpt-4o-mini".to_string(),
-            models: vec![
-                AiModel::from_id("gpt-4o-mini"),
-                AiModel::from_id("gpt-4o"),
-            ],
+            models: vec![AiModel::from_id("gpt-4o-mini"), AiModel::from_id("gpt-4o")],
         }
     }
 }
@@ -122,10 +119,7 @@ fn normalize_api_base(provider: AiProvider, base_url: &str) -> String {
 
 fn default_models(provider: AiProvider) -> Vec<AiModel> {
     match provider {
-        AiProvider::OpenAI => vec![
-            AiModel::from_id("gpt-4o-mini"),
-            AiModel::from_id("gpt-4o"),
-        ],
+        AiProvider::OpenAI => vec![AiModel::from_id("gpt-4o-mini"), AiModel::from_id("gpt-4o")],
         AiProvider::DeepSeek => vec![
             AiModel::from_id("deepseek-chat"),
             AiModel::from_id("deepseek-reasoner"),
@@ -192,7 +186,11 @@ fn default_settings() -> PersistedSettings {
     let mut settings = PersistedSettings::default();
     settings.ai_provider = Some(DEFAULT_PROVIDER);
 
-    for provider in [AiProvider::OpenAI, AiProvider::DeepSeek, AiProvider::Compatible] {
+    for provider in [
+        AiProvider::OpenAI,
+        AiProvider::DeepSeek,
+        AiProvider::Compatible,
+    ] {
         let p = profile_mut(&mut settings, provider);
         p.base_url = Some(default_base_url(provider).to_string());
         p.model = Some(default_model(provider).to_string());
@@ -216,10 +214,7 @@ where
 
     let raw = RawModels::deserialize(deserializer)?;
     Ok(match raw {
-        RawModels::LegacyStrings(ids) => ids
-            .into_iter()
-            .map(|id| AiModel::from_id(&id))
-            .collect(),
+        RawModels::LegacyStrings(ids) => ids.into_iter().map(|id| AiModel::from_id(&id)).collect(),
         RawModels::Objects(models) => models,
     })
 }
@@ -269,7 +264,11 @@ fn normalize_settings(settings: &mut PersistedSettings) -> bool {
         changed = true;
     }
 
-    for provider in [AiProvider::OpenAI, AiProvider::DeepSeek, AiProvider::Compatible] {
+    for provider in [
+        AiProvider::OpenAI,
+        AiProvider::DeepSeek,
+        AiProvider::Compatible,
+    ] {
         let p = profile_mut(settings, provider);
 
         let base = p.base_url.as_deref().unwrap_or("").trim();
@@ -298,11 +297,7 @@ fn normalize_settings(settings: &mut PersistedSettings) -> bool {
             models
         };
 
-        let selected = p
-            .model
-            .as_deref()
-            .unwrap_or(default_model(provider))
-            .trim();
+        let selected = p.model.as_deref().unwrap_or(default_model(provider)).trim();
         if !selected.is_empty() && !models.iter().any(|m| m.id == selected) {
             models.insert(0, AiModel::from_id(selected));
             changed = true;
@@ -366,7 +361,7 @@ fn save_settings(settings: &PersistedSettings) -> Result<(), String> {
     Ok(())
 }
 
-/// Load AI configuration from `.env`/environment.
+/// Load AI configuration from `savedata/settings.json` (next to the app executable).
 ///
 /// Single source of truth: `savedata/settings.json`.
 pub fn load_ai_config() -> AiConfig {
@@ -376,10 +371,7 @@ pub fn load_ai_config() -> AiConfig {
 
     let p = profile(&settings, provider);
 
-    let base_url = p
-        .base_url
-        .as_deref()
-        .unwrap_or(default_base_url(provider));
+    let base_url = p.base_url.as_deref().unwrap_or(default_base_url(provider));
 
     let model = p.model.as_deref().unwrap_or(default_model(provider));
 
@@ -534,10 +526,7 @@ pub async fn test_ai_profile(
         .await
         .map_err(|e| e.to_string())?;
 
-    let has_choice = response
-        .get("choices")
-        .and_then(|c| c.get(0))
-        .is_some();
+    let has_choice = response.get("choices").and_then(|c| c.get(0)).is_some();
     if !has_choice {
         return Err("No choices returned".to_string());
     }
