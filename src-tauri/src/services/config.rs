@@ -5,6 +5,7 @@
 
 use serde::de::Deserializer;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 #[cfg_attr(feature = "typegen", derive(specta::Type))]
@@ -80,52 +81,79 @@ impl Default for AiConfig {
 
 const DEFAULT_PROVIDER: AiProvider = AiProvider::DeepSeek;
 
-fn default_base_url(provider: AiProvider) -> &'static str {
-    match provider {
-        AiProvider::OpenAI => "https://api.openai.com/v1",
-        AiProvider::DeepSeek => "https://api.deepseek.com",
-        // Sensible default: OpenAI-compatible endpoints typically follow OpenAI's `/v1` shape.
-        AiProvider::Compatible => "https://api.openai.com/v1",
+// ============================================================================
+// Provider Configuration Table (Single Source of Truth)
+// ============================================================================
+
+/// Provider-specific defaults and behaviors.
+struct ProviderSpec {
+    base_url: &'static str,
+    default_model: &'static str,
+    default_models: &'static [&'static str],
+    /// URL normalization: Some(true) = ensure `/v1`, Some(false) = strip `/v1`, None = no change
+    url_suffix_v1: Option<bool>,
+}
+
+impl AiProvider {
+    const fn spec(self) -> &'static ProviderSpec {
+        match self {
+            AiProvider::OpenAI => &ProviderSpec {
+                base_url: "https://api.openai.com/v1",
+                default_model: "gpt-4o-mini",
+                default_models: &["gpt-4o-mini", "gpt-4o"],
+                url_suffix_v1: Some(true), // OpenAI requires /v1
+            },
+            AiProvider::DeepSeek => &ProviderSpec {
+                base_url: "https://api.deepseek.com",
+                default_model: "deepseek-reasoner",
+                default_models: &["deepseek-chat", "deepseek-reasoner"],
+                url_suffix_v1: Some(false), // DeepSeek doesn't want /v1
+            },
+            AiProvider::Compatible => &ProviderSpec {
+                base_url: "https://api.openai.com/v1",
+                default_model: "gpt-4o-mini",
+                default_models: &["gpt-4o-mini"],
+                url_suffix_v1: None, // User controls URL exactly
+            },
+        }
     }
 }
 
+fn default_base_url(provider: AiProvider) -> &'static str {
+    provider.spec().base_url
+}
+
 fn default_model(provider: AiProvider) -> &'static str {
-    match provider {
-        AiProvider::OpenAI => "gpt-4o-mini",
-        AiProvider::DeepSeek => "deepseek-reasoner",
-        AiProvider::Compatible => "gpt-4o-mini",
-    }
+    provider.spec().default_model
 }
 
 fn normalize_api_base(provider: AiProvider, base_url: &str) -> String {
     let mut base = base_url.trim().trim_end_matches('/').to_string();
 
-    match provider {
-        AiProvider::OpenAI => {
+    match provider.spec().url_suffix_v1 {
+        Some(true) => {
             if !base.ends_with("/v1") {
                 base.push_str("/v1");
             }
         }
-        AiProvider::DeepSeek => {
+        Some(false) => {
             if base.ends_with("/v1") {
                 base.truncate(base.len().saturating_sub(3));
             }
         }
-        AiProvider::Compatible => {}
+        None => {}
     }
 
     base
 }
 
 fn default_models(provider: AiProvider) -> Vec<AiModel> {
-    match provider {
-        AiProvider::OpenAI => vec![AiModel::from_id("gpt-4o-mini"), AiModel::from_id("gpt-4o")],
-        AiProvider::DeepSeek => vec![
-            AiModel::from_id("deepseek-chat"),
-            AiModel::from_id("deepseek-reasoner"),
-        ],
-        AiProvider::Compatible => vec![AiModel::from_id(default_model(provider))],
-    }
+    provider
+        .spec()
+        .default_models
+        .iter()
+        .map(|id| AiModel::from_id(id))
+        .collect()
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -140,12 +168,12 @@ struct PersistedSettings {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PersistedAiSettings {
-    #[serde(default)]
-    openai: PersistedAiProfile,
-    #[serde(default)]
-    deepseek: PersistedAiProfile,
-    #[serde(default)]
-    compatible: PersistedAiProfile,
+    /// Provider name -> profile.
+    ///
+    /// `flatten` keeps the JSON shape as:
+    /// `{ "ai": { "openai": {..}, "deepseek": {..} } }`
+    #[serde(default, flatten)]
+    profiles: BTreeMap<String, PersistedAiProfile>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -161,25 +189,34 @@ struct PersistedAiProfile {
     models: Vec<AiModel>,
 }
 
-fn profile(settings: &PersistedSettings, provider: AiProvider) -> &PersistedAiProfile {
+/// Get provider key for HashMap lookup
+fn provider_key(provider: AiProvider) -> &'static str {
     match provider {
-        AiProvider::OpenAI => &settings.ai.openai,
-        AiProvider::DeepSeek => &settings.ai.deepseek,
-        AiProvider::Compatible => &settings.ai.compatible,
+        AiProvider::OpenAI => "openai",
+        AiProvider::DeepSeek => "deepseek",
+        AiProvider::Compatible => "compatible",
     }
 }
 
+fn profile(settings: &PersistedSettings, provider: AiProvider) -> Option<&PersistedAiProfile> {
+    settings.ai.profiles.get(provider_key(provider))
+}
+
 fn profile_mut(settings: &mut PersistedSettings, provider: AiProvider) -> &mut PersistedAiProfile {
-    match provider {
-        AiProvider::OpenAI => &mut settings.ai.openai,
-        AiProvider::DeepSeek => &mut settings.ai.deepseek,
-        AiProvider::Compatible => &mut settings.ai.compatible,
-    }
+    settings
+        .ai
+        .profiles
+        .entry(provider_key(provider).to_string())
+        .or_default()
 }
 
 fn settings_path() -> Option<PathBuf> {
     let dir = crate::services::paths::data_dir_cached()?;
     Some(dir.join("settings.json"))
+}
+
+fn backup_settings_path(path: &PathBuf) -> PathBuf {
+    path.with_extension("json.bak")
 }
 
 fn default_settings() -> PersistedSettings {
@@ -199,6 +236,11 @@ fn default_settings() -> PersistedSettings {
     }
 
     settings
+}
+
+fn try_read_settings(path: &PathBuf) -> Option<PersistedSettings> {
+    let contents = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(&contents).ok()
 }
 
 fn deserialize_models<'de, D>(deserializer: D) -> Result<Vec<AiModel>, D::Error>
@@ -320,16 +362,18 @@ fn load_settings() -> PersistedSettings {
     let Some(path) = settings_path() else {
         return default_settings();
     };
-    let Ok(contents) = std::fs::read_to_string(&path) else {
-        let settings = default_settings();
+    let backup_path = backup_settings_path(&path);
+
+    let mut settings = if let Some(settings) = try_read_settings(&path) {
+        settings
+    } else if let Some(settings) = try_read_settings(&backup_path) {
         let _ = save_settings(&settings);
-        return settings;
-    };
-    let mut settings: PersistedSettings = serde_json::from_str(&contents).unwrap_or_else(|_| {
+        settings
+    } else {
         let settings = default_settings();
         let _ = save_settings(&settings);
         settings
-    });
+    };
 
     if normalize_settings(&mut settings) {
         let _ = save_settings(&settings);
@@ -353,10 +397,35 @@ fn save_settings(settings: &PersistedSettings) -> Result<(), String> {
 
     let tmp_path = path.with_extension("json.tmp");
     std::fs::write(&tmp_path, serialized).map_err(|e| format!("Write failed: {e}"))?;
+
+    let backup_path = backup_settings_path(&path);
+
+    // Make room for the atomic rename on platforms that don't support replacing existing files.
     if path.exists() {
-        let _ = std::fs::remove_file(&path);
+        if backup_path.exists() {
+            let _ = std::fs::remove_file(&backup_path);
+        }
+
+        if let Err(e) = std::fs::rename(&path, &backup_path) {
+            let _ = std::fs::remove_file(&tmp_path);
+            return Err(format!("Failed to backup settings: {e}"));
+        }
     }
-    std::fs::rename(&tmp_path, &path).map_err(|e| format!("Rename failed: {e}"))?;
+
+    match std::fs::rename(&tmp_path, &path) {
+        Ok(()) => {
+            if backup_path.exists() {
+                let _ = std::fs::remove_file(&backup_path);
+            }
+        }
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp_path);
+            if backup_path.exists() && !path.exists() {
+                let _ = std::fs::rename(&backup_path, &path);
+            }
+            return Err(format!("Rename failed: {e}"));
+        }
+    }
 
     Ok(())
 }
@@ -369,7 +438,13 @@ pub fn load_ai_config() -> AiConfig {
 
     let provider = settings.ai_provider.unwrap_or(DEFAULT_PROVIDER);
 
-    let p = profile(&settings, provider);
+    static EMPTY_PROFILE: PersistedAiProfile = PersistedAiProfile {
+        base_url: None,
+        api_key: None,
+        model: None,
+        models: Vec::new(),
+    };
+    let p = profile(&settings, provider).unwrap_or(&EMPTY_PROFILE);
 
     let base_url = p.base_url.as_deref().unwrap_or(default_base_url(provider));
 
@@ -562,5 +637,42 @@ mod tests {
             normalize_api_base(AiProvider::Compatible, "https://other.com/v1"),
             "https://other.com/v1"
         );
+    }
+
+    #[test]
+    fn test_deserialize_profiles_map_from_legacy_shape() {
+        // Legacy JSON shape stored per-provider profiles directly under `ai`.
+        // With `#[serde(flatten)]` this should deserialize into `ai.profiles` without
+        // any explicit migration step.
+        let json = r#"
+        {
+          "aiProvider": "deepseek",
+          "ai": {
+            "openai": {
+              "baseUrl": "https://api.openai.com/v1",
+              "apiKey": "sk-test",
+              "model": "gpt-4o-mini",
+              "models": ["gpt-4o-mini"]
+            },
+            "deepseek": {
+              "baseUrl": "https://api.deepseek.com",
+              "model": "deepseek-chat",
+              "models": ["deepseek-chat", "deepseek-reasoner"]
+            }
+          }
+        }
+        "#;
+
+        let settings: PersistedSettings = serde_json::from_str(json).expect("deserialize");
+        let openai = settings.ai.profiles.get("openai").expect("openai profile");
+        assert_eq!(openai.base_url.as_deref(), Some("https://api.openai.com/v1"));
+        assert_eq!(openai.model.as_deref(), Some("gpt-4o-mini"));
+        assert_eq!(openai.models.len(), 1);
+        assert_eq!(openai.models[0].id, "gpt-4o-mini");
+
+        let deepseek = settings.ai.profiles.get("deepseek").expect("deepseek profile");
+        assert_eq!(deepseek.base_url.as_deref(), Some("https://api.deepseek.com"));
+        assert_eq!(deepseek.model.as_deref(), Some("deepseek-chat"));
+        assert_eq!(deepseek.models.len(), 2);
     }
 }

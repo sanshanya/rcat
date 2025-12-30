@@ -15,14 +15,17 @@ use super::types::{
 };
 use crate::plugins::vision as vision_plugin;
 
-pub(super) async fn run_chat_with_tools(
+pub(super) async fn run_chat_generic(
     app: &tauri::AppHandle,
     request_id: &str,
     messages: Vec<ChatMessage>,
     config: AiConfig,
     request_options: ChatRequestOptions,
     http_client: reqwest::Client,
+    tools_enabled: bool,
 ) -> Result<(String, String), String> {
+    let request_id = request_id.to_string();
+
     let openai_config = OpenAIConfig::new()
         .with_api_base(config.base_url.clone())
         .with_api_key(config.api_key.clone());
@@ -36,33 +39,49 @@ pub(super) async fn run_chat_with_tools(
         .first()
         .map(|m| m.role == "system")
         .unwrap_or(false);
+
+    let system_prompt = if tools_enabled {
+        prompts::SYSTEM_PROMPT_WITH_TOOLS
+    } else {
+        prompts::SYSTEM_PROMPT_DEFAULT
+    };
+
     if !has_system {
         api_messages.push(serde_json::json!({
             "role": "system",
-            "content": prompts::SYSTEM_PROMPT_WITH_TOOLS
+            "content": system_prompt
         }));
     }
 
     // 2. Add user messages
     for m in messages {
         if m.role == "system" {
-            // Replace existing system prompt with ours (force tool rules)
+            // Replace existing system prompt with ours (force consistent rules)
             api_messages.push(serde_json::json!({
                 "role": "system",
-                "content": prompts::SYSTEM_PROMPT_WITH_TOOLS
+                "content": system_prompt
             }));
         } else {
             api_messages.push(serde_json::json!({ "role": m.role, "content": m.content }));
         }
     }
 
-    let tools = vision_plugin::ai_tools_schema(&config);
+    let tools = if tools_enabled {
+        Some(vision_plugin::ai_tools_schema(&config))
+    } else {
+        None
+    };
+
     let retry = RetryConfig::from_env();
-    let max_tool_rounds = std::env::var("AI_MAX_TOOL_ROUNDS")
-        .ok()
-        .and_then(|v| v.trim().parse::<usize>().ok())
-        .unwrap_or(5)
-        .clamp(1, 50);
+    let max_tool_rounds = if tools_enabled {
+        std::env::var("AI_MAX_TOOL_ROUNDS")
+            .ok()
+            .and_then(|v| v.trim().parse::<usize>().ok())
+            .unwrap_or(5)
+            .clamp(1, 50)
+    } else {
+        1 // Non-tool chats only need 1 round
+    };
 
     // Accumulate what the UI receives across tool rounds.
     let mut all_text = String::new();
@@ -70,12 +89,20 @@ pub(super) async fn run_chat_with_tools(
 
     'rounds: for _round in 0..max_tool_rounds {
         // Use streaming API
-        let request = serde_json::json!({
+        let mut request_json = serde_json::json!({
             "model": config.model,
             "messages": api_messages,
-            "tools": tools,
             "stream": true
         });
+
+        if let Some(t) = &tools {
+            request_json
+                .as_object_mut()
+                .unwrap()
+                .insert("tools".to_string(), t.clone());
+        }
+
+        let request = request_json;
 
         let mut last_error: Option<String> = None;
 
@@ -137,7 +164,7 @@ pub(super) async fn run_chat_with_tools(
                             let _ = app.emit(
                                 EVT_CHAT_STREAM,
                                 ChatStreamPayload {
-                                    request_id: request_id.to_string(),
+                                    request_id: request_id.clone(),
                                     delta: reasoning,
                                     kind: ChatDeltaKind::Reasoning,
                                     done: false,
@@ -155,7 +182,7 @@ pub(super) async fn run_chat_with_tools(
                             let _ = app.emit(
                                 EVT_CHAT_STREAM,
                                 ChatStreamPayload {
-                                    request_id: request_id.to_string(),
+                                    request_id: request_id.clone(),
                                     delta: content,
                                     kind: ChatDeltaKind::Text,
                                     done: false,
@@ -214,7 +241,8 @@ pub(super) async fn run_chat_with_tools(
             }
 
             // Check if we have tool calls to execute
-            let has_tool_calls = !accumulated_tool_calls.is_empty()
+            let has_tool_calls = tools_enabled
+                && !accumulated_tool_calls.is_empty()
                 && finish_reason.as_deref() == Some("tool_calls");
 
             if has_tool_calls {
@@ -251,7 +279,7 @@ pub(super) async fn run_chat_with_tools(
                     let _ = app.emit(
                         EVT_CHAT_STREAM,
                         ChatStreamPayload {
-                            request_id: request_id.to_string(),
+                            request_id: request_id.clone(),
                             delta: indicator.clone(),
                             kind: ChatDeltaKind::Reasoning,
                             done: false,

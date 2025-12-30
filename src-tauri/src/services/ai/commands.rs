@@ -1,16 +1,12 @@
 use std::future::Future;
 
-use async_openai::{config::OpenAIConfig, Client};
-use serde_json::Value as JsonValue;
 use tauri::Emitter;
 
 use crate::plugins::history::HistoryStore;
 use crate::services::config::load_ai_config;
 
 use super::manager::AiStreamManager;
-use super::request_options::apply_request_options;
-use super::stream::run_chat_stream;
-use super::tools::run_chat_with_tools;
+use super::tools::run_chat_generic;
 use super::types::{
     ChatDeltaKind, ChatDonePayload, ChatErrorPayload, ChatMessage, ChatRequestOptions,
     ChatStreamPayload, EVT_CHAT_DONE, EVT_CHAT_ERROR, EVT_CHAT_STREAM,
@@ -158,7 +154,7 @@ where
     Ok(())
 }
 
-/// Start a streaming chat request with reasoning support.
+/// Start a streaming chat request (standard).
 ///
 /// Emits chunks via `chat-stream` event and completion via `chat-done`.
 #[tauri::command]
@@ -201,13 +197,14 @@ pub async fn chat_stream(
         config,
         request_options.unwrap_or_default(),
         |app, request_id, messages, config, request_options, http_client| async move {
-            run_chat_stream(
+            run_chat_generic(
                 &app,
                 &request_id,
                 messages,
                 config,
                 request_options,
                 http_client,
+                false, // tools_enabled
             )
             .await
         },
@@ -298,55 +295,6 @@ pub fn chat_abort_conversation(
     Ok(())
 }
 
-/// Simple non-streaming chat for testing/debugging.
-#[tauri::command]
-pub async fn chat_simple(
-    prompt: String,
-    model: Option<String>,
-    request_options: Option<ChatRequestOptions>,
-) -> Result<String, String> {
-    let mut config = load_ai_config();
-    if let Some(model) = model {
-        if !model.trim().is_empty() {
-            config.model = model;
-        }
-    }
-
-    if config.api_key.is_empty() {
-        return Err("API key is required".to_string());
-    }
-
-    let openai_config = OpenAIConfig::new()
-        .with_api_base(config.base_url)
-        .with_api_key(config.api_key);
-    let client = Client::with_config(openai_config);
-
-    let request = serde_json::json!({
-        "model": config.model,
-        "messages": [
-            { "role": "user", "content": prompt }
-        ],
-        "stream": false
-    });
-
-    let request_options = request_options.unwrap_or_default();
-    let chat = apply_request_options(client.chat(), &request_options)?;
-
-    let response: JsonValue = chat
-        .create_byot::<_, JsonValue>(&request)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    response
-        .get("choices")
-        .and_then(|c| c.get(0))
-        .and_then(|c| c.get("message"))
-        .and_then(|m| m.get("content"))
-        .and_then(|c| c.as_str())
-        .map(|s| s.to_string())
-        .ok_or_else(|| "No response content".to_string())
-}
-
 /// Streaming chat with tool calling support.
 ///
 /// The AI can call vision tools to observe the user's screen.
@@ -390,13 +338,14 @@ pub async fn chat_stream_with_tools(
         config,
         request_options.unwrap_or_default(),
         |app, request_id, messages, config, request_options, http_client| async move {
-            run_chat_with_tools(
+            run_chat_generic(
                 &app,
                 &request_id,
                 messages,
                 config,
                 request_options,
                 http_client,
+                true, // tools_enabled
             )
             .await
         },

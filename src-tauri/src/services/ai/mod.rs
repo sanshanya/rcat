@@ -10,13 +10,10 @@ pub(crate) mod commands;
 mod manager;
 mod request_options;
 mod retry_policy;
-mod stream;
 mod tools;
 mod types;
 
-pub use commands::{
-    chat_abort, chat_abort_conversation, chat_simple, chat_stream, chat_stream_with_tools,
-};
+pub use commands::{chat_abort, chat_abort_conversation, chat_stream, chat_stream_with_tools};
 pub use manager::AiStreamManager;
 pub use types::{
     ChatDeltaKind, ChatDonePayload, ChatErrorPayload, ChatMessage, ChatRequestOptions,

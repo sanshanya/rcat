@@ -230,7 +230,6 @@ pub fn run() {
             services::ai::commands::chat_stream,
             services::ai::commands::chat_abort,
             services::ai::commands::chat_abort_conversation,
-            services::ai::commands::chat_simple,
             services::config::get_ai_config,
             services::config::set_ai_provider,
             services::config::set_ai_profile,
