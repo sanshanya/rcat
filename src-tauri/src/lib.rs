@@ -221,6 +221,7 @@ pub fn run() {
                 .build(),
         )
         .manage(services::ai::AiStreamManager::default())
+        .manage(services::voice::VoiceState::new())
         .manage(WindowStateStore::new())
         .invoke_handler(tauri::generate_handler![
             set_window_mode,
@@ -235,6 +236,9 @@ pub fn run() {
             services::config::set_ai_profile,
             services::config::test_ai_profile,
             services::ai::commands::chat_stream_with_tools,
+            services::voice::voice_play_text,
+            services::voice::voice_stop,
+            services::voice::voice_prepare,
             // History commands
             services::history::history_bootstrap,
             services::history::history_list_conversations,

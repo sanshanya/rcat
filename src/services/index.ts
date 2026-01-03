@@ -7,3 +7,4 @@ export * from './ai';
 export * from './vision';
 export * from './window';
 export * from './history';
+export * from './voice';

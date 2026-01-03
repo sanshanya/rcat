@@ -168,6 +168,7 @@ pub async fn chat_stream(
     truncate_after_seq: Option<u32>,
     model: Option<String>,
     request_options: Option<ChatRequestOptions>,
+    voice: Option<bool>,
 ) -> Result<(), String> {
     if request_id.trim().is_empty() {
         return Err("requestId is required".to_string());
@@ -186,6 +187,7 @@ pub async fn chat_stream(
         return Err("API key is required".to_string());
     }
 
+    let voice_enabled = voice.unwrap_or(false);
     start_stream_task(
         app,
         streams.inner(),
@@ -196,7 +198,7 @@ pub async fn chat_stream(
         truncate_after_seq,
         config,
         request_options.unwrap_or_default(),
-        |app, request_id, messages, config, request_options, http_client| async move {
+        move |app, request_id, messages, config, request_options, http_client| async move {
             run_chat_generic(
                 &app,
                 &request_id,
@@ -205,6 +207,7 @@ pub async fn chat_stream(
                 request_options,
                 http_client,
                 false, // tools_enabled
+                voice_enabled,
             )
             .await
         },
@@ -309,6 +312,7 @@ pub async fn chat_stream_with_tools(
     truncate_after_seq: Option<u32>,
     model: Option<String>,
     request_options: Option<ChatRequestOptions>,
+    voice: Option<bool>,
 ) -> Result<(), String> {
     if request_id.trim().is_empty() {
         return Err("requestId is required".to_string());
@@ -327,6 +331,7 @@ pub async fn chat_stream_with_tools(
         return Err("API key is required".to_string());
     }
 
+    let voice_enabled = voice.unwrap_or(false);
     start_stream_task(
         app,
         streams.inner(),
@@ -337,7 +342,7 @@ pub async fn chat_stream_with_tools(
         truncate_after_seq,
         config,
         request_options.unwrap_or_default(),
-        |app, request_id, messages, config, request_options, http_client| async move {
+        move |app, request_id, messages, config, request_options, http_client| async move {
             run_chat_generic(
                 &app,
                 &request_id,
@@ -346,6 +351,7 @@ pub async fn chat_stream_with_tools(
                 request_options,
                 http_client,
                 true, // tools_enabled
+                voice_enabled,
             )
             .await
         },

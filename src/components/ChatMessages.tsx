@@ -3,10 +3,12 @@ import type { ChatStatus, UIMessage } from "ai";
 import { Message, MessageContent } from "@/components/ai-elements/message";
 import { ThinkingIndicator } from "@/components/ai-elements/thinking-indicator";
 import { Loader2 } from "lucide-react";
+import { voicePlayText } from "@/services";
 
 import AssistantMessage from "./chat/AssistantMessage";
 import UserMessage from "./chat/UserMessage";
 import { getMessageText } from "./chat/messageText";
+import { reportPromiseError } from "@/utils";
 
 interface ChatMessagesProps {
   conversationId?: string | null;
@@ -202,6 +204,15 @@ const ChatMessages = ({
       });
   };
 
+  const handleSpeak = useCallback((text: string) => {
+    if (!text.trim()) return;
+    void voicePlayText(text).catch(
+      reportPromiseError("ChatMessages.voicePlayText", {
+        onceKey: "ChatMessages.voicePlayText",
+      })
+    );
+  }, [voicePlayText, reportPromiseError]);
+
   const handleBranch = useCallback(
     async (messageId: string) => {
       if (!onBranch) return;
@@ -342,6 +353,7 @@ const ChatMessages = ({
                 isCopied={isCopied}
                 onRegenerate={onRegenerate ? () => onRegenerate(message.id) : undefined}
                 onBranch={onBranch ? () => void handleBranch(message.id) : undefined}
+                onSpeak={() => handleSpeak(getMessageText(message))}
                 isBranching={isBranching}
                 isBranched={isBranched}
               />

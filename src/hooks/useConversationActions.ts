@@ -2,7 +2,7 @@ import { useCallback } from "react";
 import type { UIMessage } from "ai";
 
 import type { WindowMode } from "@/types";
-import { chatAbortConversation } from "@/services";
+import { chatAbortConversation, voiceStop } from "@/services";
 import { getMessageText, reportPromiseError } from "@/utils";
 
 type UseConversationActionsParams = {
@@ -123,6 +123,9 @@ export function useConversationActions({
   const handleStop = useCallback(() => {
     const conversationId = activeConversationId;
     if (!conversationId) {
+      void voiceStop().catch(
+        reportPromiseError("App.voiceStop", { onceKey: "App.voiceStop" })
+      );
       stop();
       return;
     }
@@ -132,6 +135,10 @@ export function useConversationActions({
 
     // Optimistically clear local generating state (backend completion/abort will reconcile too).
     clearGenerating(conversationId);
+
+    void voiceStop().catch(
+      reportPromiseError("App.voiceStop", { onceKey: "App.voiceStop" })
+    );
 
     if (!busy) {
       void chatAbortConversation(conversationId).catch(

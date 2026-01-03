@@ -30,6 +30,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "str
 # libSQL (Turso) async client: supports remote (HTTP/WS) and local file fallback.
 libsql = { version = "0.9.29", default-features = false, features = ["core", "remote", "tls"] }
 uuid = { version = "1", features = ["v4"] }
+rcat-voice = { path = "../rcat-voice", features = ["gpt-sovits"] }
 
 # Optional: Rust -> TypeScript type generation (dev tooling)
 specta = { version = "2.0.0-rc.22", features = ["derive"], optional = true }
@@ -43,6 +44,8 @@ base64 = "0.22"
 # Windows OCR (Windows-only)
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.62.2", features = [
+    "Win32_Foundation",
+    "Win32_System_LibraryLoader",
     "Graphics_Imaging",
     "Media_Ocr",
     "Storage",

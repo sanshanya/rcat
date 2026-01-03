@@ -1,7 +1,7 @@
 use async_openai::error::OpenAIError;
 use async_openai::{config::OpenAIConfig, Client};
 use futures_util::StreamExt;
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 
 use crate::services::config::AiConfig;
 use crate::services::prompts;
@@ -23,8 +23,35 @@ pub(super) async fn run_chat_generic(
     request_options: ChatRequestOptions,
     http_client: reqwest::Client,
     tools_enabled: bool,
+    voice_enabled: bool,
 ) -> Result<(String, String), String> {
     let request_id = request_id.to_string();
+
+    let mut voice_session: Option<rcat_voice::streaming::StreamSession> = None;
+    let mut voice_control: Option<rcat_voice::streaming::StreamControl> = None;
+    let mut voice_delta_tx: Option<tokio::sync::mpsc::Sender<String>> = None;
+    if voice_enabled {
+        let voice_state = app.state::<crate::services::voice::VoiceState>();
+        voice_state.cancel_active_stream().await;
+        match voice_state.get_or_build_engine(true) {
+            Ok(engine) => {
+                // Ensure previous playback is stopped before starting a new streaming session.
+                let _ = engine.stop().await;
+                let session = rcat_voice::streaming::StreamSession::from_env(engine);
+                voice_state
+                    .set_stream_handle(Some(session.cancel_handle()))
+                    .await;
+                let control = session.control();
+                control.mark_llm_start();
+                voice_delta_tx = Some(control.sender());
+                voice_control = Some(control);
+                voice_session = Some(session);
+            }
+            Err(err) => {
+                log::warn!("Voice auto mode disabled: {err}");
+            }
+        }
+    }
 
     let openai_config = OpenAIConfig::new()
         .with_api_base(config.base_url.clone())
@@ -179,6 +206,9 @@ pub(super) async fn run_chat_generic(
                             emitted_any = true;
                             accumulated_content.push_str(&content);
                             all_text.push_str(&content);
+                            if let Some(tx) = voice_delta_tx.as_mut() {
+                                let _ = tx.send(content.clone()).await;
+                            }
                             let _ = app.emit(
                                 EVT_CHAT_STREAM,
                                 ChatStreamPayload {
@@ -306,6 +336,9 @@ pub(super) async fn run_chat_generic(
             }
 
             // No tool calls - we're done
+            drop(voice_delta_tx);
+            drop(voice_control);
+            drop(voice_session);
             return Ok((all_text, all_reasoning));
         }
 

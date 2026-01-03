@@ -6,3 +6,4 @@ pub(crate) mod paths;
 pub mod prompts;
 pub mod retry;
 pub mod vision;
+pub mod voice;

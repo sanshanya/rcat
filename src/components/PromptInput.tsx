@@ -4,7 +4,16 @@ import {
   useRef,
   type FormEvent,
 } from "react";
-import { Eye, EyeOff, Mic, MicOff, Plus, Settings } from "lucide-react";
+import {
+  Eye,
+  EyeOff,
+  Mic,
+  MicOff,
+  Plus,
+  Settings,
+  Volume2,
+  VolumeX,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { ModelOption } from "@/constants";
 import { useAutosizeTextarea, useSpeechRecognition } from "@/hooks";
@@ -34,6 +43,8 @@ interface PromptInputProps {
   onModelChange: (model: string) => void;
   toolMode?: boolean;
   onToolModeChange?: (enabled: boolean) => void;
+  voiceMode?: boolean;
+  onVoiceModeChange?: (enabled: boolean) => void;
 }
 
 export const PromptInput = forwardRef<HTMLTextAreaElement, PromptInputProps>(
@@ -60,6 +71,8 @@ export const PromptInput = forwardRef<HTMLTextAreaElement, PromptInputProps>(
       onModelChange,
       toolMode = false,
       onToolModeChange,
+      voiceMode = false,
+      onVoiceModeChange,
     },
     ref
   ) => {
@@ -203,6 +216,27 @@ export const PromptInput = forwardRef<HTMLTextAreaElement, PromptInputProps>(
                 <MicOff className="size-4" />
               ) : (
                 <Mic className="size-4" />
+              )}
+            </button>
+
+            <button
+              type="button"
+              className={cn(
+                "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md",
+                "text-muted-foreground transition-colors hover:bg-white/10 hover:text-foreground",
+                "disabled:pointer-events-none disabled:opacity-50",
+                voiceMode &&
+                  "bg-green-500/20 text-green-500 hover:bg-green-500/25 hover:text-green-500"
+              )}
+              disabled={disabled}
+              onClick={() => onVoiceModeChange?.(!voiceMode)}
+              onPointerDown={(e) => e.stopPropagation()}
+              title={voiceMode ? "关闭自动朗读" : "开启自动朗读 (AI回答自动语音输出)"}
+            >
+              {voiceMode ? (
+                <Volume2 className="size-4" />
+              ) : (
+                <VolumeX className="size-4" />
               )}
             </button>
 

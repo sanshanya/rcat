@@ -7,6 +7,7 @@ import { isTauriContext, reportPromiseError } from "@/utils";
 type TauriChatTransportOptions = {
   getModel?: () => string;
   getToolMode?: () => boolean;
+  getVoiceMode?: () => boolean;
   getConversationId?: () => string | undefined;
   onRequestCreated?: (meta: { requestId: string; conversationId?: string }) => void;
 };
@@ -234,6 +235,7 @@ export const createTauriChatTransport = (
         const invokeParams: Record<string, unknown> = {
           requestId,
           messages: apiMessages,
+          voice: options.getVoiceMode?.() ?? false,
         };
         if (model) invokeParams.model = model;
         if (conversationId) {
@@ -246,6 +248,9 @@ export const createTauriChatTransport = (
         // Choose the appropriate command based on tool mode
         const useTools = options.getToolMode?.() ?? false;
         const commandName = useTools ? 'chat_stream_with_tools' : 'chat_stream';
+
+        // Interrupt any previous voice playback/stream when starting a new chat request.
+        void invoke("voice_stop").catch(() => {});
 
         void invoke(commandName, invokeParams).catch((error) => {
           writer.write({ type: "error", errorText: String(error) });

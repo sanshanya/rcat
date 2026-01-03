@@ -4,6 +4,7 @@ import {
   CopyIcon,
   GitBranchIcon,
   Loader2,
+  PlayIcon,
   RefreshCcwIcon,
 } from "lucide-react";
 
@@ -27,6 +28,7 @@ type AssistantMessageProps = {
   isCopied: boolean;
   onRegenerate?: () => void;
   onBranch?: () => void;
+  onSpeak?: () => void;
   isBranching?: boolean;
   isBranched?: boolean;
 };
@@ -38,6 +40,7 @@ export default function AssistantMessage({
   isCopied,
   onRegenerate,
   onBranch,
+  onSpeak,
   isBranching = false,
   isBranched = false,
 }: AssistantMessageProps) {
@@ -135,6 +138,11 @@ export default function AssistantMessage({
               ) : (
                 <GitBranchIcon className="size-3" />
               )}
+            </MessageAction>
+          )}
+          {onSpeak && (
+            <MessageAction label="Play" tooltip="Play audio" onClick={onSpeak}>
+              <PlayIcon className="size-3" />
             </MessageAction>
           )}
           <MessageAction

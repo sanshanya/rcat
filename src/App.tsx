@@ -27,7 +27,7 @@ import {
   useToggleExpand,
   useWindowManager,
 } from "./hooks";
-import { createTauriChatTransport } from "./services";
+import { createTauriChatTransport, voicePrepare } from "./services";
 import { cn } from "@/lib/utils";
 import { conversationDetailToUiMessages, reportPromiseError } from "@/utils";
 import { ChatUiProvider } from "@/contexts/ChatUiContext";
@@ -65,9 +65,19 @@ function App() {
     useModelSelection(aiConfig, modelOptions);
   const [toolMode, setToolMode] = useState(false);
   const toolModeRef = useRef(toolMode);
+  const [voiceMode, setVoiceMode] = useState(false);
+  const voiceModeRef = useRef(voiceMode);
 
   // Keep refs in sync immediately for event handlers/transport (avoid 1-render lag).
   toolModeRef.current = toolMode;
+  voiceModeRef.current = voiceMode;
+
+  useEffect(() => {
+    if (!voiceMode) return;
+    void voicePrepare().catch(
+      reportPromiseError("App.voicePrepare", { onceKey: "App.voicePrepare" })
+    );
+  }, [voiceMode]);
 
   const {
     isReady: historyReady,
@@ -96,6 +106,7 @@ function App() {
       createTauriChatTransport({
         getModel: () => selectedModelRef.current,
         getToolMode: () => toolModeRef.current,
+        getVoiceMode: () => voiceModeRef.current,
         getConversationId: () => activeConversationIdRef.current ?? undefined,
         onRequestCreated: ({ requestId, conversationId }) => {
           if (!conversationId) return;
@@ -338,6 +349,8 @@ function App() {
     onModelChange: setSelectedModel,
     toolMode,
     onToolModeChange: setToolMode,
+    voiceMode,
+    onVoiceModeChange: setVoiceMode,
   };
 
   const hasMoreHistory = (activeConversation?.messages?.[0]?.seq ?? 1) > 1;
