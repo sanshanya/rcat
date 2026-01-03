@@ -1,0 +1,3 @@
+[submodule "rcat-voice"]
+	path = rcat-voice
+	url = https://github.com/sanshanya/rcat-voice
