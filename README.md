@@ -39,7 +39,7 @@ The Tauri backend integrates the `rcat-voice` subproject (`rcat-voice/`) for low
 ### Recommended (stable) backend matrix on Windows
 
 - **In-process (Tauri)**: `gpt-sovits-onnx` (CPU) + `asr-sherpa` + optional `turn-smart`
-- **CUDA GPT-SoVITS (`gpt-sovits` / libtorch)**: recommended as a **separate process** (worker/HTTP) due to observed in-process `0xc0000374 STATUS_HEAP_CORRUPTION` on Windows when mixed with other native libraries.
+- **CUDA GPT-SoVITS (`gpt-sovits` / libtorch)**: recommended as a **separate process** (`rcat-voice` local worker) and connect via `TTS_BACKEND=remote`, due to observed in-process `0xc0000374 STATUS_HEAP_CORRUPTION` on Windows when mixed with other native libraries.
 
 ### Quick setup (PowerShell)
 
@@ -63,6 +63,37 @@ Notes:
 - Unset `SMART_TURN_MODEL` to disable Smart Turn; the app will fall back to treating each VAD segment as a complete turn.
 - Voice model paths can be absolute (recommended) to avoid working-directory ambiguity.
 - More details: `rcat-voice/README.md` and `rcat-voice/docs/TROUBLESHOOTING.md`.
+- Full voice manual (asr-nano + smartturn + remote gpt-sovits): `docs/VOICE_MANUAL.md`.
+
+### CUDA GPT-SoVITS via local HTTP worker (streaming PCM)
+
+WAV is not used for streaming; the worker streams raw `pcm16le` audio bytes (HTTP chunked transfer).
+
+Terminal 1: start the worker (Windows + CUDA LibTorch)
+
+```powershell
+cd rcat-voice
+
+$env:LIBTORCH="C:\\libtorch"
+$env:Path="$env:LIBTORCH\\lib;$env:Path"
+$env:LIBTORCH_BYPASS_VERSION_CHECK="1"   # optional
+
+$env:GSV_MODEL_DIR="F:\\github\\rcat\\rcat-voice\\v2pro"
+$env:TTS_WORKER_BIND="127.0.0.1:7878"
+
+cargo run --bin tts_worker --features tts-worker --release
+```
+
+Terminal 2: run the app and use the remote backend
+
+```powershell
+cd ..
+
+$env:TTS_BACKEND="remote"
+$env:TTS_REMOTE_BASE_URL="http://127.0.0.1:7878"
+
+bun tauri dev
+```
 
 ### VLM Screenshot Optimization (Optional)
 

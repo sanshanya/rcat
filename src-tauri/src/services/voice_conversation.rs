@@ -292,31 +292,48 @@ async fn run_voice_asr_loop(
     // Create MicStream on a blocking thread since cpal::Stream is !Send.
     // We extract a MicHandle (which is Send+Sync) to use in the async loop.
     let (mic_handle, _mic_keepalive_tx) = {
-        let (tx, rx) = oneshot::channel::<(rcat_voice::audio::MicHandle, oneshot::Sender<()>)>();
+        let (tx, rx) = oneshot::channel::<
+            Result<(rcat_voice::audio::MicHandle, oneshot::Sender<()>), String>,
+        >();
         std::thread::spawn(move || {
             let mic = match rcat_voice::audio::MicStream::from_env() {
                 Ok(m) => m,
                 Err(e) => {
-                    log::error!("Failed to create MicStream: {e}");
+                    let msg = format!("Mic init failed: {e}");
+                    log::error!("{msg}");
+                    let _ = tx.send(Err(msg));
                     return;
                 }
             };
             let handle = mic.handle();
             // Create a keepalive channel - when this sender is dropped, the mic thread exits
             let (keepalive_tx, keepalive_rx) = oneshot::channel::<()>();
-            let _ = tx.send((handle, keepalive_tx));
+            let _ = tx.send(Ok((handle, keepalive_tx)));
             // Block until keepalive is dropped (i.e., the async loop exits)
             let _ = keepalive_rx.blocking_recv();
             // MicStream drops here, stopping the audio capture
         });
-        rx.await.map_err(|_| "Failed to initialize microphone")?
+        match rx
+            .await
+            .map_err(|_| "Mic init failed: microphone thread exited unexpectedly".to_string())?
+        {
+            Ok(value) => value,
+            Err(err) => return Err(err),
+        }
     };
 
     let feed_ms = mic_handle.feed_ms();
     let sample_rate = mic_handle.sample_rate();
     let channels = mic_handle.channels();
+    log::info!(
+        "voice_conversation: mic={}Hz {}ch feed_ms={}",
+        sample_rate,
+        channels,
+        feed_ms
+    );
 
-    let mut asr = rcat_voice::asr::SherpaAsrStream::from_env().map_err(|e| e.to_string())?;
+    let mut asr = rcat_voice::asr::SherpaAsrStream::from_env()
+        .map_err(|e| format!("ASR init failed: {e}"))?;
 
     let drop_warn_samples = env_u64_clamped("ASR_MIC_DROP_WARN_SAMPLES", 100, 1, 1_000_000);
 
@@ -341,7 +358,8 @@ async fn run_voice_asr_loop(
     let mut smart_turn: Option<rcat_voice::turn::SmartTurnDetector> =
         match std::env::var("SMART_TURN_MODEL") {
             Ok(value) if !value.trim().is_empty() => Some(
-                rcat_voice::turn::SmartTurnDetector::from_env().map_err(|e| e.to_string())?,
+                rcat_voice::turn::SmartTurnDetector::from_env()
+                    .map_err(|e| format!("Smart Turn init failed: {e}"))?,
             ),
             _ => None,
         };
@@ -418,12 +436,12 @@ async fn run_voice_asr_loop(
                         }
                         detector
                             .push_pcm_i16(&chunk, sample_rate, channels)
-                            .map_err(|e| e.to_string())?;
+                            .map_err(|e| format!("Smart Turn audio push failed: {e}"))?;
                     }
 
                     asr.write_pcm_i16(&chunk, sample_rate, channels)
                         .await
-                        .map_err(|e| e.to_string())?;
+                        .map_err(|e| format!("ASR write failed: {e}"))?;
                     chunk.clear();
                 }
 

@@ -59,7 +59,7 @@ impl VoiceState {
                 return Ok(engine);
             }
             let engine = build_from_env().map_err(|e| {
-                error!("TTS init failed: {e}");
+                error!("TTS init failed: {e:?}");
                 format!("TTS init failed: {e}")
             })?;
             {
@@ -78,7 +78,7 @@ impl VoiceState {
         } else {
             debug!("voice: building non-persistent TTS engine");
             let engine = build_from_env().map_err(|e| {
-                error!("TTS init failed: {e}");
+                error!("TTS init failed: {e:?}");
                 format!("TTS init failed: {e}")
             })?;
             if let Ok(mut guard) = self.engine.lock() {
@@ -125,12 +125,25 @@ fn env_truthy(name: &str) -> bool {
         .unwrap_or(false)
 }
 
+fn env_bool01(name: &str) -> Option<bool> {
+    let raw = std::env::var(name).ok()?;
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "y" | "on" => Some(true),
+        "0" | "false" | "no" | "n" | "off" => Some(false),
+        _ => None,
+    }
+}
+
 fn persist_enabled() -> bool {
     env_truthy("VOICE_PERSIST") || env_truthy("RCAT_VOICE_PERSIST")
 }
 
 fn debug_dll_enabled() -> bool {
     env_truthy("VOICE_DEBUG_DLL")
+}
+
+fn tts_metrics_enabled() -> bool {
+    env_truthy("VOICE_TTS_METRICS")
 }
 
 #[cfg(target_os = "windows")]
@@ -325,12 +338,74 @@ pub async fn voice_play_text(
     let _speak_guard = voice.speak_lock.lock().await;
 
     let tts = voice.get_or_build_engine(false)?;
+
+    let backend = std::env::var("TTS_BACKEND")
+        .ok()
+        .unwrap_or_else(|| "auto".to_string());
+    let backend_norm = backend
+        .trim()
+        .rsplit_once('=')
+        .map(|(_, v)| v)
+        .unwrap_or(backend.trim())
+        .to_ascii_lowercase();
+    let use_stream = env_bool01("VOICE_PLAY_USE_STREAM")
+        .or_else(|| env_bool01("VOICE_PLAY_STREAM"))
+        .unwrap_or_else(|| matches!(backend_norm.as_str(), "remote" | "gpt-sovits-onnx" | "gpt-sovits"));
+
+    if use_stream && backend_norm != "os" {
+        let session = rcat_voice::streaming::StreamSession::from_env(tts);
+        voice
+            .set_stream_handle(Some(session.cancel_handle()))
+            .await;
+
+        let control = session.control();
+        control.mark_llm_start();
+        let tx = control.sender();
+        let send_failed = tx.send(text.to_string()).await.is_err();
+
+        drop(tx);
+        drop(control);
+
+        let result = session
+            .finish()
+            .await
+            .map_err(|e| format!("TTS stream finish failed: {e}"));
+        voice.set_stream_handle(None).await;
+        if send_failed {
+            return Err("TTS stream input closed".to_string());
+        }
+        return result;
+    }
+
     let metrics = tts.speak(text).await.map_err(|e| {
-        error!("TTS speak failed: {e}");
+        error!("TTS speak failed: {e:?}");
         format!("TTS speak failed: {e}")
     })?;
-    if let Some(rx) = metrics.play_done_rx {
-        let _ = rx.await;
+
+    let metrics_enabled = tts_metrics_enabled();
+    let start_ts = metrics.start_ts;
+    let first_audio_ts = metrics.first_audio_ts.unwrap_or(start_ts);
+    let ttfb_ms = first_audio_ts
+        .saturating_duration_since(start_ts)
+        .as_millis();
+    let gen_ms = metrics.gen_done_ts.saturating_duration_since(start_ts).as_millis();
+    let play_pred_ms = metrics.play_done_ts.saturating_duration_since(start_ts).as_millis();
+    let buffered_ms = tts.buffered_ms();
+
+    let play_actual_ms = if let Some(rx) = metrics.play_done_rx {
+        match rx.await {
+            Ok(ts) => Some(ts.saturating_duration_since(start_ts).as_millis()),
+            Err(_) => None,
+        }
+    } else {
+        None
+    };
+
+    if metrics_enabled {
+        info!(
+            "voice: tts backend={} ttfb_ms={} gen_ms={} play_pred_ms={} play_actual_ms={:?} buffered_ms={:?}",
+            backend, ttfb_ms, gen_ms, play_pred_ms, play_actual_ms, buffered_ms
+        );
     }
     Ok(())
 }

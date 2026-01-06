@@ -202,24 +202,92 @@ fn set_window_min_size(app: tauri::AppHandle, min_width: f64, min_height: f64) {
 
 pub(crate) const EVT_CLICK_THROUGH_STATE: &str = "click-through-state";
 
+fn parse_level_filter(raw: &str) -> Option<log::LevelFilter> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "off" => Some(log::LevelFilter::Off),
+        "error" => Some(log::LevelFilter::Error),
+        "warn" | "warning" => Some(log::LevelFilter::Warn),
+        "info" => Some(log::LevelFilter::Info),
+        "debug" => Some(log::LevelFilter::Debug),
+        "trace" => Some(log::LevelFilter::Trace),
+        _ => None,
+    }
+}
+
+fn read_env_log_filter() -> Option<String> {
+    std::env::var("RUST_LOG")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .or_else(|| {
+            std::env::var("RCAT_LOG")
+                .ok()
+                .filter(|v| !v.trim().is_empty())
+        })
+}
+
+fn apply_env_log_filter(
+    builder: tauri_plugin_log::Builder,
+    raw: &str,
+) -> tauri_plugin_log::Builder {
+    let mut global: Option<log::LevelFilter> = None;
+    let mut rules: Vec<(String, log::LevelFilter)> = Vec::new();
+
+    for token in raw.split(',') {
+        let token = token.trim();
+        if token.is_empty() {
+            continue;
+        }
+
+        if let Some((target, level_raw)) = token.split_once('=') {
+            let target = target.trim();
+            let level_raw = level_raw.trim();
+            if target.is_empty() {
+                continue;
+            }
+            let Some(level) = parse_level_filter(level_raw) else {
+                continue;
+            };
+            rules.push((target.to_string(), level));
+            continue;
+        }
+
+        if let Some(level) = parse_level_filter(token) {
+            global = Some(level);
+        }
+    }
+
+    let mut builder = builder;
+    if let Some(level) = global {
+        builder = builder.level(level);
+    }
+    for (target, level) in rules {
+        builder = builder.level_for(target, level);
+    }
+    builder
+}
+
 pub fn run() {
+    let env_filter = read_env_log_filter();
+    let mut log_builder = tauri_plugin_log::Builder::new()
+        // Keep dependencies quiet by default; enable debug logs only for our crate in dev.
+        .level(log::LevelFilter::Info)
+        // Tao/Winit sometimes emits internal ordering warnings on Windows; they are not actionable.
+        .level_for("tao", log::LevelFilter::Error);
+    if let Some(raw) = env_filter.as_deref() {
+        log_builder = apply_env_log_filter(log_builder, raw);
+    } else {
+        log_builder = log_builder.level_for(
+            "app_lib",
+            if cfg!(debug_assertions) {
+                log::LevelFilter::Debug
+            } else {
+                log::LevelFilter::Info
+            },
+        );
+    }
+
     tauri::Builder::default()
-        .plugin(
-            tauri_plugin_log::Builder::new()
-                // Keep dependencies quiet by default; enable debug logs only for our crate in dev.
-                .level(log::LevelFilter::Info)
-                .level_for(
-                    "app_lib",
-                    if cfg!(debug_assertions) {
-                        log::LevelFilter::Debug
-                    } else {
-                        log::LevelFilter::Info
-                    },
-                )
-                // Tao/Winit sometimes emits internal ordering warnings on Windows; they are not actionable.
-                .level_for("tao", log::LevelFilter::Error)
-                .build(),
-        )
+        .plugin(log_builder.build())
         .manage(services::ai::AiStreamManager::default())
         .manage(services::voice::VoiceState::new())
         .manage(services::voice_conversation::VoiceConversationController::new())

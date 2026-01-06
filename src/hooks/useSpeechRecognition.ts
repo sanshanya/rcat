@@ -57,6 +57,7 @@ export function useSpeechRecognition({
   onFinal,
 }: UseSpeechRecognitionOptions) {
   const [isListening, setIsListening] = useState(false);
+  const [lastError, setLastError] = useState<string | null>(null);
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const listeningBaseValueRef = useRef("");
   const unlistenAsrRef = useRef<UnlistenFn | null>(null);
@@ -100,6 +101,7 @@ export function useSpeechRecognition({
     if (isTauriContext()) {
       void (async () => {
         try {
+          setLastError(null);
           if (!unlistenAsrRef.current) {
             unlistenAsrRef.current = await listen<{
               text: string;
@@ -128,8 +130,17 @@ export function useSpeechRecognition({
               state: string;
               error?: string | null;
             }>(EVT_VOICE_CONVERSATION_STATE, (event) => {
-              if (event.payload.state === "idle") {
+              const { state, error } = event.payload;
+              if (error) {
+                console.error("voice conversation error:", error);
+                setLastError(error);
+              }
+              if (state === "idle") {
                 setIsListening(false);
+                if (!error) setLastError(null);
+              } else if (state === "listening") {
+                setIsListening(true);
+                if (!error) setLastError(null);
               }
             });
           }
@@ -138,7 +149,9 @@ export function useSpeechRecognition({
           await voiceConversationStart(conversationId);
           setIsListening(true);
         } catch (error) {
-          console.error("voice conversation start failed:", error);
+          const message = error instanceof Error ? error.message : String(error);
+          console.error("voice conversation start failed:", message);
+          setLastError(message);
           stopListening();
         }
       })();
@@ -151,6 +164,7 @@ export function useSpeechRecognition({
       return;
     }
 
+    setLastError(null);
     const recognition = new SpeechRecognition();
     recognition.continuous = true;
     recognition.interimResults = true;
@@ -175,6 +189,7 @@ export function useSpeechRecognition({
 
     recognition.onerror = (event: { error: string }) => {
       console.error("Speech recognition error:", event.error);
+      setLastError(event.error);
       stopListening();
     };
 
@@ -212,15 +227,20 @@ export function useSpeechRecognition({
   useEffect(() => {
     if (!isTauriContext()) return;
     if (!isListening) return;
-    void voiceConversationStart(conversationId).catch(() => {});
-  }, [conversationId, isListening]);
+    void voiceConversationStart(conversationId).catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error("voice conversation restart failed:", message);
+      setLastError(message);
+      stopListening();
+    });
+  }, [conversationId, isListening, stopListening]);
 
   return {
     isSupported:
       isTauriContext() || getSpeechRecognitionConstructor() !== null,
     isListening,
+    lastError,
     toggleListening,
     stopListening,
   };
 }
-
