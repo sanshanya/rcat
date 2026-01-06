@@ -31,7 +31,7 @@ impl Default for AiStreamManager {
 }
 
 impl AiStreamManager {
-    pub(super) fn take_request(
+    pub(crate) fn take_request(
         &self,
         request_id: &str,
     ) -> Result<Option<(Option<String>, tauri::async_runtime::JoinHandle<()>)>, String> {
@@ -57,7 +57,7 @@ impl AiStreamManager {
         Ok(Some((conversation_id, handle)))
     }
 
-    pub(super) fn take_conversation(
+    pub(crate) fn take_conversation(
         &self,
         conversation_id: &str,
     ) -> Result<Option<(String, tauri::async_runtime::JoinHandle<()>)>, String> {

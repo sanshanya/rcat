@@ -25,6 +25,7 @@ interface PromptInputProps {
   value: string;
   onChange: (value: string) => void;
   onSubmit: () => void;
+  onVoiceSubmit?: (text: string) => void;
   onStop?: () => void;
   onOpenSettings?: () => void;
   conversations?: ConversationSummary[];
@@ -53,6 +54,7 @@ export const PromptInput = forwardRef<HTMLTextAreaElement, PromptInputProps>(
       value,
       onChange,
       onSubmit,
+      onVoiceSubmit,
       onStop,
       onOpenSettings,
       conversations = [],
@@ -84,6 +86,8 @@ export const PromptInput = forwardRef<HTMLTextAreaElement, PromptInputProps>(
       onChange,
       disabled,
       lang: "zh-CN",
+      conversationId: activeConversationId,
+      onFinal: onVoiceSubmit,
     });
 
     const isGenerating = isConversationGenerating || isStreaming || isSubmitting;

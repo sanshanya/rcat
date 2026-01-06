@@ -12,3 +12,9 @@ export const EVT_CHAT_DONE = 'chat-done' as const;
 
 /** AI chat error event */
 export const EVT_CHAT_ERROR = 'chat-error' as const;
+
+/** Voice ASR result event (streamed from backend) */
+export const EVT_VOICE_ASR_RESULT = 'voice-asr-result' as const;
+
+/** Voice conversation state event */
+export const EVT_VOICE_CONVERSATION_STATE = 'voice-conversation-state' as const;

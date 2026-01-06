@@ -1,9 +1,9 @@
 use log::{debug, error, info, warn};
-use rcat_voice::generator::{build_from_env, TtsEngine};
+use rcat_voice::generator::{TtsEngine, build_from_env};
 use rcat_voice::streaming::StreamCancelHandle;
-use std::sync::{Arc, Mutex, Weak};
 #[cfg(target_os = "windows")]
 use std::sync::OnceLock;
+use std::sync::{Arc, Mutex, Weak};
 use tokio::sync::Mutex as AsyncMutex;
 
 pub struct VoiceState {
@@ -140,8 +140,8 @@ fn utf16_nul(s: &str) -> Vec<u16> {
 
 #[cfg(target_os = "windows")]
 fn loaded_module_path(module_name: &str) -> Option<String> {
-    use windows::core::PCWSTR;
     use windows::Win32::System::LibraryLoader::{GetModuleFileNameW, GetModuleHandleW};
+    use windows::core::PCWSTR;
 
     let module_name_w = utf16_nul(module_name);
     let handle = unsafe { GetModuleHandleW(PCWSTR(module_name_w.as_ptr())) }.ok()?;
@@ -157,9 +157,9 @@ fn loaded_module_path(module_name: &str) -> Option<String> {
 #[cfg(target_os = "windows")]
 fn try_load_library_abs(path: &std::path::Path) -> Result<(), String> {
     use std::os::windows::ffi::OsStrExt;
-    use windows::core::PCWSTR;
     use windows::Win32::Foundation::GetLastError;
     use windows::Win32::System::LibraryLoader::LoadLibraryW;
+    use windows::core::PCWSTR;
 
     let wide: Vec<u16> = path
         .as_os_str()
@@ -211,7 +211,13 @@ fn maybe_preload_libtorch_cuda_dlls() {
         }
 
         let lib_dir = libtorch.join("lib");
-        for dll in ["torch.dll", "torch_cpu.dll", "c10.dll", "torch_cuda.dll", "c10_cuda.dll"] {
+        for dll in [
+            "torch.dll",
+            "torch_cpu.dll",
+            "c10.dll",
+            "torch_cuda.dll",
+            "c10_cuda.dll",
+        ] {
             let loaded = loaded_module_path(dll);
             let abs = lib_dir.join(dll);
             let exists = abs.exists();
@@ -240,6 +246,65 @@ fn maybe_preload_libtorch_cuda_dlls() {
     });
 }
 
+/// Force preload libtorch DLLs at application startup.
+/// Call this BEFORE any ONNX Runtime components are initialized to avoid CRT heap conflicts.
+#[cfg(target_os = "windows")]
+pub fn force_preload_libtorch() {
+    use std::path::PathBuf;
+
+    LIBTORCH_DLL_PRELOAD_ONCE.get_or_init(|| {
+        let debug = debug_dll_enabled();
+        let libtorch = std::env::var("LIBTORCH").ok().map(PathBuf::from);
+        let Some(libtorch) = libtorch else {
+            if debug {
+                warn!("voice: LIBTORCH not set; skip DLL preload");
+            }
+            return;
+        };
+
+        let build_version = std::fs::read_to_string(libtorch.join("build-version"))
+            .ok()
+            .map(|v| v.trim().to_string());
+        info!(
+            "voice: force preload libtorch (version={:?})",
+            build_version
+        );
+
+        let lib_dir = libtorch.join("lib");
+        for dll in [
+            "torch.dll",
+            "torch_cpu.dll",
+            "c10.dll",
+            "torch_cuda.dll",
+            "c10_cuda.dll",
+        ] {
+            let loaded = loaded_module_path(dll);
+            let abs = lib_dir.join(dll);
+            let exists = abs.exists();
+
+            if debug {
+                info!(
+                    "voice: dll={} exists_in_libtorch_lib={} loaded_path={:?}",
+                    dll, exists, loaded
+                );
+            }
+
+            if loaded.is_none() && exists {
+                match try_load_library_abs(&abs) {
+                    Ok(_) => {
+                        if debug {
+                            info!("voice: LoadLibrary ok: {}", abs.display());
+                        }
+                    }
+                    Err(e) => {
+                        warn!("voice: {e}");
+                    }
+                }
+            }
+        }
+    });
+}
+
 #[tauri::command]
 pub async fn voice_play_text(
     voice: tauri::State<'_, VoiceState>,
@@ -260,13 +325,10 @@ pub async fn voice_play_text(
     let _speak_guard = voice.speak_lock.lock().await;
 
     let tts = voice.get_or_build_engine(false)?;
-    let metrics = tts
-        .speak(text)
-        .await
-        .map_err(|e| {
-            error!("TTS speak failed: {e}");
-            format!("TTS speak failed: {e}")
-        })?;
+    let metrics = tts.speak(text).await.map_err(|e| {
+        error!("TTS speak failed: {e}");
+        format!("TTS speak failed: {e}")
+    })?;
     if let Some(rx) = metrics.play_done_rx {
         let _ = rx.await;
     }
@@ -278,7 +340,10 @@ pub async fn voice_stop(voice: tauri::State<'_, VoiceState>) -> Result<(), Strin
     voice.cancel_active_stream().await;
     let engine = voice.get_engine_for_stop()?;
     if let Some(engine) = engine {
-        engine.stop().await.map_err(|e| format!("TTS stop failed: {e}"))?;
+        engine
+            .stop()
+            .await
+            .map_err(|e| format!("TTS stop failed: {e}"))?;
     }
     Ok(())
 }

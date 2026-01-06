@@ -222,6 +222,7 @@ pub fn run() {
         )
         .manage(services::ai::AiStreamManager::default())
         .manage(services::voice::VoiceState::new())
+        .manage(services::voice_conversation::VoiceConversationController::new())
         .manage(WindowStateStore::new())
         .invoke_handler(tauri::generate_handler![
             set_window_mode,
@@ -239,6 +240,9 @@ pub fn run() {
             services::voice::voice_play_text,
             services::voice::voice_stop,
             services::voice::voice_prepare,
+            services::voice_conversation::voice_conversation_start,
+            services::voice_conversation::voice_conversation_stop,
+            services::voice_conversation::voice_conversation_status,
             // History commands
             services::history::history_bootstrap,
             services::history::history_list_conversations,
@@ -282,6 +286,24 @@ pub fn run() {
             }
         })
         .setup(|app| {
+            // CRITICAL (Windows): If `TTS_BACKEND=gpt-sovits`, preload libtorch DLLs BEFORE any other
+            // native libraries (ONNX Runtime, etc.) are loaded. This prevents CRT heap allocator
+            // conflicts that can cause STATUS_HEAP_CORRUPTION when mixing libtorch with ONNX-based
+            // components (sherpa-rs, smart-turn, etc.).
+            #[cfg(target_os = "windows")]
+            {
+                let backend_raw = std::env::var("TTS_BACKEND").unwrap_or_default();
+                let backend = backend_raw
+                    .trim()
+                    .rsplit_once('=')
+                    .map(|(_, v)| v)
+                    .unwrap_or(backend_raw.trim())
+                    .to_ascii_lowercase();
+                if backend == "gpt-sovits" {
+                    services::voice::force_preload_libtorch();
+                }
+            }
+
             tray::setup_tray(app)?;
 
             let app_handle = app.handle().clone();

@@ -7,3 +7,4 @@ pub mod prompts;
 pub mod retry;
 pub mod vision;
 pub mod voice;
+pub mod voice_conversation;

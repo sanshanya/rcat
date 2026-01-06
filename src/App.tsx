@@ -316,6 +316,23 @@ function App() {
     ref: inputRef,
     value: inputValue,
     onChange: setInputValue,
+    onVoiceSubmit: async (text: string) => {
+      const textToSend = text.trim();
+      if (!textToSend) return;
+
+      handleStop();
+      setInputValue("");
+
+      if (activeConversationId) {
+        void markSeen(activeConversationId).catch(
+          reportPromiseError("App.markSeen:voiceSend", {
+            onceKey: "App.markSeen:voiceSend",
+          })
+        );
+        markGenerating(activeConversationId);
+      }
+      sendMessage({ text: textToSend });
+    },
     onSubmit: async () => {
       const textToSend = inputValue.trim();
       if (!textToSend) return;

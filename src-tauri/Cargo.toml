@@ -30,7 +30,10 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "str
 # libSQL (Turso) async client: supports remote (HTTP/WS) and local file fallback.
 libsql = { version = "0.9.29", default-features = false, features = ["core", "remote", "tls"] }
 uuid = { version = "1", features = ["v4"] }
-rcat-voice = { path = "../rcat-voice", features = ["gpt-sovits"] }
+# NOTE: We intentionally do NOT enable `gpt-sovits` in the Tauri app for now, because it can
+# crash in-process on Windows (STATUS_HEAP_CORRUPTION). Use the ONNX backend instead.
+# Optional: Smart Turn (ONNX) turn detection.
+rcat-voice = { path = "../rcat-voice", features = ["gpt-sovits-onnx", "asr-sherpa", "asr-mic", "turn-smart"] }
 
 # Optional: Rust -> TypeScript type generation (dev tooling)
 specta = { version = "2.0.0-rc.22", features = ["derive"], optional = true }

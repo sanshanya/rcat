@@ -7,6 +7,7 @@ A modern, fast AI chat application built with **Tauri**, **React**, and **Rust**
 - **Native Performance**: Built on Tauri (Rust) for a lightweight and secure desktop experience.
 - **AI Streaming**: Real-time streaming response support for OpenAI-compatible providers (OpenAI, DeepSeek, etc.).
 - **Reasoning Support**: Special handling for "reasoning" models (like DeepSeek R1) to display thought processes separate from content.
+- **Voice (Optional)**: Microphone ASR + Smart Turn endpointing + streaming TTS via `rcat-voice` (see below).
 - **Window Management**:
   - **Mini Mode**: A small capsule for quick access.
   - **Input Mode**: specialized input window that auto-expands.
@@ -30,6 +31,38 @@ Before you start, ensure you have the following installed:
 ## ⚙️ Configuration
 
 AI provider settings are configured inside the app (Settings) and stored in `savedata/settings.json` next to the app executable.
+
+## 🎤 Voice Assistant（Optional）
+
+The Tauri backend integrates the `rcat-voice` subproject (`rcat-voice/`) for low-latency voice input/output.
+
+### Recommended (stable) backend matrix on Windows
+
+- **In-process (Tauri)**: `gpt-sovits-onnx` (CPU) + `asr-sherpa` + optional `turn-smart`
+- **CUDA GPT-SoVITS (`gpt-sovits` / libtorch)**: recommended as a **separate process** (worker/HTTP) due to observed in-process `0xc0000374 STATUS_HEAP_CORRUPTION` on Windows when mixed with other native libraries.
+
+### Quick setup (PowerShell)
+
+```powershell
+# TTS (recommended in-process)
+$env:TTS_BACKEND="gpt-sovits-onnx"
+$env:GSV_ONNX_MODEL_DIR="E:\rcat\rcat-voice\onnx"
+
+# ASR (sherpa)
+$env:ASR_MODELS_ROOT="E:\rcat\rcat-voice\models"
+$env:ASR_MODEL="funasr-nano-int8"
+
+# Smart Turn (optional)
+$env:SMART_TURN_MODEL="E:\rcat\rcat-voice\models"  # or a specific smart-turn-*.onnx file
+$env:SMART_TURN_VARIANT="gpu"                      # when directory has both cpu/gpu models
+
+bun tauri dev
+```
+
+Notes:
+- Unset `SMART_TURN_MODEL` to disable Smart Turn; the app will fall back to treating each VAD segment as a complete turn.
+- Voice model paths can be absolute (recommended) to avoid working-directory ambiguity.
+- More details: `rcat-voice/README.md` and `rcat-voice/docs/TROUBLESHOOTING.md`.
 
 ### VLM Screenshot Optimization (Optional)
 
