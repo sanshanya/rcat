@@ -7,7 +7,7 @@ use tauri::Emitter;
 #[cfg(target_os = "windows")]
 use std::sync::OnceLock;
 use std::sync::{Arc, Mutex, Weak};
-use tokio::sync::{Mutex as AsyncMutex, mpsc};
+use tokio::sync::{Mutex as AsyncMutex, watch};
 
 pub const EVT_VOICE_RMS: &str = "voice-rms";
 pub const EVT_VOICE_SPEECH_START: &str = "voice-speech-start";
@@ -26,8 +26,8 @@ pub struct VoiceState {
     engine: Mutex<VoiceEngineState>,
     speak_lock: AsyncMutex<()>,
     stream: AsyncMutex<Option<StreamCancelHandle>>,
-    rms_tx: mpsc::Sender<RmsPayload>,
-    rms_rx: Arc<AsyncMutex<Option<mpsc::Receiver<RmsPayload>>>>,
+    rms_tx: watch::Sender<RmsPayload>,
+    rms_rx: Arc<AsyncMutex<Option<watch::Receiver<RmsPayload>>>>,
 }
 
 #[derive(Default)]
@@ -38,7 +38,12 @@ struct VoiceEngineState {
 
 impl VoiceState {
     pub fn new() -> Self {
-        let (rms_tx, rms_rx) = mpsc::channel(64);
+        let (rms_tx, rms_rx) = watch::channel(RmsPayload {
+            rms: 0.0,
+            peak: 0.0,
+            buffered_ms: 0,
+            speaking: false,
+        });
         Self {
             engine: Mutex::new(VoiceEngineState::default()),
             speak_lock: AsyncMutex::new(()),
@@ -58,7 +63,8 @@ impl VoiceState {
             let Some(mut rx) = rx else {
                 return;
             };
-            while let Some(payload) = rx.recv().await {
+            while rx.changed().await.is_ok() {
+                let payload = rx.borrow().clone();
                 let _ = app.emit(
                     EVT_VOICE_RMS,
                     VoiceRmsPayload {

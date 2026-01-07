@@ -29,7 +29,11 @@ export default function VrmCanvas({ url, className }: VrmCanvasProps) {
     if (!handle) return;
 
     const controller = new AbortController();
-    const timeout = window.setTimeout(() => controller.abort(), LOAD_TIMEOUT_MS);
+    let timedOut = false;
+    const timeout = window.setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, LOAD_TIMEOUT_MS);
     let active = true;
 
     setError(null);
@@ -43,8 +47,17 @@ export default function VrmCanvas({ url, className }: VrmCanvasProps) {
         behavior.setVrm(vrm);
       })
       .catch((err) => {
-        if (!active || controller.signal.aborted) return;
-        setError(String(err));
+        if (!active) return;
+        if (controller.signal.aborted) {
+          if (timedOut) {
+            console.error("VRM load timed out", { url });
+            setError("VRM load timed out");
+          }
+          return;
+        }
+        const message = err instanceof Error ? err.message : String(err);
+        console.error("VRM load failed", err);
+        setError(message);
       })
       .finally(() => {
         window.clearTimeout(timeout);
@@ -64,8 +77,9 @@ export default function VrmCanvas({ url, className }: VrmCanvasProps) {
     <div className={cn("absolute inset-0 pointer-events-none", className)}>
       <canvas ref={canvasRef} className="block h-full w-full" />
       {error ? (
-        <div className="absolute bottom-2 right-2 rounded-md bg-black/60 px-2 py-1 text-[10px] text-white/80">
-          VRM 加载失败
+        <div className="absolute bottom-2 right-2 max-w-[70%] rounded-md bg-black/70 px-2 py-1 text-[10px] text-white/80">
+          <div className="font-semibold">VRM 加载失败</div>
+          <div className="mt-1 break-words whitespace-pre-wrap">{error}</div>
         </div>
       ) : null}
     </div>

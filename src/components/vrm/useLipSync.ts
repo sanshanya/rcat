@@ -20,6 +20,44 @@ type QueueItem = {
   speaking: boolean;
 };
 
+export type LipSyncRuntimeDebug = {
+  queueLen: number;
+  nextApplyInMs: number | null;
+  value: number;
+  target: number;
+  rmsRecent: boolean;
+  lastEventAgeMs: number;
+  hadRms: boolean;
+  fallbackActive: boolean;
+};
+
+let lipSyncRuntimeDebug: LipSyncRuntimeDebug = {
+  queueLen: 0,
+  nextApplyInMs: null,
+  value: 0,
+  target: 0,
+  rmsRecent: false,
+  lastEventAgeMs: 0,
+  hadRms: false,
+  fallbackActive: false,
+};
+
+const lipSyncRuntimeListeners = new Set<() => void>();
+
+export const subscribeLipSyncRuntimeDebug = (listener: () => void) => {
+  lipSyncRuntimeListeners.add(listener);
+  return () => {
+    lipSyncRuntimeListeners.delete(listener);
+  };
+};
+
+export const getLipSyncRuntimeDebug = () => lipSyncRuntimeDebug;
+
+const setLipSyncRuntimeDebug = (next: LipSyncRuntimeDebug) => {
+  lipSyncRuntimeDebug = next;
+  lipSyncRuntimeListeners.forEach((listener) => listener());
+};
+
 const GATE = 0.02;
 const SCALE = 6.0;
 const ATTACK_SEC = 0.05;
@@ -41,6 +79,7 @@ export const useLipSync = () => {
   const targetRef = useRef(0);
   const valueRef = useRef(0);
   const lastRmsEventRef = useRef(0);
+  const lastDebugEmitRef = useRef(0);
   const fallbackActiveRef = useRef(false);
   const fallbackPhaseRef = useRef(0);
   const hadRmsRef = useRef(false);
@@ -90,9 +129,8 @@ export const useLipSync = () => {
       if (idx > 0) {
         queue.splice(0, idx);
         targetRef.current = next;
-        if (hadSpeakingFalse) {
+        if (hadSpeakingFalse && queue.length === 0) {
           targetRef.current = 0;
-          queue.length = 0;
         }
       }
     }
@@ -103,7 +141,7 @@ export const useLipSync = () => {
         fallbackPhaseRef.current += delta * FALLBACK_HZ * Math.PI * 2;
         const wave = 0.5 + 0.5 * Math.sin(fallbackPhaseRef.current);
         targetRef.current = clamp01(FALLBACK_BASE + FALLBACK_AMP * wave);
-      } else {
+      } else if (queue.length === 0) {
         targetRef.current = 0;
       }
     }
@@ -115,8 +153,35 @@ export const useLipSync = () => {
     valueRef.current = current + (target - current) * step;
     valueRef.current = clamp01(valueRef.current);
 
+    if (import.meta.env.DEV && lipSyncRuntimeListeners.size > 0) {
+      const intervalMs = 100;
+      if (now - lastDebugEmitRef.current >= intervalMs) {
+        lastDebugEmitRef.current = now;
+        let minApplyAt: number | null = null;
+        for (const item of queue) {
+          if (minApplyAt === null || item.applyAt < minApplyAt) {
+            minApplyAt = item.applyAt;
+          }
+        }
+        const nextApplyInMs =
+          minApplyAt === null ? null : Math.max(0, Math.round(minApplyAt - now));
+        setLipSyncRuntimeDebug({
+          queueLen: queue.length,
+          nextApplyInMs,
+          value: valueRef.current,
+          target: targetRef.current,
+          rmsRecent,
+          lastEventAgeMs: Math.max(0, Math.round(now - lastRmsEventRef.current)),
+          hadRms: hadRmsRef.current,
+          fallbackActive: fallbackActiveRef.current,
+        });
+      }
+    }
+
     const shouldDrive =
-      (hadRmsRef.current && rmsRecent) || fallbackActiveRef.current;
+      queue.length > 0 ||
+      (hadRmsRef.current && rmsRecent) ||
+      fallbackActiveRef.current;
     if (!shouldDrive && valueRef.current <= 0.001 && targetRef.current === 0) {
       return null;
     }

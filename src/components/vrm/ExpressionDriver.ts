@@ -15,13 +15,13 @@ export type ExpressionName =
   | "neutral";
 
 const EXPRESSION_ALIASES: Record<ExpressionName, string[]> = {
-  aa: ["aa", "A", "a"],
+  aa: ["aa", "AA", "Aa", "A", "a", "Ah", "ah"],
   ih: ["ih", "I", "i"],
   ou: ["ou", "U", "u"],
   ee: ["ee", "E", "e"],
   oh: ["oh", "O", "o"],
   blink: ["blink", "Blink"],
-  happy: ["happy", "Joy", "joy"],
+  happy: ["happy", "Happy", "Joy", "joy", "Smile", "smile"],
   angry: ["angry", "Angry"],
   sad: ["sad", "Sorrow", "sorrow"],
   relaxed: ["relaxed", "Fun", "fun"],
@@ -33,6 +33,9 @@ const BLINK_LEFT_ALIASES = ["blinkLeft", "Blink_L"];
 const BLINK_RIGHT_ALIASES = ["blinkRight", "Blink_R"];
 
 const clamp01 = (value: number) => Math.min(1, Math.max(0, value));
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null;
 
 const getExpressionEntry = (
   manager: VRMExpressionManager | null | undefined,
@@ -48,14 +51,47 @@ const getExpressionEntry = (
     return getExpression.call(manager, name) ?? null;
   }
 
-  const map =
-    (manager as { expressionMap?: Map<string, unknown> })?.expressionMap ??
-    (manager as { expressions?: Map<string, unknown> })?.expressions;
-  if (map && typeof map.get === "function") {
-    return map.get(name) ?? null;
+  const managerAny = manager as unknown as { expressionMap?: unknown; expressions?: unknown };
+  const map = managerAny.expressionMap ?? managerAny.expressions;
+  if (map && typeof (map as { get?: unknown }).get === "function") {
+    return (map as { get: (key: string) => unknown }).get(name) ?? null;
+  }
+  if (isRecord(map)) {
+    return map[name] ?? null;
   }
 
   return null;
+};
+
+const getExpressionNames = (
+  manager: VRMExpressionManager | null | undefined
+): string[] => {
+  if (!manager) return [];
+  const managerAny = manager as unknown as { expressionMap?: unknown; expressions?: unknown };
+  const map = managerAny.expressionMap ?? managerAny.expressions;
+  if (map && typeof (map as { keys?: unknown }).keys === "function") {
+    return Array.from((map as { keys: () => IterableIterator<string> }).keys());
+  }
+  if (isRecord(map)) {
+    return Object.keys(map);
+  }
+  const list = (manager as { expressions?: unknown[] })?.expressions;
+  if (Array.isArray(list)) {
+    return list
+      .map((entry) =>
+        isRecord(entry) && typeof entry.expressionName === "string"
+          ? entry.expressionName
+          : null
+      )
+      .filter((name): name is string => Boolean(name));
+  }
+  return [];
+};
+
+const getBindingsCount = (entry: unknown): number => {
+  if (!isRecord(entry)) return 0;
+  const binds = entry.binds;
+  return Array.isArray(binds) ? binds.length : 0;
 };
 
 export const createExpressionDriver = (manager: VRMExpressionManager | null) => {
@@ -64,6 +100,13 @@ export const createExpressionDriver = (manager: VRMExpressionManager | null) => 
     for (const alias of aliases) {
       if (getExpressionEntry(manager, alias)) {
         return alias;
+      }
+    }
+    const aliasSet = new Set(aliases.map((alias) => alias.toLowerCase()));
+    const names = getExpressionNames(manager);
+    for (const name of names) {
+      if (aliasSet.has(name.toLowerCase())) {
+        return name;
       }
     }
     return null;
@@ -80,12 +123,33 @@ export const createExpressionDriver = (manager: VRMExpressionManager | null) => 
   const blinkLeftName = resolveAlias(BLINK_LEFT_ALIASES);
   const blinkRightName = resolveAlias(BLINK_RIGHT_ALIASES);
 
+  const bindingCountForName = (name: string | null) => {
+    if (!manager || !name) return 0;
+    return getBindingsCount(getExpressionEntry(manager, name));
+  };
+
   const supports = (name: ExpressionName) => {
     if (!manager) return false;
     if (name === "blink") {
-      return Boolean(resolved.blink || blinkLeftName || blinkRightName);
+      return (
+        bindingCountForName(resolved.blink) > 0 ||
+        bindingCountForName(blinkLeftName) > 0 ||
+        bindingCountForName(blinkRightName) > 0
+      );
     }
-    return Boolean(resolved[name]);
+    return bindingCountForName(resolved[name]) > 0;
+  };
+
+  const getBindings = (name: ExpressionName) => {
+    if (!manager) return 0;
+    if (name === "blink") {
+      return (
+        bindingCountForName(resolved.blink) +
+        bindingCountForName(blinkLeftName) +
+        bindingCountForName(blinkRightName)
+      );
+    }
+    return bindingCountForName(resolved[name]);
   };
 
   const setValue = (name: ExpressionName, value: number) => {
@@ -119,5 +183,5 @@ export const createExpressionDriver = (manager: VRMExpressionManager | null) => 
     return 0;
   };
 
-  return { supports, setValue, getValue };
+  return { supports, setValue, getValue, getBindings };
 };

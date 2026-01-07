@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import type { VRMExpressionManager } from "@pixiv/three-vrm";
 import { createExpressionDriver } from "@/components/vrm/ExpressionDriver";
+import { useLipSyncDebug } from "@/components/vrm/useLipSyncDebug";
 import { useVrmState } from "@/components/vrm/vrmStore";
 import { cn } from "@/lib/utils";
 
@@ -31,6 +32,7 @@ export default function VrmDebugPanel({ inline = false, className }: VrmDebugPan
   const { vrm } = useVrmState();
   const manager = (vrm?.expressionManager ?? null) as VRMExpressionManager | null;
   const driver = useMemo(() => createExpressionDriver(manager), [manager]);
+  const lipSync = useLipSyncDebug();
   const [values, setValues] = useState<Record<DebugExpressionName, number>>(EMPTY_VALUES);
   const [collapsed, setCollapsed] = useState(false);
 
@@ -57,6 +59,10 @@ export default function VrmDebugPanel({ inline = false, className }: VrmDebugPan
     ? "w-full rounded-xl border border-border/60 bg-background/60 p-2 shadow-sm"
     : "absolute right-3 top-3 z-20 w-56 rounded-xl border border-border/60 bg-background/80 p-3 shadow-lg backdrop-blur";
 
+  const rmsAgeMs = lipSync.lastRmsAt
+    ? Math.max(0, Math.round(performance.now() - lipSync.lastRmsAt))
+    : null;
+
   return (
     <div className={cn(containerClass, className)}>
       <div className="flex items-center justify-between gap-2">
@@ -79,10 +85,18 @@ export default function VrmDebugPanel({ inline = false, className }: VrmDebugPan
           )}
           {SLIDERS.map((slider) => {
             const disabled = !driver.supports(slider.id);
+            const bindings = manager ? driver.getBindings(slider.id) : 0;
             return (
               <label key={slider.id} className="grid gap-1 text-[11px]">
                 <div className="flex items-center justify-between">
-                  <span className="text-foreground/80">{slider.label}</span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-foreground/80">{slider.label}</span>
+                    {manager && bindings === 0 ? (
+                      <span className="text-[10px] text-muted-foreground">
+                        无表情绑定
+                      </span>
+                    ) : null}
+                  </div>
                   <span className="text-muted-foreground">
                     {values[slider.id].toFixed(2)}
                   </span>
@@ -106,6 +120,54 @@ export default function VrmDebugPanel({ inline = false, className }: VrmDebugPan
               </label>
             );
           })}
+          <div className="rounded-md border border-border/50 bg-muted/30 px-2 py-2 text-[10px] text-muted-foreground">
+            <div className="flex items-center justify-between">
+              <span className="font-semibold text-foreground/80">LipSync</span>
+              <span>{lipSync.hasTauri ? "Tauri" : "No Tauri"}</span>
+            </div>
+            {lipSync.lastRms ? (
+              <div className="mt-1 grid grid-cols-2 gap-x-3 gap-y-1">
+                <span>rms</span>
+                <span>{lipSync.lastRms.rms.toFixed(4)}</span>
+                <span>peak</span>
+                <span>{lipSync.lastRms.peak.toFixed(4)}</span>
+                <span>buffer</span>
+                <span>{lipSync.lastRms.bufferedMs}ms</span>
+                <span>speaking</span>
+                <span>
+                  {lipSync.lastRms.speaking
+                    ? "yes"
+                    : lipSync.lastRms.bufferedMs > 0
+                      ? "draining"
+                      : "no"}
+                </span>
+                <span>applied</span>
+                <span>{lipSync.runtime.value.toFixed(3)}</span>
+                <span>target</span>
+                <span>{lipSync.runtime.target.toFixed(3)}</span>
+                <span>queue</span>
+                <span>{lipSync.runtime.queueLen}</span>
+                <span>next</span>
+                <span>
+                  {lipSync.runtime.nextApplyInMs === null
+                    ? "-"
+                    : `${lipSync.runtime.nextApplyInMs}ms`}
+                </span>
+                <span>lastRmsW</span>
+                <span>{lipSync.weight.toFixed(3)}</span>
+                <span>events</span>
+                <span>{lipSync.rmsCount}</span>
+                <span>age</span>
+                <span>{rmsAgeMs ?? 0}ms</span>
+              </div>
+            ) : (
+              <div className="mt-1">No RMS events yet</div>
+            )}
+            <div className="mt-1">
+              speech: {lipSync.speechState}
+              {lipSync.lastSpeechAt ? " @" + Math.round(lipSync.lastSpeechAt) : ""}
+            </div>
+          </div>
         </div>
       )}
     </div>
