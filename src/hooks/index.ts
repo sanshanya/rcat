@@ -14,3 +14,4 @@ export * from "./useToggleExpand";
 export * from "./useAutosizeTextarea";
 export * from "./useModelSelection";
 export * from "./useSyncWindowModeWithConversation";
+export * from "./useSkinPreference";

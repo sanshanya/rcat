@@ -18,7 +18,7 @@ import {
   type ModelEditorDraft,
 } from "@/components/settings/ModelEditorDialog";
 import { useChatUi } from "@/contexts/ChatUiContext";
-import type { AiConfig, AiModel, AiProvider } from "@/types";
+import type { AiConfig, AiModel, AiProvider, SkinMode } from "@/types";
 import { cn } from "@/lib/utils";
 import { setAiProfile, setAiProvider, testAiProfile } from "@/services";
 
@@ -26,6 +26,8 @@ export type SettingsViewProps = {
   aiConfig: AiConfig | null;
   onRefreshAiConfig: () => Promise<AiConfig | null>;
   onClose: () => void;
+  skinMode: SkinMode;
+  onSkinModeChange: (mode: SkinMode) => void;
 };
 
 const PROVIDER_LABELS: Record<AiProvider, string> = {
@@ -34,10 +36,17 @@ const PROVIDER_LABELS: Record<AiProvider, string> = {
   compatible: "OpenAI-compatible",
 };
 
+const SKIN_MODE_LABELS: Record<SkinMode, string> = {
+  off: "关闭",
+  vrm: "VRM",
+};
+
 export function SettingsView({
   aiConfig,
   onRefreshAiConfig,
   onClose,
+  skinMode,
+  onSkinModeChange,
 }: SettingsViewProps) {
   const { capsuleProps } = useChatUi();
   const initialProvider: AiProvider = useMemo(() => {
@@ -313,6 +322,13 @@ export function SettingsView({
       .finally(() => setTesting(false));
   }, [apiKey, baseUrl, model, normalizedModels, onRefreshAiConfig, provider]);
 
+  const handleSkinModeChange = useCallback(
+    (next: string) => {
+      onSkinModeChange(next as SkinMode);
+    },
+    [onSkinModeChange]
+  );
+
   return (
     <>
       <Capsule {...capsuleProps} />
@@ -335,6 +351,27 @@ export function SettingsView({
 
         <div className="mt-3 min-h-0 flex-1 overflow-y-auto pr-1 text-sm text-muted-foreground">
           <div className="space-y-2">
+            <div className="text-xs font-semibold text-foreground/80">
+              外观
+            </div>
+            <div className="rounded-lg border border-border/50 bg-background/40 px-3 py-2">
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-xs opacity-70">皮肤</div>
+                <Select value={skinMode} onValueChange={handleSkinModeChange}>
+                  <SelectTrigger className="h-7 px-2 py-1 text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="off" textValue={SKIN_MODE_LABELS.off}>
+                      {SKIN_MODE_LABELS.off}
+                    </SelectItem>
+                    <SelectItem value="vrm" textValue={SKIN_MODE_LABELS.vrm}>
+                      {SKIN_MODE_LABELS.vrm}
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
             <div className="text-xs font-semibold text-foreground/80">AI</div>
             <div className="rounded-lg border border-border/50 bg-background/40 px-3 py-2">
               <div className="mb-2 flex flex-wrap items-center justify-between gap-2">

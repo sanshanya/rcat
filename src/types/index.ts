@@ -21,3 +21,5 @@ export interface WindowSize {
   w: number;
   h: number;
 }
+
+export type SkinMode = "off" | "vrm";

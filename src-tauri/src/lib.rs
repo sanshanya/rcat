@@ -39,8 +39,8 @@ impl WindowMode {
         match self {
             // Mini mode is an unobtrusive launcher; frontend will auto-fit precisely.
             WindowMode::Mini => (64.0, 64.0),
-            WindowMode::Input => (MIN_INPUT_W, INPUT_H_COLLAPSED),
-            WindowMode::Result => (400.0, 500.0),
+            WindowMode::Input => (720.0, INPUT_H_COLLAPSED),
+            WindowMode::Result => (900.0, 500.0),
         }
     }
 }
@@ -389,6 +389,9 @@ pub fn run() {
             let window_state = app.state::<WindowStateStore>();
             window_state.load_from_disk(&app_handle);
             window_state.spawn_persist_task(app_handle.clone());
+
+            let voice_state = app.state::<services::voice::VoiceState>();
+            voice_state.spawn_rms_emitter(app_handle.clone());
 
             if let Some(window) = app.get_webview_window("main") {
                 window_state.restore_anchor_to_window(&window);

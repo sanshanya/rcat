@@ -1,15 +1,33 @@
 use log::{debug, error, info, warn};
-use rcat_voice::generator::{TtsEngine, build_from_env};
+use rcat_voice::audio::RmsPayload;
+use rcat_voice::generator::{TtsEngine, build_from_env_with_rms_sender};
 use rcat_voice::streaming::StreamCancelHandle;
+use serde::Serialize;
+use tauri::Emitter;
 #[cfg(target_os = "windows")]
 use std::sync::OnceLock;
 use std::sync::{Arc, Mutex, Weak};
-use tokio::sync::Mutex as AsyncMutex;
+use tokio::sync::{Mutex as AsyncMutex, mpsc};
+
+pub const EVT_VOICE_RMS: &str = "voice-rms";
+pub const EVT_VOICE_SPEECH_START: &str = "voice-speech-start";
+pub const EVT_VOICE_SPEECH_END: &str = "voice-speech-end";
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoiceRmsPayload {
+    pub rms: f32,
+    pub peak: f32,
+    pub buffered_ms: u64,
+    pub speaking: bool,
+}
 
 pub struct VoiceState {
     engine: Mutex<VoiceEngineState>,
     speak_lock: AsyncMutex<()>,
     stream: AsyncMutex<Option<StreamCancelHandle>>,
+    rms_tx: mpsc::Sender<RmsPayload>,
+    rms_rx: Arc<AsyncMutex<Option<mpsc::Receiver<RmsPayload>>>>,
 }
 
 #[derive(Default)]
@@ -20,11 +38,38 @@ struct VoiceEngineState {
 
 impl VoiceState {
     pub fn new() -> Self {
+        let (rms_tx, rms_rx) = mpsc::channel(64);
         Self {
             engine: Mutex::new(VoiceEngineState::default()),
             speak_lock: AsyncMutex::new(()),
             stream: AsyncMutex::new(None),
+            rms_tx,
+            rms_rx: Arc::new(AsyncMutex::new(Some(rms_rx))),
         }
+    }
+
+    pub fn spawn_rms_emitter(&self, app: tauri::AppHandle) {
+        let rms_rx = self.rms_rx.clone();
+        tauri::async_runtime::spawn(async move {
+            let mut rx = {
+                let mut guard = rms_rx.lock().await;
+                guard.take()
+            };
+            let Some(mut rx) = rx else {
+                return;
+            };
+            while let Some(payload) = rx.recv().await {
+                let _ = app.emit(
+                    EVT_VOICE_RMS,
+                    VoiceRmsPayload {
+                        rms: payload.rms,
+                        peak: payload.peak,
+                        buffered_ms: payload.buffered_ms,
+                        speaking: payload.speaking,
+                    },
+                );
+            }
+        });
     }
 
     pub fn get_or_build_engine(&self, force_persist: bool) -> Result<Arc<dyn TtsEngine>, String> {
@@ -58,7 +103,7 @@ impl VoiceState {
                 debug!("voice: reuse cached TTS engine");
                 return Ok(engine);
             }
-            let engine = build_from_env().map_err(|e| {
+            let engine = build_from_env_with_rms_sender(self.rms_tx.clone()).map_err(|e| {
                 error!("TTS init failed: {e:?}");
                 format!("TTS init failed: {e}")
             })?;
@@ -77,7 +122,7 @@ impl VoiceState {
             Ok(engine)
         } else {
             debug!("voice: building non-persistent TTS engine");
-            let engine = build_from_env().map_err(|e| {
+            let engine = build_from_env_with_rms_sender(self.rms_tx.clone()).map_err(|e| {
                 error!("TTS init failed: {e:?}");
                 format!("TTS init failed: {e}")
             })?;
@@ -320,13 +365,25 @@ pub fn force_preload_libtorch() {
 
 #[tauri::command]
 pub async fn voice_play_text(
+    app: tauri::AppHandle,
     voice: tauri::State<'_, VoiceState>,
     text: String,
 ) -> Result<(), String> {
-    let text = text.trim();
+    let text = text.trim().to_string();
     if text.is_empty() {
         return Ok(());
     }
+
+    let _ = app.emit(EVT_VOICE_SPEECH_START, ());
+    struct SpeechEndGuard {
+        app: tauri::AppHandle,
+    }
+    impl Drop for SpeechEndGuard {
+        fn drop(&mut self) {
+            let _ = self.app.emit(EVT_VOICE_SPEECH_END, ());
+        }
+    }
+    let _speech_guard = SpeechEndGuard { app: app.clone() };
 
     // Interrupt any active streaming session and current playback.
     voice.cancel_active_stream().await;
@@ -377,7 +434,7 @@ pub async fn voice_play_text(
         return result;
     }
 
-    let metrics = tts.speak(text).await.map_err(|e| {
+    let metrics = tts.speak(&text).await.map_err(|e| {
         error!("TTS speak failed: {e:?}");
         format!("TTS speak failed: {e}")
     })?;
@@ -411,7 +468,10 @@ pub async fn voice_play_text(
 }
 
 #[tauri::command]
-pub async fn voice_stop(voice: tauri::State<'_, VoiceState>) -> Result<(), String> {
+pub async fn voice_stop(
+    app: tauri::AppHandle,
+    voice: tauri::State<'_, VoiceState>,
+) -> Result<(), String> {
     voice.cancel_active_stream().await;
     let engine = voice.get_engine_for_stop()?;
     if let Some(engine) = engine {
@@ -420,6 +480,7 @@ pub async fn voice_stop(voice: tauri::State<'_, VoiceState>) -> Result<(), Strin
             .await
             .map_err(|e| format!("TTS stop failed: {e}"))?;
     }
+    let _ = app.emit(EVT_VOICE_SPEECH_END, ());
     Ok(())
 }
 

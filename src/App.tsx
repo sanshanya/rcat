@@ -22,14 +22,15 @@ import {
   useGeneratingTracker,
   useModelSelection,
   useRouteController,
+  useSkinPreference,
   useSyncWindowModeWithConversation,
   useTauriEvent,
   useToggleExpand,
   useWindowManager,
 } from "./hooks";
-import { createTauriChatTransport, voicePrepare } from "./services";
+import { createTauriChatTransport, resizeWindow, voicePrepare } from "./services";
 import { cn } from "@/lib/utils";
-import { conversationDetailToUiMessages, reportPromiseError } from "@/utils";
+import { conversationDetailToUiMessages, isTauriContext, reportPromiseError } from "@/utils";
 import { ChatUiProvider } from "@/contexts/ChatUiContext";
 
 type ChatDonePayload = {
@@ -67,6 +68,7 @@ function App() {
   const toolModeRef = useRef(toolMode);
   const [voiceMode, setVoiceMode] = useState(false);
   const voiceModeRef = useRef(voiceMode);
+  const { skinMode, setSkinMode } = useSkinPreference();
 
   // Keep refs in sync immediately for event handlers/transport (avoid 1-render lag).
   toolModeRef.current = toolMode;
@@ -152,6 +154,20 @@ function App() {
     changeMode,
     enabled: activeRoute === "main",
   });
+
+  useEffect(() => {
+    if (!isTauriContext()) return;
+    if (skinMode !== "vrm") return;
+    if (windowMode === "mini") return;
+
+    const desiredWidth = windowMode === "result" ? 1100 : 960;
+    if (window.innerWidth >= desiredWidth) return;
+    void resizeWindow(desiredWidth, window.innerHeight).catch(
+      reportPromiseError("App.resizeWindow:skinMode", {
+        onceKey: "App.resizeWindow:skinMode",
+      })
+    );
+  }, [skinMode, windowMode]);
 
   useEffect(() => {
     if (!activeConversation) return;
@@ -394,6 +410,7 @@ function App() {
     chatProps,
     showChat,
     modelSpec: selectedModelSpec,
+    skinMode,
   };
 
   return (
@@ -406,7 +423,7 @@ function App() {
       <div
         ref={shellRef}
         className={cn(
-          "flex flex-col items-stretch gap-2 p-0",
+          "relative z-10 flex flex-col items-stretch gap-2 p-0",
           windowMode === "mini" ? "w-fit" : "w-full",
           windowMode === "result" && "h-full min-h-0"
         )}
@@ -420,6 +437,8 @@ function App() {
                 aiConfig={aiConfig}
                 onRefreshAiConfig={refreshAiConfig}
                 onClose={closeSettings}
+                skinMode={skinMode}
+                onSkinModeChange={setSkinMode}
               />
             ) : windowMode === "mini" ? (
               <MiniView />

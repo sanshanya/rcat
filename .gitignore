@@ -88,3 +88,6 @@ coverage/
 # ========================
 onnx/
 models/
+
+# VRM assets we download locally (README kept tracked manually)
+/public/vrm/*.vrm

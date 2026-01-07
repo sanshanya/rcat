@@ -18,3 +18,12 @@ export const EVT_VOICE_ASR_RESULT = 'voice-asr-result' as const;
 
 /** Voice conversation state event */
 export const EVT_VOICE_CONVERSATION_STATE = 'voice-conversation-state' as const;
+
+/** Voice RMS (lipsync) event */
+export const EVT_VOICE_RMS = 'voice-rms' as const;
+
+/** Voice speech start event */
+export const EVT_VOICE_SPEECH_START = 'voice-speech-start' as const;
+
+/** Voice speech end event */
+export const EVT_VOICE_SPEECH_END = 'voice-speech-end' as const;

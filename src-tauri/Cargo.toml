@@ -32,7 +32,7 @@ libsql = { version = "0.9.29", default-features = false, features = ["core", "re
 uuid = { version = "1", features = ["v4"] }
 # Voice: stable in-process backend matrix.
 # Optional: Smart Turn (ONNX) turn detection.
-rcat-voice = { path = "../rcat-voice", features = ["gpt-sovits-onnx", "asr-sherpa", "asr-mic", "turn-smart", "tts-remote"] }
+rcat-voice = { path = "../rcat-voice", features = ["asr-sherpa", "asr-mic", "turn-smart"] }
 
 # Optional: Rust -> TypeScript type generation (dev tooling)
 specta = { version = "2.0.0-rc.22", features = ["derive"], optional = true }

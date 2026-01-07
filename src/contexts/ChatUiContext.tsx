@@ -8,7 +8,7 @@ import {
 import { Capsule } from "@/components";
 import ChatMessages from "@/components/ChatMessages";
 import PromptInput from "@/components/PromptInput";
-import type { AiModel } from "@/types";
+import type { AiModel, SkinMode } from "@/types";
 
 export type ChatUiContextValue = {
   capsuleProps: ComponentProps<typeof Capsule>;
@@ -16,6 +16,7 @@ export type ChatUiContextValue = {
   chatProps: ComponentProps<typeof ChatMessages>;
   showChat: boolean;
   modelSpec: AiModel | null;
+  skinMode: SkinMode;
 };
 
 const ChatUiContext = createContext<ChatUiContextValue | null>(null);
@@ -39,4 +40,3 @@ export function useChatUi(): ChatUiContextValue {
   }
   return ctx;
 }
-
