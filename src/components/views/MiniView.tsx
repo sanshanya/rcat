@@ -1,8 +1,8 @@
 import { Capsule } from "@/components";
-import { useChatUi } from "@/contexts/ChatUiContext";
+import { useChatContext } from "@/contexts/ChatContext";
 
 export function MiniView() {
-  const { capsuleProps } = useChatUi();
+  const { capsuleProps } = useChatContext();
   return <Capsule {...capsuleProps} />;
 }
 

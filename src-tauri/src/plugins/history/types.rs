@@ -12,6 +12,8 @@ pub struct ConversationSummary {
     pub updated_at_ms: u64,
     pub last_seen_at_ms: u64,
     pub message_count: u32,
+    pub last_message_at_ms: u64,
+    pub last_role: String,
     pub has_unseen: bool,
     pub is_active: bool,
 }

@@ -91,3 +91,6 @@ models/
 
 # VRM assets we download locally (README kept tracked manually)
 /public/vrm/*.vrm
+lobe-vidol-main/
+/target-win
+/src-tauri/target-win

@@ -324,10 +324,15 @@ pub fn run() {
             services::history::history_fork_conversation,
             services::history::history_rename_conversation,
             // Vision commands
+            #[cfg(feature = "vision")]
             services::vision::capture_screen_text,
+            #[cfg(feature = "vision")]
             services::vision::analyze_screen_vlm,
+            #[cfg(feature = "vision")]
             services::vision::list_capturable_windows,
+            #[cfg(feature = "vision")]
             services::vision::get_smart_window,
+            #[cfg(feature = "vision")]
             services::vision::capture_smart
         ])
         .on_window_event(|window, event| {

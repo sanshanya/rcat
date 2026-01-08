@@ -39,9 +39,9 @@ specta = { version = "2.0.0-rc.22", features = ["derive"], optional = true }
 specta-typescript = { version = "0.0.9", optional = true }
 
 # Vision module dependencies
-xcap = "0.8.0"
-image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
-base64 = "0.22"
+xcap = { version = "0.8.0", optional = true }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"], optional = true }
+base64 = { version = "0.22", optional = true }
 
 # Windows OCR (Windows-only)
 [target.'cfg(target_os = "windows")'.dependencies]
@@ -57,3 +57,4 @@ windows = { version = "0.62.2", features = [
 [features]
 # Enables dev-only Rust -> TS type export binary.
 typegen = ["dep:specta", "dep:specta-typescript"]
+vision = ["dep:xcap", "dep:image", "dep:base64"]

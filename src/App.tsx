@@ -28,10 +28,10 @@ import {
   useToggleExpand,
   useWindowManager,
 } from "./hooks";
-import { createTauriChatTransport, resizeWindow, voicePrepare } from "./services";
+import { createTauriChatTransport, voicePrepare } from "./services";
 import { cn } from "@/lib/utils";
 import { conversationDetailToUiMessages, isTauriContext, reportPromiseError } from "@/utils";
-import { ChatUiProvider } from "@/contexts/ChatUiContext";
+import { ChatProvider } from "@/contexts/ChatContext";
 
 type ChatDonePayload = {
   requestId: string;
@@ -154,20 +154,6 @@ function App() {
     changeMode,
     enabled: activeRoute === "main",
   });
-
-  useEffect(() => {
-    if (!isTauriContext()) return;
-    if (skinMode !== "vrm") return;
-    if (windowMode === "mini") return;
-
-    const desiredWidth = windowMode === "result" ? 1100 : 960;
-    if (window.innerWidth >= desiredWidth) return;
-    void resizeWindow(desiredWidth, window.innerHeight).catch(
-      reportPromiseError("App.resizeWindow:skinMode", {
-        onceKey: "App.resizeWindow:skinMode",
-      })
-    );
-  }, [skinMode, windowMode]);
 
   useEffect(() => {
     if (!activeConversation) return;
@@ -411,6 +397,7 @@ function App() {
     showChat,
     modelSpec: selectedModelSpec,
     skinMode,
+    errorText,
   };
 
   return (
@@ -423,15 +410,14 @@ function App() {
       <div
         ref={shellRef}
         className={cn(
-          "relative z-10 flex flex-col items-stretch gap-2 p-0",
-          windowMode === "mini" ? "w-fit" : "w-full",
+          "relative z-10 flex flex-col items-stretch gap-2 p-0 w-fit",
           windowMode === "result" && "h-full min-h-0"
         )}
       >
         <MotionConfig
           transition={{ type: "spring", stiffness: 350, damping: 30 }}
         >
-          <ChatUiProvider value={chatUiValue}>
+          <ChatProvider value={chatUiValue}>
             {isSettingsOpen ? (
               <SettingsView
                 aiConfig={aiConfig}
@@ -443,11 +429,11 @@ function App() {
             ) : windowMode === "mini" ? (
               <MiniView />
             ) : windowMode === "input" ? (
-              <InputView errorText={errorText} />
+              <InputView />
             ) : (
-              <ResultView errorText={errorText} />
+              <ResultView />
             )}
-          </ChatUiProvider>
+          </ChatProvider>
         </MotionConfig>
       </div>
     </div>

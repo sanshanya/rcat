@@ -116,6 +116,9 @@ export const useLipSync = () => {
     const now = performance.now();
     const queue = queueRef.current;
 
+    // Track when we last applied an event (not when we received it)
+    let appliedAny = false;
+
     if (queue.length > 0) {
       let next = targetRef.current;
       let hadSpeakingFalse = false;
@@ -129,21 +132,32 @@ export const useLipSync = () => {
       if (idx > 0) {
         queue.splice(0, idx);
         targetRef.current = next;
+        appliedAny = true;
+        // Update the "last event time" to NOW (when applied), not when received
+        lastRmsEventRef.current = now;
         if (hadSpeakingFalse && queue.length === 0) {
           targetRef.current = 0;
+        }
+        // Debug log for applied events
+        if (import.meta.env.DEV) {
+          console.log(`LipSync: applied ${idx} events, target=${next.toFixed(3)}, queue=${queue.length}`);
         }
       }
     }
 
-    const rmsRecent = now - lastRmsEventRef.current <= SILENCE_TIMEOUT_MS;
-    if (!rmsRecent) {
-      if (fallbackActiveRef.current && !hadRmsRef.current) {
-        fallbackPhaseRef.current += delta * FALLBACK_HZ * Math.PI * 2;
-        const wave = 0.5 + 0.5 * Math.sin(fallbackPhaseRef.current);
-        targetRef.current = clamp01(FALLBACK_BASE + FALLBACK_AMP * wave);
-      } else if (queue.length === 0) {
-        targetRef.current = 0;
-      }
+    // Simplified logic: only decay when speech has ENDED (voice-speech-end received)
+    // During speech, keep the last target value even if queue is temporarily empty
+    const speechEnded = !fallbackActiveRef.current;
+    const queueEmpty = queue.length === 0;
+    const noRecentActivity = now - lastRmsEventRef.current > SILENCE_TIMEOUT_MS;
+
+    if (speechEnded && queueEmpty && noRecentActivity && !appliedAny) {
+      targetRef.current = 0;
+    } else if (fallbackActiveRef.current && !hadRmsRef.current && queueEmpty && noRecentActivity) {
+      // Fallback sine wave only if we never received RMS during speech (OS TTS)
+      fallbackPhaseRef.current += delta * FALLBACK_HZ * Math.PI * 2;
+      const wave = 0.5 + 0.5 * Math.sin(fallbackPhaseRef.current);
+      targetRef.current = clamp01(FALLBACK_BASE + FALLBACK_AMP * wave);
     }
 
     const current = valueRef.current;
@@ -170,7 +184,7 @@ export const useLipSync = () => {
           nextApplyInMs,
           value: valueRef.current,
           target: targetRef.current,
-          rmsRecent,
+          rmsRecent: !noRecentActivity,
           lastEventAgeMs: Math.max(0, Math.round(now - lastRmsEventRef.current)),
           hadRms: hadRmsRef.current,
           fallbackActive: fallbackActiveRef.current,
@@ -180,7 +194,7 @@ export const useLipSync = () => {
 
     const shouldDrive =
       queue.length > 0 ||
-      (hadRmsRef.current && rmsRecent) ||
+      (hadRmsRef.current && !noRecentActivity) ||
       fallbackActiveRef.current;
     if (!shouldDrive && valueRef.current <= 0.001 && targetRef.current === 0) {
       return null;

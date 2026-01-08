@@ -6,6 +6,7 @@ use crate::services::config::AiProvider;
 use crate::services::prompts;
 
 use super::types::ConversationMessage;
+use super::HistoryError;
 
 fn build_transcript(messages: &[ConversationMessage]) -> String {
     let mut out = String::new();
@@ -26,10 +27,14 @@ fn build_transcript(messages: &[ConversationMessage]) -> String {
     out
 }
 
-pub(super) async fn generate_title(messages: &[ConversationMessage]) -> Result<String, String> {
+pub(super) async fn generate_title(
+    messages: &[ConversationMessage],
+) -> Result<String, HistoryError> {
     let config = load_ai_config();
     if config.api_key.is_empty() {
-        return Err("AI key missing for title generation".to_string());
+        return Err(HistoryError::internal(
+            "AI key missing for title generation",
+        ));
     }
 
     // Prefer a non-reasoning chat model for title generation. Reasoning models (e.g. DeepSeek R1)
@@ -71,7 +76,7 @@ pub(super) async fn generate_title(messages: &[ConversationMessage]) -> Result<S
         .chat()
         .create_byot::<_, JsonValue>(&request)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| HistoryError::internal(e.to_string()))?;
 
     let message = response
         .get("choices")
@@ -103,7 +108,7 @@ pub(super) async fn generate_title(messages: &[ConversationMessage]) -> Result<S
     let title = title.trim().trim_matches('"').trim().to_string();
 
     if title.is_empty() {
-        return Err("Empty title from model".to_string());
+        return Err(HistoryError::internal("Empty title from model"));
     }
 
     Ok(title)

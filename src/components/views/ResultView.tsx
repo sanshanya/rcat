@@ -5,17 +5,20 @@ import { ContextUsageIndicator } from "@/components/ai-elements/context";
 import { Capsule } from "@/components";
 import ChatMessages from "@/components/ChatMessages";
 import PromptInput from "@/components/PromptInput";
-import { useChatUi } from "@/contexts/ChatUiContext";
+import { useChatContext } from "@/contexts/ChatContext";
 import { estimateLanguageModelUsageFromMessages } from "@/utils";
 import VrmSidePanel from "@/components/vrm/VrmSidePanel";
 
-export type ResultViewProps = {
-  errorText?: string | null;
-};
-
-export function ResultView({ errorText }: ResultViewProps) {
-  const { capsuleProps, promptProps, chatProps, showChat, modelSpec, skinMode } =
-    useChatUi();
+export function ResultView() {
+  const {
+    capsuleProps,
+    promptProps,
+    chatProps,
+    showChat,
+    modelSpec,
+    skinMode,
+    errorText,
+  } = useChatContext();
   const isGenerating = Boolean(
     promptProps.isConversationGenerating ||
     promptProps.isStreaming ||
@@ -34,8 +37,8 @@ export function ResultView({ errorText }: ResultViewProps) {
   );
 
   return (
-    <div className="flex min-h-0 w-full items-stretch gap-3">
-      <div className="flex min-h-0 flex-1 flex-col gap-2">
+    <div className="flex min-h-0 w-fit items-stretch gap-3">
+      <div className="flex min-h-0 w-[var(--chat-column-width)] flex-none flex-col gap-2">
         <Capsule {...capsuleProps} />
         <PromptInput {...promptProps} />
         {showChat ? <ChatMessages {...chatProps} /> : null}

@@ -157,7 +157,6 @@ export const useVrmBehavior = () => {
         driver.setValue("aa", mouth);
       }
     }
-    vrmRef.current.expressionManager?.update?.();
   }, [lipSync, updateBlink, updateHeadIdle, updateLookAt]);
 
   return { setVrm, onFrame };

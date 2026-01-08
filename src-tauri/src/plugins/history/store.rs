@@ -4,13 +4,14 @@
 //! - Remote Turso/libSQL databases via `TURSO_DATABASE_URL` / `LIBSQL_DATABASE_URL` (+ token).
 //! - Local file fallback in the app `savedata` directory (`history.db`).
 
+use std::collections::HashMap;
 use std::ops::Deref;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{future::Future, time::Duration};
 
-use libsql::{params, Builder, Database, Value};
+use libsql::{params, Builder, Database, Statement, Value};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use uuid::Uuid;
 
@@ -29,6 +30,7 @@ const MAX_REMOTE_CONNECTIONS: usize = 8;
 const MAX_LOCAL_CONNECTIONS: usize = 4;
 const DEFAULT_PAGE_LIMIT: u32 = 80;
 const MAX_PAGE_LIMIT: u32 = 500;
+const TITLE_AUTO_COOLDOWN_MS: u64 = 120_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DbMode {
@@ -50,6 +52,7 @@ struct HistoryStoreInner {
     /// Bound the number of concurrent connections (important for remote and local).
     conn_gate: Arc<Semaphore>,
     conn_pool: Mutex<Vec<libsql::Connection>>,
+    title_cooldowns: Mutex<HashMap<String, u64>>,
 }
 
 /// A pooled libSQL connection (returned to the pool on drop).
@@ -181,6 +184,7 @@ impl HistoryStore {
                     write_gate,
                     conn_gate: Arc::new(Semaphore::new(conn_limit)),
                     conn_pool: Mutex::new(Vec::new()),
+                    title_cooldowns: Mutex::new(HashMap::new()),
                 }),
             };
             store.migrate().await.map_err(|e| e.to_string())?;
@@ -237,6 +241,23 @@ impl HistoryStore {
             .map_err(|_| HistoryError::internal("History DB write gate closed"))
     }
 
+    async fn table_has_column(
+        &self,
+        conn: &libsql::Connection,
+        table: &str,
+        column: &str,
+    ) -> Result<bool, HistoryError> {
+        let sql = format!("PRAGMA table_info({table});");
+        let mut rows = conn.query(&sql, ()).await?;
+        while let Some(row) = rows.next().await? {
+            let name: String = row.get(1)?;
+            if name == column {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     async fn migrate(&self) -> Result<(), HistoryError> {
         let conn = self.connect().await?;
 
@@ -253,7 +274,7 @@ impl HistoryStore {
         .await?;
 
         conn.execute(
-            "CREATE TABLE IF NOT EXISTS conversations (\n  id TEXT PRIMARY KEY NOT NULL,\n  title TEXT NOT NULL,\n  title_auto INTEGER NOT NULL DEFAULT 0,\n  created_at_ms INTEGER NOT NULL,\n  updated_at_ms INTEGER NOT NULL,\n  last_seen_at_ms INTEGER NOT NULL,\n  archived INTEGER NOT NULL DEFAULT 0\n);",
+            "CREATE TABLE IF NOT EXISTS conversations (\n  id TEXT PRIMARY KEY NOT NULL,\n  title TEXT NOT NULL,\n  title_auto INTEGER NOT NULL DEFAULT 0,\n  created_at_ms INTEGER NOT NULL,\n  updated_at_ms INTEGER NOT NULL,\n  last_seen_at_ms INTEGER NOT NULL,\n  last_message_at_ms INTEGER NOT NULL DEFAULT 0,\n  last_role TEXT NOT NULL DEFAULT '',\n  archived INTEGER NOT NULL DEFAULT 0,\n  message_count INTEGER NOT NULL DEFAULT 0\n);",
             (),
         )
         .await?;
@@ -271,10 +292,70 @@ impl HistoryStore {
         .await?;
 
         conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_messages_conversation_role ON messages(conversation_id, role);",
+            (),
+        )
+        .await?;
+
+        conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_conversations_updated ON conversations(updated_at_ms);",
             (),
         )
         .await?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_conversations_archived_updated ON conversations(archived, updated_at_ms);",
+            (),
+        )
+        .await?;
+
+        let mut backfill_counts = false;
+        let mut backfill_last_fields = false;
+        if !self.table_has_column(&conn, "conversations", "message_count").await? {
+            conn.execute(
+                "ALTER TABLE conversations ADD COLUMN message_count INTEGER NOT NULL DEFAULT 0;",
+                (),
+            )
+            .await?;
+            backfill_counts = true;
+        }
+
+        if !self
+            .table_has_column(&conn, "conversations", "last_message_at_ms")
+            .await?
+        {
+            conn.execute(
+                "ALTER TABLE conversations ADD COLUMN last_message_at_ms INTEGER NOT NULL DEFAULT 0;",
+                (),
+            )
+            .await?;
+            backfill_last_fields = true;
+        }
+
+        if !self.table_has_column(&conn, "conversations", "last_role").await? {
+            conn.execute(
+                "ALTER TABLE conversations ADD COLUMN last_role TEXT NOT NULL DEFAULT '';",
+                (),
+            )
+            .await?;
+            backfill_last_fields = true;
+        }
+
+        if backfill_counts {
+            conn.execute(
+                "UPDATE conversations\n   SET message_count = (\n     SELECT COALESCE(MAX(seq), 0)\n       FROM messages\n      WHERE conversation_id = conversations.id\n   );",
+                (),
+            )
+            .await?;
+        }
+
+        if backfill_last_fields {
+            conn.execute(
+                "UPDATE conversations\n   SET last_message_at_ms = COALESCE((\n     SELECT created_at_ms\n       FROM messages\n      WHERE conversation_id = conversations.id\n      ORDER BY seq DESC\n      LIMIT 1\n   ), 0),\n       last_role = COALESCE((\n     SELECT role\n       FROM messages\n      WHERE conversation_id = conversations.id\n      ORDER BY seq DESC\n      LIMIT 1\n   ), '');",
+                (),
+            )
+            .await?;
+        }
 
         Ok(())
     }
@@ -301,7 +382,7 @@ impl HistoryStore {
 
         let mut rows = conn
             .query(
-                "SELECT c.id, c.title, c.title_auto, c.created_at_ms, c.updated_at_ms, c.last_seen_at_ms,\n        COALESCE(MAX(m.seq), 0)\n   FROM conversations c\n   LEFT JOIN messages m ON m.conversation_id = c.id\n  WHERE c.archived = 0\n  GROUP BY c.id\n  ORDER BY c.updated_at_ms DESC\n  LIMIT 50;",
+                "SELECT id, title, title_auto, created_at_ms, updated_at_ms, last_seen_at_ms, message_count, last_message_at_ms, last_role\n   FROM conversations\n  WHERE archived = 0\n  ORDER BY updated_at_ms DESC\n  LIMIT 50;",
                 (),
             )
             .await?;
@@ -314,9 +395,9 @@ impl HistoryStore {
             let created_at_ms: i64 = row.get(3)?;
             let updated_at_ms: i64 = row.get(4)?;
             let last_seen_at_ms: i64 = row.get(5)?;
-            // Note: we use MAX(seq) as a cheap proxy for message count.
-            // Seq is 1-based and contiguous under normal operations (append + tail truncation).
-            let max_seq: i64 = row.get(6)?;
+            let message_count: i64 = row.get(6)?;
+            let last_message_at_ms: i64 = row.get(7)?;
+            let last_role: String = row.get(8)?;
 
             let has_unseen = updated_at_ms > last_seen_at_ms;
             let is_active = active_id.as_deref() == Some(id.as_str());
@@ -328,7 +409,9 @@ impl HistoryStore {
                 created_at_ms: created_at_ms.max(0) as u64,
                 updated_at_ms: updated_at_ms.max(0) as u64,
                 last_seen_at_ms: last_seen_at_ms.max(0) as u64,
-                message_count: max_seq.max(0) as u32,
+                message_count: message_count.max(0) as u32,
+                last_message_at_ms: last_message_at_ms.max(0) as u64,
+                last_role,
                 has_unseen,
                 is_active,
             });
@@ -346,7 +429,7 @@ impl HistoryStore {
 
         let mut conv_rows = conn
             .query(
-                "SELECT id, title, title_auto, created_at_ms, updated_at_ms, last_seen_at_ms, archived\n   FROM conversations\n  WHERE id = ?1\n  LIMIT 1;",
+                "SELECT id, title, title_auto, created_at_ms, updated_at_ms, last_seen_at_ms, archived, message_count, last_message_at_ms, last_role\n   FROM conversations\n  WHERE id = ?1\n  LIMIT 1;",
                 params![conversation_id],
             )
             .await?;
@@ -363,6 +446,9 @@ impl HistoryStore {
         let updated_at_ms: i64 = conv_row.get(4)?;
         let last_seen_at_ms: i64 = conv_row.get(5)?;
         let archived: i64 = conv_row.get(6)?;
+        let mut message_count: i64 = conv_row.get(7)?;
+        let last_message_at_ms: i64 = conv_row.get(8)?;
+        let last_role: String = conv_row.get(9)?;
         if archived != 0 {
             return Err(HistoryError::archived("Conversation is archived"));
         }
@@ -394,7 +480,8 @@ impl HistoryStore {
             });
         }
 
-        let message_count = messages.len() as u32;
+        message_count = message_count.max(messages.len() as i64);
+        let message_count = message_count.max(0) as u32;
         let has_unseen = updated_at_ms > last_seen_at_ms;
         let is_active = active_id.as_deref() == Some(conversation_id);
 
@@ -407,6 +494,8 @@ impl HistoryStore {
                 updated_at_ms: updated_at_ms.max(0) as u64,
                 last_seen_at_ms: last_seen_at_ms.max(0) as u64,
                 message_count,
+                last_message_at_ms: last_message_at_ms.max(0) as u64,
+                last_role,
                 has_unseen,
                 is_active,
             },
@@ -425,7 +514,7 @@ impl HistoryStore {
 
         let mut conv_rows = conn
             .query(
-                "SELECT id, title, title_auto, created_at_ms, updated_at_ms, last_seen_at_ms, archived\n   FROM conversations\n  WHERE id = ?1\n  LIMIT 1;",
+                "SELECT id, title, title_auto, created_at_ms, updated_at_ms, last_seen_at_ms, archived, message_count, last_message_at_ms, last_role\n   FROM conversations\n  WHERE id = ?1\n  LIMIT 1;",
                 params![conversation_id],
             )
             .await?;
@@ -442,6 +531,9 @@ impl HistoryStore {
         let updated_at_ms: i64 = conv_row.get(4)?;
         let last_seen_at_ms: i64 = conv_row.get(5)?;
         let archived: i64 = conv_row.get(6)?;
+        let mut message_count: i64 = conv_row.get(7)?;
+        let last_message_at_ms: i64 = conv_row.get(8)?;
+        let last_role: String = conv_row.get(9)?;
         if archived != 0 {
             return Err(HistoryError::archived("Conversation is archived"));
         }
@@ -486,18 +578,8 @@ impl HistoryStore {
         }
         messages_desc.reverse();
 
-        let mut count_rows = conn
-            .query(
-                "SELECT COALESCE(MAX(seq), 0) FROM messages WHERE conversation_id = ?1;",
-                params![conversation_id],
-            )
-            .await?;
-        let max_seq: u32 = count_rows
-            .next()
-            .await?
-            .and_then(|row| row.get::<i64>(0).ok())
-            .unwrap_or(0)
-            .max(0) as u32;
+        message_count = message_count.max(messages_desc.len() as i64);
+        let message_count = message_count.max(0) as u32;
 
         let has_unseen = updated_at_ms > last_seen_at_ms;
         let is_active = active_id.as_deref() == Some(conversation_id);
@@ -510,7 +592,9 @@ impl HistoryStore {
                 created_at_ms: created_at_ms.max(0) as u64,
                 updated_at_ms: updated_at_ms.max(0) as u64,
                 last_seen_at_ms: last_seen_at_ms.max(0) as u64,
-                message_count: max_seq,
+                message_count,
+                last_message_at_ms: last_message_at_ms.max(0) as u64,
+                last_role,
                 has_unseen,
                 is_active,
             },
@@ -537,7 +621,7 @@ impl HistoryStore {
             let tx = conn.transaction().await?;
 
             tx.execute(
-                "INSERT INTO conversations (id, title, title_auto, created_at_ms, updated_at_ms, last_seen_at_ms, archived)\nVALUES (?1, ?2, 0, ?3, ?3, ?3, 0);",
+                "INSERT INTO conversations (id, title, title_auto, created_at_ms, updated_at_ms, last_seen_at_ms, archived, message_count)\nVALUES (?1, ?2, 0, ?3, ?3, ?3, 0, 0);",
                 params![id.as_str(), title.as_str(), now],
             )
             .await?;
@@ -560,6 +644,8 @@ impl HistoryStore {
                 updated_at_ms: now.max(0) as u64,
                 last_seen_at_ms: now.max(0) as u64,
                 message_count: 0,
+                last_message_at_ms: 0,
+                last_role: String::new(),
                 has_unseen: false,
                 is_active: set_active,
             })
@@ -633,8 +719,8 @@ impl HistoryStore {
 
                 let tx = conn.transaction().await?;
                 tx.execute(
-                    "INSERT INTO conversations (id, title, title_auto, created_at_ms, updated_at_ms, last_seen_at_ms, archived)\nVALUES (?1, ?2, 0, ?3, ?3, ?3, 0);",
-                    params![id.as_str(), new_title.as_str(), now],
+                    "INSERT INTO conversations (id, title, title_auto, created_at_ms, updated_at_ms, last_seen_at_ms, archived, message_count)\nVALUES (?1, ?2, 0, ?3, ?3, ?3, 0, ?4);",
+                    params![id.as_str(), new_title.as_str(), now, seq_limit],
                 )
                 .await?;
 
@@ -646,29 +732,35 @@ impl HistoryStore {
                     .await?;
                 }
 
+                let mut last_message_at_ms = 0i64;
+                let mut last_role = String::new();
                 if seq_limit > 0 {
                     tx.execute(
                         "INSERT INTO messages (id, conversation_id, seq, role, content, reasoning, created_at_ms)\nSELECT (?1 || ':' || seq) AS id,\n       ?1 AS conversation_id,\n       seq,\n       role,\n       content,\n       reasoning,\n       created_at_ms\n  FROM messages\n WHERE conversation_id = ?2 AND seq <= ?3\n ORDER BY seq ASC;",
                         params![id.as_str(), source_conversation_id.as_str(), seq_limit],
                     )
                     .await?;
-                }
 
-                let mut count_rows = tx
-                    .query(
-                        "SELECT COALESCE(COUNT(id), 0) FROM messages WHERE conversation_id = ?1;",
-                        params![id.as_str()],
+                    let mut last_rows = tx
+                        .query(
+                            "SELECT created_at_ms, role FROM messages WHERE conversation_id = ?1 ORDER BY seq DESC LIMIT 1;",
+                            params![id.as_str()],
+                        )
+                        .await?;
+                    if let Some(row) = last_rows.next().await? {
+                        last_message_at_ms = row.get(0)?;
+                        last_role = row.get(1)?;
+                    }
+                    tx.execute(
+                        "UPDATE conversations SET last_message_at_ms = ?2, last_role = ?3 WHERE id = ?1;",
+                        params![id.as_str(), last_message_at_ms, last_role.as_str()],
                     )
                     .await?;
-                let message_count: i64 = count_rows
-                    .next()
-                    .await
-                    ?
-                    .map(|r| r.get::<i64>(0).unwrap_or(0))
-                    .unwrap_or(0);
+                }
 
                 tx.commit().await?;
 
+                let message_count = seq_limit.max(0);
                 Ok(ConversationSummary {
                     id: id.clone(),
                     title: new_title,
@@ -677,6 +769,8 @@ impl HistoryStore {
                     updated_at_ms: now.max(0) as u64,
                     last_seen_at_ms: now.max(0) as u64,
                     message_count: message_count.max(0) as u32,
+                    last_message_at_ms: last_message_at_ms.max(0) as u64,
+                    last_role,
                     has_unseen: false,
                     is_active: set_active,
                 })
@@ -775,7 +869,7 @@ impl HistoryStore {
 
             let now = now_ms() as i64;
             conn.execute(
-                "UPDATE conversations SET updated_at_ms = ?2, last_seen_at_ms = ?2 WHERE id = ?1;",
+                "UPDATE conversations\n   SET updated_at_ms = ?2,\n       last_seen_at_ms = ?2,\n       message_count = 0,\n       last_message_at_ms = 0,\n       last_role = ''\n WHERE id = ?1;",
                 params![conversation_id, now],
             )
             .await?;
@@ -857,14 +951,16 @@ impl HistoryStore {
                 } else {
                     let id = new_id("conv");
                     tx.execute(
-                        "INSERT INTO conversations (id, title, title_auto, created_at_ms, updated_at_ms, last_seen_at_ms, archived)\nVALUES (?1, '新对话', 0, ?2, ?2, ?2, 0);",
+                        "INSERT INTO conversations (id, title, title_auto, created_at_ms, updated_at_ms, last_seen_at_ms, archived, message_count)\nVALUES (?1, '新对话', 0, ?2, ?2, ?2, 0, 0);",
                         params![id.as_str(), now],
                     )
                     .await?;
                     id
                 }
             } else {
-                active_id.unwrap()
+                active_id.ok_or_else(|| {
+                    HistoryError::internal("Active conversation ID missing")
+                })?
             };
 
             if needs_new_active {
@@ -913,7 +1009,7 @@ impl HistoryStore {
 
             // Ensure the conversation row exists even if the frontend sent an ID we haven't seen yet.
             conn.execute(
-                "INSERT OR IGNORE INTO conversations (id, title, title_auto, created_at_ms, updated_at_ms, last_seen_at_ms, archived)\nVALUES (?1, '新对话', 0, ?2, ?2, ?2, 0);",
+                "INSERT OR IGNORE INTO conversations (id, title, title_auto, created_at_ms, updated_at_ms, last_seen_at_ms, archived, message_count)\nVALUES (?1, '新对话', 0, ?2, ?2, ?2, 0, 0);",
                 params![conversation_id, now],
             )
             .await?;
@@ -923,21 +1019,20 @@ impl HistoryStore {
                 messages.iter().filter(|m| m.role != "system").collect();
             let all_have_seq = non_system.iter().all(|m| m.seq.is_some());
 
+            let delete_stmt = tx
+                .prepare("DELETE FROM messages WHERE conversation_id = ?1 AND seq > ?2;")
+                .await?;
             if all_have_seq {
                 if let Some(truncate_after_seq) = truncate_after_seq {
-                    tx.execute(
-                        "DELETE FROM messages WHERE conversation_id = ?1 AND seq > ?2;",
-                        params![conversation_id, truncate_after_seq as i64],
-                    )
-                    .await?;
+                    delete_stmt
+                        .execute(params![conversation_id, truncate_after_seq as i64])
+                        .await?;
                 }
             } else {
                 let desired_len = non_system.len() as i64;
-                tx.execute(
-                    "DELETE FROM messages WHERE conversation_id = ?1 AND seq > ?2;",
-                    params![conversation_id, desired_len],
-                )
-                .await?;
+                delete_stmt
+                    .execute(params![conversation_id, desired_len])
+                    .await?;
             }
 
             // Upsert messages by stable (conversation_id:seq) key.
@@ -965,32 +1060,42 @@ impl HistoryStore {
             // Defensive: ignore invalid seq values.
             to_upsert.retain(|(seq, _)| *seq > 0);
 
+            fn build_messages_upsert_sql(row_count: usize) -> String {
+                let mut sql = String::from(
+                    "INSERT INTO messages (id, conversation_id, seq, role, content, reasoning, created_at_ms)\nVALUES ",
+                );
+                let mut param_index = 1;
+                for row in 0..row_count {
+                    if row > 0 {
+                        sql.push(',');
+                    }
+                    sql.push_str(&format!(
+                        "(?{}, ?{}, ?{}, ?{}, ?{}, NULL, ?{})",
+                        param_index,
+                        param_index + 1,
+                        param_index + 2,
+                        param_index + 3,
+                        param_index + 4,
+                        param_index + 5
+                    ));
+                    param_index += 6;
+                }
+                sql.push_str(
+                    "\nON CONFLICT(id) DO UPDATE SET\n  role = excluded.role,\n  content = excluded.content,\n  reasoning = CASE\n    WHEN excluded.role = 'assistant' THEN COALESCE(messages.reasoning, excluded.reasoning)\n    ELSE NULL\n  END;",
+                );
+                sql
+            }
+
+            let mut upsert_stmt_cache: HashMap<usize, Statement> = HashMap::new();
             for chunk_start in (0..to_upsert.len()).step_by(UPSERT_CHUNK_SIZE) {
                 let chunk_end = (chunk_start + UPSERT_CHUNK_SIZE).min(to_upsert.len());
                 let chunk = &to_upsert[chunk_start..chunk_end];
 
-                let mut sql = String::from(
-                    "INSERT INTO messages (id, conversation_id, seq, role, content, reasoning, created_at_ms)\nVALUES ",
-                );
                 let mut params: Vec<Value> = Vec::with_capacity(chunk.len() * 6);
 
                 for (seq, m) in chunk.iter() {
                     let seq = *seq;
                     let id = format!("{conversation_id}:{seq}");
-
-                    if !params.is_empty() {
-                        sql.push(',');
-                    }
-                    let p = params.len();
-                    sql.push_str(&format!(
-                        "(?{}, ?{}, ?{}, ?{}, ?{}, NULL, ?{})",
-                        p + 1,
-                        p + 2,
-                        p + 3,
-                        p + 4,
-                        p + 5,
-                        p + 6
-                    ));
 
                     params.push(Value::from(id));
                     params.push(Value::from(conversation_id));
@@ -1000,18 +1105,26 @@ impl HistoryStore {
                     params.push(Value::from(now));
                 }
 
-                sql.push_str(
-                    "\nON CONFLICT(id) DO UPDATE SET\n  role = excluded.role,\n  content = excluded.content,\n  reasoning = CASE\n    WHEN excluded.role = 'assistant' THEN COALESCE(messages.reasoning, excluded.reasoning)\n    ELSE NULL\n  END;",
-                );
-
-                tx.execute(&sql, params).await?;
+                let chunk_len = chunk.len();
+                let stmt = if let Some(stmt) = upsert_stmt_cache.remove(&chunk_len) {
+                    stmt
+                } else {
+                    let sql = build_messages_upsert_sql(chunk_len);
+                    tx.prepare(&sql).await?
+                };
+                stmt.execute(params).await?;
+                stmt.reset();
+                upsert_stmt_cache.insert(chunk_len, stmt);
             }
 
-            tx.execute(
-                "UPDATE conversations SET updated_at_ms = ?2 WHERE id = ?1;",
-                params![conversation_id, now],
-            )
-            .await?;
+            let update_conversation_stmt = tx
+                .prepare(
+                    "UPDATE conversations\n   SET updated_at_ms = ?2,\n       message_count = (\n         SELECT COALESCE(MAX(seq), 0)\n           FROM messages\n          WHERE conversation_id = ?1\n       ),\n       last_message_at_ms = COALESCE((\n         SELECT created_at_ms\n           FROM messages\n          WHERE conversation_id = ?1\n          ORDER BY seq DESC\n          LIMIT 1\n       ), 0),\n       last_role = COALESCE((\n         SELECT role\n           FROM messages\n          WHERE conversation_id = ?1\n          ORDER BY seq DESC\n          LIMIT 1\n       ), '')\n WHERE id = ?1;",
+                )
+                .await?;
+            update_conversation_stmt
+                .execute(params![conversation_id, now])
+                .await?;
 
             tx.commit().await?;
 
@@ -1076,7 +1189,7 @@ impl HistoryStore {
                 .await?;
 
                 tx.execute(
-                    "UPDATE conversations SET updated_at_ms = ?2 WHERE id = ?1;",
+                    "UPDATE conversations\n   SET updated_at_ms = ?2,\n       message_count = COALESCE(message_count, 0) + 1,\n       last_message_at_ms = ?2,\n       last_role = 'assistant'\n WHERE id = ?1;",
                     params![conversation_id.as_str(), now],
                 )
                 .await?;
@@ -1128,16 +1241,62 @@ impl HistoryStore {
         Ok(())
     }
 
+    fn should_skip_auto_title(&self, conversation_id: &str) -> bool {
+        let now = now_ms();
+        let Ok(mut cooldowns) = self.inner.title_cooldowns.lock() else {
+            return false;
+        };
+        let Some(until) = cooldowns.get(conversation_id).copied() else {
+            return false;
+        };
+        if now < until {
+            return true;
+        }
+        cooldowns.remove(conversation_id);
+        false
+    }
+
+    fn clear_title_cooldown(&self, conversation_id: &str) {
+        if let Ok(mut cooldowns) = self.inner.title_cooldowns.lock() {
+            cooldowns.remove(conversation_id);
+        }
+    }
+
+    fn record_title_cooldown(&self, conversation_id: &str) {
+        let until = now_ms().saturating_add(TITLE_AUTO_COOLDOWN_MS);
+        if let Ok(mut cooldowns) = self.inner.title_cooldowns.lock() {
+            cooldowns.insert(conversation_id.to_string(), until);
+        }
+    }
+
+    fn should_backoff_title(&self, err: &HistoryError) -> bool {
+        match err {
+            HistoryError::Internal { message } => {
+                message != "Title already set" && message != "Not enough turns for title generation"
+            }
+            _ => false,
+        }
+    }
+
     async fn maybe_spawn_auto_title(&self, conversation_id: &str) {
+        if self.should_skip_auto_title(conversation_id) {
+            return;
+        }
         let store = self.clone();
         let conversation_id = conversation_id.to_string();
 
         tauri::async_runtime::spawn(async move {
-            if let Err(err) = store
+            match store
                 .generate_and_set_title_if_needed(&conversation_id)
                 .await
             {
-                log::debug!("Auto-title skipped: {}", err);
+                Ok(()) => store.clear_title_cooldown(&conversation_id),
+                Err(err) => {
+                    if store.should_backoff_title(&err) {
+                        store.record_title_cooldown(&conversation_id);
+                    }
+                    log::debug!("Auto-title skipped: {}", err);
+                }
             }
         });
     }
@@ -1168,7 +1327,7 @@ impl HistoryStore {
 
             let mut count_rows = conn
                 .query(
-                    "SELECT COALESCE(SUM(CASE WHEN role='user' THEN 1 ELSE 0 END), 0) FROM messages WHERE conversation_id = ?1;",
+                    "SELECT COUNT(*) FROM messages WHERE conversation_id = ?1 AND role = 'user';",
                     params![conversation_id],
                 )
                 .await?;
@@ -1207,9 +1366,7 @@ impl HistoryStore {
             messages
         };
 
-        let generated = title::generate_title(&messages)
-            .await
-            .map_err(HistoryError::internal)?;
+        let generated = title::generate_title(&messages).await?;
         let generated = truncate_title(&generated);
 
         if generated.is_empty() {

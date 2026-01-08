@@ -1,6 +1,6 @@
 use std::future::Future;
 
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 
 use crate::plugins::history::HistoryStore;
 use crate::services::config::load_ai_config;
@@ -11,6 +11,19 @@ use super::types::{
     ChatDeltaKind, ChatDonePayload, ChatErrorPayload, ChatMessage, ChatRequestOptions,
     ChatStreamPayload, EVT_CHAT_DONE, EVT_CHAT_ERROR, EVT_CHAT_STREAM,
 };
+
+fn stop_voice_async(app: &tauri::AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let Some(voice_state) = app.try_state::<crate::services::voice::VoiceState>() else {
+            return;
+        };
+        voice_state.cancel_active_stream().await;
+        if let Ok(Some(engine)) = voice_state.get_engine_for_stop() {
+            let _ = engine.stop().await;
+        }
+    });
+}
 
 fn start_stream_task<F, Fut>(
     app: tauri::AppHandle,
@@ -68,7 +81,12 @@ where
                 )
                 .await
             {
-                log::warn!("History sync failed: {}", err);
+                log::warn!(
+                    "History sync failed (request_id={}, conversation_id={:?}): {}",
+                    request_id_for_task,
+                    conversation_id_for_task,
+                    err
+                );
             }
         }
 
@@ -98,7 +116,12 @@ where
                         )
                         .await
                     {
-                        log::warn!("History append failed: {}", err);
+                        log::warn!(
+                            "History append failed (request_id={}, conversation_id={:?}): {}",
+                            request_id_for_task,
+                            conversation_id_for_task,
+                            err
+                        );
                     }
                 }
             }
@@ -240,6 +263,9 @@ pub fn chat_abort(
 
     handle.abort();
 
+    // Stop any voice playback associated with this chat session
+    stop_voice_async(&app);
+
     let _ = app.emit(
         EVT_CHAT_STREAM,
         ChatStreamPayload {
@@ -277,6 +303,9 @@ pub fn chat_abort_conversation(
     };
 
     handle.abort();
+
+    // Stop any voice playback associated with this chat session
+    stop_voice_async(&app);
 
     let _ = app.emit(
         EVT_CHAT_STREAM,

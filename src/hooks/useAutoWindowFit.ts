@@ -11,7 +11,9 @@ import {
 type AutoFitState = {
   mini: { w: number; h: number } | null;
   input: number | null;
+  inputWidth: number | null;
   resultMin: number | null;
+  resultWidth: number | null;
 };
 
 const EPS_PX = 1;
@@ -27,8 +29,10 @@ const reporters = {
   miniResize: createReporter("resizeWindow:mini"),
   inputMinSize: createReporter("setWindowMinSize:input"),
   inputResize: createReporter("resizeInputHeight"),
+  inputWidthResize: createReporter("resizeWindow:inputWidth"),
   resultMinSize: createReporter("setWindowMinSize:result"),
   resultResize: createReporter("resizeInputHeight:result"),
+  resultWidthResize: createReporter("resizeWindow:resultWidth"),
 } as const;
 
 const getMaxOverlayBottom = (): number | null => {
@@ -73,7 +77,13 @@ export function useAutoWindowFit(
     modeRef.current = mode;
   }, [mode]);
 
-  const lastAutoSizeRef = useRef<AutoFitState>({ mini: null, input: null, resultMin: null });
+  const lastAutoSizeRef = useRef<AutoFitState>({
+    mini: null,
+    input: null,
+    inputWidth: null,
+    resultMin: null,
+    resultWidth: null,
+  });
   const rafRef = useRef<number | null>(null);
   const allowShrinkRef = useRef(false);
 
@@ -98,6 +108,7 @@ export function useAutoWindowFit(
 
         const rect = el.getBoundingClientRect();
         const currentHeight = window.innerHeight;
+        const currentWidth = window.innerWidth;
 
         if (currentMode === "mini") {
           let desiredHeight = Math.ceil(rect.height);
@@ -106,7 +117,6 @@ export function useAutoWindowFit(
           const desiredWidth = Math.ceil(rect.width);
           if (!Number.isFinite(desiredWidth) || desiredWidth <= 0) return;
 
-          const currentWidth = window.innerWidth;
           const lastSize = lastAutoSizeRef.current.mini;
           if (
             lastSize !== null
@@ -168,18 +178,41 @@ export function useAutoWindowFit(
             );
           }
 
+          const desiredWidth = Math.ceil(rect.width);
+          const minWidth = Number.isFinite(desiredWidth) && desiredWidth > 0 ? desiredWidth : 0;
+
           const lastHeight = lastAutoSizeRef.current.resultMin;
+          const lastWidth = lastAutoSizeRef.current.resultWidth;
           const shouldUpdateMin =
             lastHeight === null || !nearlyEqual(desiredMinHeight, lastHeight);
-          if (shouldUpdateMin) {
+          const shouldUpdateWidth =
+            minWidth > 0 && (lastWidth === null || !nearlyEqual(desiredWidth, lastWidth));
+          if (shouldUpdateMin || shouldUpdateWidth) {
             lastAutoSizeRef.current.resultMin = desiredMinHeight;
-            void setWindowMinSize(0, desiredMinHeight).catch(reporters.resultMinSize);
+            void setWindowMinSize(minWidth, desiredMinHeight).catch(reporters.resultMinSize);
           }
 
           // If the window was persisted too small (or got externally resized),
           // bump it to at least the computed minimum so content isn't clipped.
           if (currentHeight + EPS_PX < desiredMinHeight) {
             void resizeInputHeight(desiredMinHeight).catch(reporters.resultResize);
+          }
+
+          const targetHeight = Math.max(currentHeight, desiredMinHeight);
+
+          if (Number.isFinite(desiredWidth) && desiredWidth > 0) {
+            const lastWidth = lastAutoSizeRef.current.resultWidth;
+            if (lastWidth === null || !nearlyEqual(desiredWidth, lastWidth)) {
+              lastAutoSizeRef.current.resultWidth = desiredWidth;
+            }
+
+            if (allowShrinkMerged || desiredWidth > currentWidth + EPS_PX) {
+              if (!nearlyEqual(desiredWidth, currentWidth)) {
+                void resizeWindow(desiredWidth, targetHeight).catch(
+                  reporters.resultWidthResize
+                );
+              }
+            }
           }
           return;
         }
@@ -195,19 +228,41 @@ export function useAutoWindowFit(
           );
         }
 
+        const desiredWidth = Math.ceil(rect.width);
+        const minWidth = Number.isFinite(desiredWidth) && desiredWidth > 0 ? desiredWidth : 0;
+
         const lastHeight = lastAutoSizeRef.current.input;
-        if (
+        const lastWidth = lastAutoSizeRef.current.inputWidth;
+        const heightStable =
           lastHeight !== null
           && nearlyEqual(desiredHeight, lastHeight)
-          && nearlyEqual(desiredHeight, currentHeight)
-        ) {
+          && nearlyEqual(desiredHeight, currentHeight);
+        const widthStable =
+          lastWidth !== null
+          && Number.isFinite(desiredWidth)
+          && nearlyEqual(desiredWidth, lastWidth)
+          && nearlyEqual(desiredWidth, currentWidth);
+        if (heightStable && widthStable) {
           return;
         }
         lastAutoSizeRef.current.input = desiredHeight;
 
-        // Only update min-height here. Min-width is owned by Rust (per-mode constraints),
-        // so we pass 0 to avoid duplicating constants in TS.
-        void setWindowMinSize(0, desiredHeight).catch(reporters.inputMinSize);
+        if (Number.isFinite(desiredWidth) && desiredWidth > 0) {
+          const lastWidth = lastAutoSizeRef.current.inputWidth;
+          if (lastWidth === null || !nearlyEqual(desiredWidth, lastWidth)) {
+            lastAutoSizeRef.current.inputWidth = desiredWidth;
+          }
+          if (allowShrinkMerged || desiredWidth > currentWidth + EPS_PX) {
+            if (!nearlyEqual(desiredWidth, currentWidth)) {
+              void resizeWindow(desiredWidth, currentHeight).catch(
+                reporters.inputWidthResize
+              );
+            }
+          }
+        }
+
+        // Keep min-size synced to CSS-driven layout to avoid clipping on resize.
+        void setWindowMinSize(minWidth, desiredHeight).catch(reporters.inputMinSize);
 
         if (!allowShrinkMerged) {
           if (desiredHeight <= currentHeight + EPS_PX) return;

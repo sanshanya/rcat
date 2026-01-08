@@ -3,11 +3,11 @@ use rcat_voice::audio::RmsPayload;
 use rcat_voice::generator::{TtsEngine, build_from_env_with_rms_sender};
 use rcat_voice::streaming::StreamCancelHandle;
 use serde::Serialize;
-use tauri::Emitter;
 #[cfg(target_os = "windows")]
 use std::sync::OnceLock;
 use std::sync::{Arc, Mutex, Weak};
-use tokio::sync::{Mutex as AsyncMutex, watch};
+use tauri::{Emitter, Manager};
+use tokio::sync::{Mutex as AsyncMutex, mpsc};
 
 pub const EVT_VOICE_RMS: &str = "voice-rms";
 pub const EVT_VOICE_SPEECH_START: &str = "voice-speech-start";
@@ -24,10 +24,11 @@ pub struct VoiceRmsPayload {
 
 pub struct VoiceState {
     engine: Mutex<VoiceEngineState>,
+    build_lock: Mutex<()>,
     speak_lock: AsyncMutex<()>,
     stream: AsyncMutex<Option<StreamCancelHandle>>,
-    rms_tx: watch::Sender<RmsPayload>,
-    rms_rx: Arc<AsyncMutex<Option<watch::Receiver<RmsPayload>>>>,
+    rms_tx: mpsc::UnboundedSender<RmsPayload>,
+    rms_rx: Arc<AsyncMutex<Option<mpsc::UnboundedReceiver<RmsPayload>>>>,
 }
 
 #[derive(Default)]
@@ -38,14 +39,10 @@ struct VoiceEngineState {
 
 impl VoiceState {
     pub fn new() -> Self {
-        let (rms_tx, rms_rx) = watch::channel(RmsPayload {
-            rms: 0.0,
-            peak: 0.0,
-            buffered_ms: 0,
-            speaking: false,
-        });
+        let (rms_tx, rms_rx) = mpsc::unbounded_channel::<RmsPayload>();
         Self {
             engine: Mutex::new(VoiceEngineState::default()),
+            build_lock: Mutex::new(()),
             speak_lock: AsyncMutex::new(()),
             stream: AsyncMutex::new(None),
             rms_tx,
@@ -60,11 +57,11 @@ impl VoiceState {
                 let mut guard = rms_rx.lock().await;
                 guard.take()
             };
-            let Some(mut rx) = rx else {
+            let Some(ref mut rx) = rx else {
                 return;
             };
-            while rx.changed().await.is_ok() {
-                let payload = rx.borrow().clone();
+            // Use mpsc recv() which receives ALL events, unlike watch which drops intermediate
+            while let Some(payload) = rx.recv().await {
                 let _ = app.emit(
                     EVT_VOICE_RMS,
                     VoiceRmsPayload {
@@ -91,6 +88,24 @@ impl VoiceState {
                 .map_err(|_| "Voice engine lock poisoned".to_string())?;
             if let Some(engine) = guard.cached.clone() {
                 debug!("voice: reuse cached TTS engine");
+                guard.current = Some(Arc::downgrade(&engine));
+                return Ok(engine);
+            }
+        }
+
+        let _build_guard = self
+            .build_lock
+            .lock()
+            .map_err(|_| "Voice engine build lock poisoned".to_string())?;
+
+        // Another thread may have finished initialization while we waited.
+        {
+            let mut guard = self
+                .engine
+                .lock()
+                .map_err(|_| "Voice engine lock poisoned".to_string())?;
+            if let Some(engine) = guard.cached.clone() {
+                debug!("voice: reuse cached TTS engine (post-lock)");
                 guard.current = Some(Arc::downgrade(&engine));
                 return Ok(engine);
             }
@@ -413,13 +428,16 @@ pub async fn voice_play_text(
         .to_ascii_lowercase();
     let use_stream = env_bool01("VOICE_PLAY_USE_STREAM")
         .or_else(|| env_bool01("VOICE_PLAY_STREAM"))
-        .unwrap_or_else(|| matches!(backend_norm.as_str(), "remote" | "gpt-sovits-onnx" | "gpt-sovits"));
+        .unwrap_or_else(|| {
+            matches!(
+                backend_norm.as_str(),
+                "remote" | "gpt-sovits-onnx" | "gpt-sovits"
+            )
+        });
 
     if use_stream && backend_norm != "os" {
         let session = rcat_voice::streaming::StreamSession::from_env(tts);
-        voice
-            .set_stream_handle(Some(session.cancel_handle()))
-            .await;
+        voice.set_stream_handle(Some(session.cancel_handle())).await;
 
         let control = session.control();
         control.mark_llm_start();
@@ -451,8 +469,14 @@ pub async fn voice_play_text(
     let ttfb_ms = first_audio_ts
         .saturating_duration_since(start_ts)
         .as_millis();
-    let gen_ms = metrics.gen_done_ts.saturating_duration_since(start_ts).as_millis();
-    let play_pred_ms = metrics.play_done_ts.saturating_duration_since(start_ts).as_millis();
+    let gen_ms = metrics
+        .gen_done_ts
+        .saturating_duration_since(start_ts)
+        .as_millis();
+    let play_pred_ms = metrics
+        .play_done_ts
+        .saturating_duration_since(start_ts)
+        .as_millis();
     let buffered_ms = tts.buffered_ms();
 
     let play_actual_ms = if let Some(rx) = metrics.play_done_rx {
@@ -491,7 +515,13 @@ pub async fn voice_stop(
 }
 
 #[tauri::command]
-pub async fn voice_prepare(voice: tauri::State<'_, VoiceState>) -> Result<(), String> {
-    let _ = voice.get_or_build_engine(true)?;
+pub async fn voice_prepare(app: tauri::AppHandle) -> Result<(), String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let voice = app_handle.state::<VoiceState>();
+        if let Err(err) = voice.get_or_build_engine(true) {
+            warn!("voice: prepare failed: {err}");
+        }
+    });
     Ok(())
 }

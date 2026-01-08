@@ -22,9 +22,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     types.register::<app_lib::services::config::AiConfig>();
 
     // Vision module types
-    types.register::<app_lib::services::vision::ScreenCaptureResult>();
-    types.register::<app_lib::services::vision::VlmAnalysisResult>();
-    types.register::<app_lib::services::vision::WindowInfo>();
+    #[cfg(feature = "vision")]
+    {
+        types.register::<app_lib::services::vision::ScreenCaptureResult>();
+        types.register::<app_lib::services::vision::VlmAnalysisResult>();
+        types.register::<app_lib::services::vision::WindowInfo>();
+    }
 
     // History module types
     types.register::<app_lib::services::history::ConversationSummary>();

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { VRMExpressionManager } from "@pixiv/three-vrm";
 import { createExpressionDriver } from "@/components/vrm/ExpressionDriver";
@@ -35,6 +35,8 @@ export default function VrmDebugPanel({ inline = false, className }: VrmDebugPan
   const lipSync = useLipSyncDebug();
   const [values, setValues] = useState<Record<DebugExpressionName, number>>(EMPTY_VALUES);
   const [collapsed, setCollapsed] = useState(false);
+  const [followAuto, setFollowAuto] = useState(false);
+  const rafRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (!manager) {
@@ -50,10 +52,46 @@ export default function VrmDebugPanel({ inline = false, className }: VrmDebugPan
 
   useEffect(() => {
     if (!manager) return;
+    if (followAuto) return;
     (Object.keys(values) as DebugExpressionName[]).forEach((key) => {
       driver.setValue(key, values[key]);
     });
-  }, [driver, manager, values]);
+  }, [driver, followAuto, manager, values]);
+
+  useEffect(() => {
+    if (!manager || !followAuto) {
+      if (rafRef.current !== null) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
+      return;
+    }
+
+    let active = true;
+    const tick = () => {
+      if (!active) return;
+      setValues((prev) => {
+        const next = {
+          aa: driver.getValue("aa"),
+          happy: driver.getValue("happy"),
+        };
+        const diff =
+          Math.abs(prev.aa - next.aa) > 0.001 ||
+          Math.abs(prev.happy - next.happy) > 0.001;
+        return diff ? next : prev;
+      });
+      rafRef.current = requestAnimationFrame(tick);
+    };
+    rafRef.current = requestAnimationFrame(tick);
+
+    return () => {
+      active = false;
+      if (rafRef.current !== null) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
+    };
+  }, [driver, followAuto, manager]);
 
   const containerClass = inline
     ? "w-full rounded-xl border border-border/60 bg-background/60 p-2 shadow-sm"
@@ -67,13 +105,27 @@ export default function VrmDebugPanel({ inline = false, className }: VrmDebugPan
     <div className={cn(containerClass, className)}>
       <div className="flex items-center justify-between gap-2">
         <div className="text-xs font-semibold text-foreground/80">VRM Debug</div>
-        <button
-          type="button"
-          className="rounded-md px-2 py-0.5 text-[10px] text-muted-foreground hover:text-foreground"
-          onClick={() => setCollapsed((prev) => !prev)}
-        >
-          {collapsed ? "Show" : "Hide"}
-        </button>
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            className={cn(
+              "rounded-md px-2 py-0.5 text-[10px]",
+              followAuto
+                ? "bg-primary/20 text-foreground"
+                : "text-muted-foreground hover:text-foreground"
+            )}
+            onClick={() => setFollowAuto((prev) => !prev)}
+          >
+            {followAuto ? "Follow" : "Manual"}
+          </button>
+          <button
+            type="button"
+            className="rounded-md px-2 py-0.5 text-[10px] text-muted-foreground hover:text-foreground"
+            onClick={() => setCollapsed((prev) => !prev)}
+          >
+            {collapsed ? "Show" : "Hide"}
+          </button>
+        </div>
       </div>
 
       {collapsed ? null : (
@@ -84,7 +136,7 @@ export default function VrmDebugPanel({ inline = false, className }: VrmDebugPan
             </div>
           )}
           {SLIDERS.map((slider) => {
-            const disabled = !driver.supports(slider.id);
+            const disabled = !driver.supports(slider.id) || followAuto;
             const bindings = manager ? driver.getBindings(slider.id) : 0;
             return (
               <label key={slider.id} className="grid gap-1 text-[11px]">

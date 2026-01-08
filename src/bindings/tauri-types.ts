@@ -13,23 +13,11 @@ export type ConversationDetail = { conversation: ConversationSummary; messages: 
 
 export type ConversationMessage = { id: string; conversationId: string; seq: number; role: string; content: string; reasoning: string | null; createdAtMs: number }
 
-export type ConversationSummary = { id: string; title: string; titleAuto: boolean; createdAtMs: number; updatedAtMs: number; lastSeenAtMs: number; messageCount: number; hasUnseen: boolean; isActive: boolean }
+export type ConversationSummary = { id: string; title: string; titleAuto: boolean; createdAtMs: number; updatedAtMs: number; lastSeenAtMs: number; messageCount: number; lastMessageAtMs: number; lastRole: string; hasUnseen: boolean; isActive: boolean }
 
 export type HistoryBootstrap = { activeConversationId: string; conversations: ConversationSummary[] }
 
-export type HistoryError =
-  | { type: "notFound"; message: string }
-  | { type: "archived"; message: string }
-  | { type: "locked"; message: string }
-  | { type: "invalidInput"; message: string }
-  | { type: "database"; message: string }
-  | { type: "internal"; message: string }
-
-export type ScreenCaptureResult = { text: string; confidence: number | null; timestamp: number; window_name: string | null }
-
-export type VlmAnalysisResult = { content: string; timestamp: number }
-
-export type WindowInfo = { title: string; app_name: string; pid: number; is_focused: boolean; z_index: number; is_minimized: boolean }
+export type HistoryError = { type: "notFound"; message: string } | { type: "archived"; message: string } | { type: "locked"; message: string } | { type: "invalidInput"; message: string } | { type: "database"; message: string } | { type: "internal"; message: string }
 
 export type WindowMode = "mini" | "input" | "result"
 

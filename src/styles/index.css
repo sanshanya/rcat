@@ -25,6 +25,11 @@
 
 :root {
   color-scheme: dark;
+  --chat-column-width: clamp(360px, 56ch, 680px);
+  --vrm-stage-width: clamp(260px, 38ch, 420px);
+  --vrm-debug-width: clamp(160px, 24ch, 240px);
+  --prompt-max-height: clamp(160px, 25vh, 260px);
+  --chat-list-min-height: clamp(180px, 28vh, 260px);
 }
 
 @layer base {

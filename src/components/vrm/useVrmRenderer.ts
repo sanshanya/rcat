@@ -31,6 +31,8 @@ export type VrmRendererHandle = {
 
 type VrmRendererOptions = {
   onFrame?: (vrm: VRM, delta: number) => void;
+  onContextLost?: () => void;
+  onContextRestored?: () => void;
 };
 
 const CAMERA_TARGET = new Vector3(0, 1.35, 0);
@@ -176,10 +178,21 @@ export const useVrmRenderer = (
   const handleRef = useRef<VrmRendererHandle | null>(null);
   const [ready, setReady] = useState(false);
   const onFrameRef = useRef<VrmRendererOptions["onFrame"]>(options.onFrame);
+  const onContextLostRef = useRef<VrmRendererOptions["onContextLost"]>(
+    options.onContextLost
+  );
+  const onContextRestoredRef = useRef<VrmRendererOptions["onContextRestored"]>(
+    options.onContextRestored
+  );
 
   useEffect(() => {
     onFrameRef.current = options.onFrame;
   }, [options.onFrame]);
+
+  useEffect(() => {
+    onContextLostRef.current = options.onContextLost;
+    onContextRestoredRef.current = options.onContextRestored;
+  }, [options.onContextLost, options.onContextRestored]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -214,6 +227,7 @@ export const useVrmRenderer = (
     const clock = new Clock();
     let currentVrm: VRM | null = null;
     let frameId: number | null = null;
+    let contextLost = false;
 
     const resize = () => {
       const container = canvas.parentElement ?? canvas;
@@ -268,22 +282,59 @@ export const useVrmRenderer = (
       return vrm;
     };
 
-    const renderLoop = () => {
+    const startLoop = () => {
+      if (frameId !== null) return;
+      const renderLoop = () => {
+        if (contextLost) {
+          frameId = null;
+          return;
+        }
+        frameId = requestAnimationFrame(renderLoop);
+        const delta = clock.getDelta();
+        if (currentVrm) {
+          onFrameRef.current?.(currentVrm, delta);
+          currentVrm.update(delta);
+        }
+        renderer.render(scene, camera);
+      };
       frameId = requestAnimationFrame(renderLoop);
-      const delta = clock.getDelta();
-      if (currentVrm) {
-        onFrameRef.current?.(currentVrm, delta);
-        currentVrm.update(delta);
-      }
-      renderer.render(scene, camera);
     };
 
-    renderLoop();
+    const stopLoop = () => {
+      if (frameId !== null) {
+        cancelAnimationFrame(frameId);
+        frameId = null;
+      }
+    };
+
+    const handleContextLost = (event: Event) => {
+      event.preventDefault();
+      if (contextLost) return;
+      contextLost = true;
+      stopLoop();
+      console.warn("VRM renderer: WebGL context lost");
+      onContextLostRef.current?.();
+    };
+
+    const handleContextRestored = () => {
+      if (!contextLost) return;
+      contextLost = false;
+      console.info("VRM renderer: WebGL context restored");
+      onContextRestoredRef.current?.();
+      startLoop();
+    };
+
+    canvas.addEventListener("webglcontextlost", handleContextLost);
+    canvas.addEventListener("webglcontextrestored", handleContextRestored);
+
+    startLoop();
     handleRef.current = { loadVrm, clearVrm };
     setReady(true);
 
     return () => {
-      if (frameId) cancelAnimationFrame(frameId);
+      stopLoop();
+      canvas.removeEventListener("webglcontextlost", handleContextLost);
+      canvas.removeEventListener("webglcontextrestored", handleContextRestored);
       resizeObserver.disconnect();
       clearVrm();
       renderer.dispose();

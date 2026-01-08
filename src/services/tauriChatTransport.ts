@@ -249,8 +249,8 @@ export const createTauriChatTransport = (
         const useTools = options.getToolMode?.() ?? false;
         const commandName = useTools ? 'chat_stream_with_tools' : 'chat_stream';
 
-        // Interrupt any previous voice playback/stream when starting a new chat request.
-        void invoke("voice_stop").catch(() => {});
+        // Interrupt any previous voice playback/stream before starting a new chat request.
+        await invoke("voice_stop").catch(() => {});
 
         void invoke(commandName, invokeParams).catch((error) => {
           writer.write({ type: "error", errorText: String(error) });

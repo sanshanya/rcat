@@ -17,7 +17,7 @@ import {
   ModelEditorDialog,
   type ModelEditorDraft,
 } from "@/components/settings/ModelEditorDialog";
-import { useChatUi } from "@/contexts/ChatUiContext";
+import { useChatContext } from "@/contexts/ChatContext";
 import type { AiConfig, AiModel, AiProvider, SkinMode } from "@/types";
 import { cn } from "@/lib/utils";
 import { setAiProfile, setAiProvider, testAiProfile } from "@/services";
@@ -48,7 +48,7 @@ export function SettingsView({
   skinMode,
   onSkinModeChange,
 }: SettingsViewProps) {
-  const { capsuleProps } = useChatUi();
+  const { capsuleProps } = useChatContext();
   const initialProvider: AiProvider = useMemo(() => {
     return aiConfig?.provider ?? "deepseek";
   }, [aiConfig?.provider]);

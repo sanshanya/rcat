@@ -4,4 +4,5 @@
 //! boundary so other parts of the app can depend on them without tight coupling.
 
 pub(crate) mod history;
+#[cfg(feature = "vision")]
 pub(crate) mod vision;

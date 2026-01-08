@@ -13,7 +13,44 @@ use super::types::{
     ByotChatCompletionStreamResponse, ChatDeltaKind, ChatMessage, ChatRequestOptions,
     ChatStreamPayload, EVT_CHAT_STREAM,
 };
+#[cfg(feature = "vision")]
 use crate::plugins::vision as vision_plugin;
+
+#[cfg(not(feature = "vision"))]
+mod vision_plugin {
+    use crate::services::config::AiConfig;
+
+    pub fn ai_tools_schema(_config: &AiConfig) -> serde_json::Value {
+        serde_json::json!([])
+    }
+
+    pub async fn execute_ai_tool_call(
+        _name: &str,
+        _arguments: &serde_json::Value,
+    ) -> Result<String, String> {
+        Err("Vision disabled".to_string())
+    }
+}
+
+fn vision_runtime_enabled() -> bool {
+    std::env::var("RCAT_VISION")
+        .or_else(|_| std::env::var("VISION_ENABLED"))
+        .ok()
+        .map(|v| {
+            matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "y" | "on"
+            )
+        })
+        .unwrap_or(true)
+}
+
+async fn clear_voice_stream_handle(app: &tauri::AppHandle) {
+    let Some(voice_state) = app.try_state::<crate::services::voice::VoiceState>() else {
+        return;
+    };
+    voice_state.set_stream_handle(None).await;
+}
 
 pub(super) async fn run_chat_generic(
     app: &tauri::AppHandle,
@@ -67,7 +104,19 @@ pub(super) async fn run_chat_generic(
         .map(|m| m.role == "system")
         .unwrap_or(false);
 
-    let system_prompt = if tools_enabled {
+    let tools_available = tools_enabled && cfg!(feature = "vision") && vision_runtime_enabled();
+    let tools_schema = if tools_available {
+        vision_plugin::ai_tools_schema(&config)
+    } else {
+        serde_json::json!([])
+    };
+    let tools_active = tools_available
+        && tools_schema
+            .as_array()
+            .map(|items| !items.is_empty())
+            .unwrap_or(true);
+
+    let system_prompt = if tools_active {
         prompts::SYSTEM_PROMPT_WITH_TOOLS
     } else {
         prompts::SYSTEM_PROMPT_DEFAULT
@@ -93,14 +142,10 @@ pub(super) async fn run_chat_generic(
         }
     }
 
-    let tools = if tools_enabled {
-        Some(vision_plugin::ai_tools_schema(&config))
-    } else {
-        None
-    };
+    let tools = if tools_active { Some(tools_schema) } else { None };
 
     let retry = RetryConfig::from_env();
-    let max_tool_rounds = if tools_enabled {
+    let max_tool_rounds = if tools_active {
         std::env::var("AI_MAX_TOOL_ROUNDS")
             .ok()
             .and_then(|v| v.trim().parse::<usize>().ok())
@@ -320,9 +365,13 @@ pub(super) async fn run_chat_generic(
                     let arguments: serde_json::Value =
                         serde_json::from_str(args).unwrap_or(serde_json::json!({}));
 
-                    let tool_result = vision_plugin::execute_ai_tool_call(name, &arguments)
-                        .await
-                        .unwrap_or_else(|e| format!("工具执行失败: {}", e));
+                    let tool_result = if vision_runtime_enabled() {
+                        vision_plugin::execute_ai_tool_call(name, &arguments)
+                            .await
+                            .unwrap_or_else(|e| format!("工具执行失败: {}", e))
+                    } else {
+                        "Vision disabled".to_string()
+                    };
 
                     // Add tool result to conversation
                     api_messages.push(serde_json::json!({
@@ -336,14 +385,23 @@ pub(super) async fn run_chat_generic(
             }
 
             // No tool calls - we're done
+            if voice_enabled {
+                clear_voice_stream_handle(app).await;
+            }
             drop(voice_delta_tx);
             drop(voice_control);
             drop(voice_session);
             return Ok((all_text, all_reasoning));
         }
 
+        if voice_enabled {
+            clear_voice_stream_handle(app).await;
+        }
         return Err(last_error.unwrap_or_else(|| "Retry limit exceeded".to_string()));
     }
 
+    if voice_enabled {
+        clear_voice_stream_handle(app).await;
+    }
     Err(format!("Tool round limit reached ({max_tool_rounds})"))
 }

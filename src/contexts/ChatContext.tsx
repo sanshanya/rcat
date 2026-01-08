@@ -10,33 +10,32 @@ import ChatMessages from "@/components/ChatMessages";
 import PromptInput from "@/components/PromptInput";
 import type { AiModel, SkinMode } from "@/types";
 
-export type ChatUiContextValue = {
+export type ChatContextValue = {
   capsuleProps: ComponentProps<typeof Capsule>;
   promptProps: ComponentProps<typeof PromptInput>;
   chatProps: ComponentProps<typeof ChatMessages>;
   showChat: boolean;
   modelSpec: AiModel | null;
   skinMode: SkinMode;
+  errorText: string | null;
 };
 
-const ChatUiContext = createContext<ChatUiContextValue | null>(null);
+const ChatContext = createContext<ChatContextValue | null>(null);
 
-export function ChatUiProvider({
+export function ChatProvider({
   value,
   children,
 }: {
-  value: ChatUiContextValue;
+  value: ChatContextValue;
   children: ReactNode;
 }) {
-  return (
-    <ChatUiContext.Provider value={value}>{children}</ChatUiContext.Provider>
-  );
+  return <ChatContext.Provider value={value}>{children}</ChatContext.Provider>;
 }
 
-export function useChatUi(): ChatUiContextValue {
-  const ctx = useContext(ChatUiContext);
+export function useChatContext(): ChatContextValue {
+  const ctx = useContext(ChatContext);
   if (!ctx) {
-    throw new Error("useChatUi must be used within ChatUiProvider");
+    throw new Error("useChatContext must be used within ChatProvider");
   }
   return ctx;
 }
