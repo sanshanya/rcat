@@ -397,6 +397,7 @@ pub fn run() {
 
             let voice_state = app.state::<services::voice::VoiceState>();
             voice_state.spawn_rms_emitter(app_handle.clone());
+            services::cursor::spawn_global_cursor_gaze_emitter(app_handle.clone());
 
             if let Some(window) = app.get_webview_window("main") {
                 window_state.restore_anchor_to_window(&window);

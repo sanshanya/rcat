@@ -4,6 +4,7 @@ import { cn } from "@/lib/utils";
 import { useVrmRenderer } from "@/components/vrm/useVrmRenderer";
 import { setVrmState } from "@/components/vrm/vrmStore";
 import { useVrmBehavior } from "@/components/vrm/useVrmBehavior";
+import { useRenderFpsState } from "@/components/vrm/renderFpsStore";
 
 export type VrmCanvasProps = {
   url: string;
@@ -15,15 +16,23 @@ const LOAD_TIMEOUT_MS = 5000;
 
 export default function VrmCanvas({ url, className, idleMotionUrl }: VrmCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const { onFrame, setVrm } = useVrmBehavior({ idleMotionUrl });
+  const { onFrame, afterVrmUpdate, setVrm, getMotionController } = useVrmBehavior({
+    idleMotionUrl,
+  });
+  const { mode: fpsMode } = useRenderFpsState();
   const loadSeqRef = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
   const urlRef = useRef(url);
   const reloadRef = useRef<(() => void) | null>(null);
   const { handleRef, ready } = useVrmRenderer(canvasRef, {
+    fpsMode,
     onFrame: (vrm, delta) => {
       void vrm;
       onFrame(delta);
+    },
+    onAfterFrame: (_vrm, delta) => {
+      void _vrm;
+      afterVrmUpdate(delta);
     },
     onContextRestored: () => {
       reloadRef.current?.();
@@ -53,7 +62,7 @@ export default function VrmCanvas({ url, className, idleMotionUrl }: VrmCanvasPr
       }, LOAD_TIMEOUT_MS);
 
       setError(null);
-      setVrmState(null);
+      setVrmState(null, null);
       setVrm(null);
 
       if (logReload) {
@@ -64,8 +73,8 @@ export default function VrmCanvas({ url, className, idleMotionUrl }: VrmCanvasPr
         .loadVrm(nextUrl, { signal: controller.signal })
         .then((vrm) => {
           if (seq !== loadSeqRef.current) return;
-          setVrmState(vrm);
           setVrm(vrm);
+          setVrmState(vrm, getMotionController());
         })
         .catch((err) => {
           if (seq !== loadSeqRef.current) return;
@@ -108,7 +117,7 @@ export default function VrmCanvas({ url, className, idleMotionUrl }: VrmCanvasPr
       loadSeqRef.current += 1;
       abortRef.current?.abort();
       abortRef.current = null;
-      setVrmState(null);
+      setVrmState(null, null);
       setVrm(null);
       handle?.clearVrm();
     };

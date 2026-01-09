@@ -91,6 +91,12 @@ models/
 
 # VRM assets we download locally (README kept tracked manually)
 /public/vrm/*.vrm
+# Local motion assets (keep README/index.json tracked)
+/public/vrm/motions/**/*.fbx
+/public/vrm/motions/**/*.vrma
+/public/vrm/motions/**/*.vmd
+/public/vrm/motions/**/*.glb
+/public/vrm/motions/**/*.gltf
 lobe-vidol-main/
 /target-win
 /src-tauri/target-win

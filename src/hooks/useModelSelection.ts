@@ -13,8 +13,6 @@ export function useModelSelection(
     () => modelOptions[0]?.id ?? DEFAULT_MODEL_ID
   );
   const didInitModelFromBackendRef = useRef(false);
-  const selectedModelRef = useRef(selectedModel);
-  selectedModelRef.current = selectedModel;
 
   useEffect(() => {
     const configured = aiConfig?.model?.trim();
@@ -44,6 +42,6 @@ export function useModelSelection(
     }
   }, [aiConfig, modelOptions, selectedModel]);
 
-  return { selectedModel, setSelectedModel, selectedModelRef };
+  return { selectedModel, setSelectedModel };
 }
 

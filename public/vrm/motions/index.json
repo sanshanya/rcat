@@ -1,0 +1,66 @@
+[
+  {
+    "id": "female_happy",
+    "name": "Female Happy",
+    "type": "fbx",
+    "path": "/vrm/motions/fbx/female_happy.fbx",
+    "loop": true,
+    "category": "emotion"
+  },
+  {
+    "id": "female_angry",
+    "name": "Female Angry",
+    "type": "fbx",
+    "path": "/vrm/motions/fbx/female_angry.fbx",
+    "loop": true,
+    "category": "emotion"
+  },
+  {
+    "id": "female_greeting",
+    "name": "Female Greeting",
+    "type": "fbx",
+    "path": "/vrm/motions/fbx/female_greeting.fbx",
+    "loop": false,
+    "category": "gesture"
+  },
+  {
+    "id": "male_happy",
+    "name": "Male Happy",
+    "type": "fbx",
+    "path": "/vrm/motions/fbx/male_happy.fbx",
+    "loop": true,
+    "category": "emotion"
+  },
+  {
+    "id": "male_angry",
+    "name": "Male Angry",
+    "type": "fbx",
+    "path": "/vrm/motions/fbx/male_angry.fbx",
+    "loop": true,
+    "category": "emotion"
+  },
+  {
+    "id": "female_stand",
+    "name": "Female Stand (VMD)",
+    "type": "vmd",
+    "path": "/vrm/motions/vmd/stand.vmd",
+    "loop": true,
+    "category": "idle"
+  },
+  {
+    "id": "female_appeal",
+    "name": "Female Appeal (VMD)",
+    "type": "vmd",
+    "path": "/vrm/motions/vmd/camera_appeal02.vmd",
+    "loop": false,
+    "category": "gesture"
+  },
+  {
+    "id": "female_stand_mix",
+    "name": "Female Stand Mix (VMD)",
+    "type": "vmd",
+    "path": "/vrm/motions/vmd/standmix2_modified.vmd",
+    "loop": true,
+    "category": "idle"
+  }
+]

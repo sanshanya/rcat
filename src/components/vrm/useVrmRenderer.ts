@@ -26,6 +26,9 @@ import {
   VRMUtils,
 } from "@pixiv/three-vrm";
 
+import type { RenderFps, RenderFpsMode } from "@/components/vrm/renderFpsStore";
+import { setRenderFpsStats } from "@/components/vrm/renderFpsStore";
+
 export type VrmRendererHandle = {
   loadVrm: (url: string, options?: { signal?: AbortSignal }) => Promise<VRM>;
   clearVrm: () => void;
@@ -33,11 +36,15 @@ export type VrmRendererHandle = {
 
 type VrmRendererOptions = {
   onFrame?: (vrm: VRM, delta: number) => void;
+  onAfterFrame?: (vrm: VRM, delta: number) => void;
   onContextLost?: () => void;
   onContextRestored?: () => void;
+  fpsMode?: RenderFpsMode;
 };
 
 const SPRING_BONE_EXTENSION = "VRMC_springBone";
+const MAX_DELTA_SECONDS = 1 / 30;
+const FPS_EPSILON_MS = 0.5;
 
 type SpringBoneSchema = {
   colliders?: unknown[];
@@ -214,21 +221,33 @@ export const useVrmRenderer = (
   const handleRef = useRef<VrmRendererHandle | null>(null);
   const [ready, setReady] = useState(false);
   const onFrameRef = useRef<VrmRendererOptions["onFrame"]>(options.onFrame);
+  const onAfterFrameRef = useRef<VrmRendererOptions["onAfterFrame"]>(
+    options.onAfterFrame
+  );
   const onContextLostRef = useRef<VrmRendererOptions["onContextLost"]>(
     options.onContextLost
   );
   const onContextRestoredRef = useRef<VrmRendererOptions["onContextRestored"]>(
     options.onContextRestored
   );
+  const fpsModeRef = useRef<RenderFpsMode>(options.fpsMode ?? "auto");
 
   useEffect(() => {
     onFrameRef.current = options.onFrame;
   }, [options.onFrame]);
 
   useEffect(() => {
+    onAfterFrameRef.current = options.onAfterFrame;
+  }, [options.onAfterFrame]);
+
+  useEffect(() => {
     onContextLostRef.current = options.onContextLost;
     onContextRestoredRef.current = options.onContextRestored;
   }, [options.onContextLost, options.onContextRestored]);
+
+  useEffect(() => {
+    fpsModeRef.current = options.fpsMode ?? "auto";
+  }, [options.fpsMode]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -238,6 +257,7 @@ export const useVrmRenderer = (
       canvas,
       alpha: true,
       antialias: true,
+      powerPreference: "high-performance",
     });
     renderer.setClearColor(0x000000, 0);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
@@ -322,6 +342,7 @@ export const useVrmRenderer = (
         throw new DOMException("Aborted", "AbortError");
       }
       VRMUtils.removeUnnecessaryVertices(gltf.scene);
+      VRMUtils.removeUnnecessaryJoints(gltf.scene);
       VRMUtils.rotateVRM0(vrm);
       vrm.scene.traverse((obj) => {
         obj.frustumCulled = false;
@@ -336,19 +357,99 @@ export const useVrmRenderer = (
 
     const startLoop = () => {
       if (frameId !== null) return;
+      let lastRafAtMs = performance.now();
+      let accumulatedMs = 0;
+      let rafEmaMs = 16;
+      let workEmaMs = 8;
+      let autoTargetFps: RenderFps = 60;
+      let slowStreakMs = 0;
+      let fastStreakMs = 0;
+      let lastStatsAtMs = 0;
+      let lastReportedEffective: RenderFps | null = null;
+
       const renderLoop = () => {
         if (contextLost) {
           frameId = null;
           return;
         }
         frameId = requestAnimationFrame(renderLoop);
-        const delta = clock.getDelta();
+        const nowMs = performance.now();
+        const rafDtMs = Math.max(0, nowMs - lastRafAtMs);
+        lastRafAtMs = nowMs;
+        rafEmaMs = rafEmaMs * 0.9 + rafDtMs * 0.1;
+
+        const mode = fpsModeRef.current;
+        let targetFps: RenderFps;
+        if (mode === "auto") {
+          const isSlow = rafEmaMs > 24 || workEmaMs > 22;
+          const isFast = rafEmaMs < 18 && workEmaMs < 14;
+          if (autoTargetFps === 60) {
+            slowStreakMs = isSlow ? slowStreakMs + rafDtMs : 0;
+            if (slowStreakMs > 800) {
+              autoTargetFps = 30;
+              slowStreakMs = 0;
+              fastStreakMs = 0;
+            }
+          } else {
+            fastStreakMs = isFast ? fastStreakMs + rafDtMs : 0;
+            if (fastStreakMs > 1500) {
+              autoTargetFps = 60;
+              fastStreakMs = 0;
+              slowStreakMs = 0;
+            }
+          }
+          targetFps = autoTargetFps;
+        } else {
+          targetFps = mode;
+          autoTargetFps = mode;
+          slowStreakMs = 0;
+          fastStreakMs = 0;
+        }
+
+        const frameIntervalMs = 1000 / targetFps;
+        accumulatedMs += rafDtMs;
+        if (accumulatedMs < frameIntervalMs - FPS_EPSILON_MS) {
+          if (nowMs - lastStatsAtMs > 600 || lastReportedEffective !== targetFps) {
+            lastStatsAtMs = nowMs;
+            lastReportedEffective = targetFps;
+            setRenderFpsStats({
+              effective: targetFps,
+              rafEmaMs,
+              workEmaMs,
+            });
+          }
+          return;
+        }
+
+        if (accumulatedMs > frameIntervalMs * 5) {
+          // Avoid huge catch-up spikes after the tab/app is suspended.
+          accumulatedMs = frameIntervalMs;
+        }
+        accumulatedMs = Math.max(0, accumulatedMs - frameIntervalMs);
+
+        const workStart = performance.now();
+        const rawDelta = clock.getDelta();
+        const delta = Math.min(rawDelta, MAX_DELTA_SECONDS);
         if (currentVrm) {
           onFrameRef.current?.(currentVrm, delta);
           currentVrm.update(delta);
+          onAfterFrameRef.current?.(currentVrm, delta);
         }
         renderer.render(scene, camera);
+        const workMs = Math.max(0, performance.now() - workStart);
+        workEmaMs = workEmaMs * 0.9 + workMs * 0.1;
+
+        if (nowMs - lastStatsAtMs > 600 || lastReportedEffective !== targetFps) {
+          lastStatsAtMs = nowMs;
+          lastReportedEffective = targetFps;
+          setRenderFpsStats({
+            effective: targetFps,
+            rafEmaMs,
+            workEmaMs,
+          });
+        }
       };
+
       frameId = requestAnimationFrame(renderLoop);
     };
 

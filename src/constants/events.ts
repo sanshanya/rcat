@@ -27,3 +27,6 @@ export const EVT_VOICE_SPEECH_START = 'voice-speech-start' as const;
 
 /** Voice speech end event */
 export const EVT_VOICE_SPEECH_END = 'voice-speech-end' as const;
+
+/** Global cursor gaze (backend-provided; works even in click-through mode) */
+export const EVT_GLOBAL_CURSOR_GAZE = 'global-cursor-gaze' as const;

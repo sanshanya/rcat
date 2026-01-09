@@ -1,4 +1,4 @@
-import { useCallback, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import {
   AnimationClip,
   AnimationMixer,
@@ -11,8 +11,16 @@ import {
 } from "three";
 import type { VRM } from "@pixiv/three-vrm";
 import { VRMHumanBoneName } from "@pixiv/three-vrm";
+import { EVT_GLOBAL_CURSOR_GAZE } from "@/constants";
+import { useTauriEvent } from "@/hooks";
 import { createExpressionDriver } from "@/components/vrm/ExpressionDriver";
 import { useLipSync } from "@/components/vrm/useLipSync";
+import {
+  getGazeRuntimeDebug,
+  setGazeRuntimeDebug,
+  type GazeSource,
+} from "@/components/vrm/useGazeDebug";
+import { MotionController } from "@/components/vrm/motion/MotionController";
 import { loadVrmAnimation } from "@/components/vrm/motion/vrma/loadVrmAnimation";
 import { loadMixamoAnimation } from "@/components/vrm/motion/mixamo/loadMixamoAnimation";
 
@@ -131,117 +139,139 @@ const captureRestPose = (vrm: VRM): RestPoseMap => {
   return restPose;
 };
 
-const relaxUpperArm = (options: {
-  upperArm: Object3D;
-  lowerArm: Object3D;
-  outward: Vector3;
-}) => {
-  const { upperArm, lowerArm, outward } = options;
-  upperArm.updateWorldMatrix(true, false);
-  lowerArm.updateWorldMatrix(true, false);
+const clamp01 = (value: number) => Math.max(0, Math.min(1, value));
 
-  const upperPos = new Vector3().setFromMatrixPosition(upperArm.matrixWorld);
-  const lowerPos = new Vector3().setFromMatrixPosition(lowerArm.matrixWorld);
-  const currentDir = lowerPos.sub(upperPos).normalize();
-  if (currentDir.lengthSq() < 1e-6) return;
+const lerp = (from: number, to: number, t: number) => from + (to - from) * t;
 
-  const down = new Vector3(0, -1, 0);
-  const forward = new Vector3(0, 0, 1);
-  const targetDir = down
-    .multiplyScalar(0.89)
-    .add(outward.clone().multiplyScalar(0.45))
-    .add(forward.multiplyScalar(0.08))
-    .normalize();
-  if (targetDir.lengthSq() < 1e-6) return;
+const getWorldPosition = (node: Object3D) =>
+  new Vector3().setFromMatrixPosition(node.matrixWorld);
 
-  const deltaWorld = new Quaternion().setFromUnitVectors(currentDir, targetDir);
-  const upperWorld = new Quaternion();
-  upperArm.getWorldQuaternion(upperWorld);
-  const newUpperWorld = deltaWorld.multiply(upperWorld);
-
-  const parentWorld = new Quaternion();
-  upperArm.parent?.getWorldQuaternion(parentWorld);
-  parentWorld.invert();
-  const newLocal = parentWorld.multiply(newUpperWorld);
-
-  upperArm.quaternion.copy(newLocal);
-  upperArm.updateMatrixWorld(true);
+const getModelAxes = (vrm: VRM) => {
+  const q = new Quaternion();
+  vrm.scene.getWorldQuaternion(q);
+  const up = new Vector3(0, 1, 0).applyQuaternion(q).normalize();
+  const right = new Vector3(1, 0, 0).applyQuaternion(q).normalize();
+  const forward = new Vector3(0, 0, 1).applyQuaternion(q).normalize();
+  return { up, right, forward };
 };
 
-const relaxLowerArm = (options: {
-  lowerArm: Object3D;
-  hand: Object3D;
-  outward: Vector3;
+const rotateBoneTowards = (options: {
+  bone: Object3D;
+  from: Vector3;
+  to: Vector3;
+  targetDir: Vector3;
 }) => {
-  const { lowerArm, hand, outward } = options;
-  lowerArm.updateWorldMatrix(true, false);
-  hand.updateWorldMatrix(true, false);
-
-  const lowerPos = new Vector3().setFromMatrixPosition(lowerArm.matrixWorld);
-  const handPos = new Vector3().setFromMatrixPosition(hand.matrixWorld);
-  const currentDir = handPos.sub(lowerPos).normalize();
-  if (currentDir.lengthSq() < 1e-6) return;
-
-  const down = new Vector3(0, -1, 0);
-  const forward = new Vector3(0, 0, 1);
-  const targetDir = down
-    .multiplyScalar(0.94)
-    .add(outward.clone().multiplyScalar(0.22))
-    .add(forward.multiplyScalar(0.14))
-    .normalize();
-  if (targetDir.lengthSq() < 1e-6) return;
+  const { bone, from, to, targetDir } = options;
+  const currentDir = to.clone().sub(from).normalize();
+  if (currentDir.lengthSq() < 1e-8) return;
+  if (targetDir.lengthSq() < 1e-8) return;
 
   const deltaWorld = new Quaternion().setFromUnitVectors(currentDir, targetDir);
-  const lowerWorld = new Quaternion();
-  lowerArm.getWorldQuaternion(lowerWorld);
-  const newLowerWorld = deltaWorld.multiply(lowerWorld);
+  const boneWorld = new Quaternion();
+  bone.getWorldQuaternion(boneWorld);
+  const newWorld = deltaWorld.multiply(boneWorld);
 
   const parentWorld = new Quaternion();
-  lowerArm.parent?.getWorldQuaternion(parentWorld);
+  bone.parent?.getWorldQuaternion(parentWorld);
   parentWorld.invert();
-  const newLocal = parentWorld.multiply(newLowerWorld);
+  const newLocal = parentWorld.multiply(newWorld);
 
-  lowerArm.quaternion.copy(newLocal);
-  lowerArm.updateMatrixWorld(true);
+  bone.quaternion.copy(newLocal);
+  bone.updateMatrixWorld(true);
 };
 
-const relaxArmsIntoStandPose = (vrm: VRM) => {
+/**
+ * Normalize arm pose into a "stand" posture when the model ships with hands behind the back
+ * or with arms too close to a strict T-pose.
+ *
+ * This runs once on VRM load and becomes the new rest pose for our procedural idle motion.
+ */
+const normalizeArmsForIdle = (vrm: VRM) => {
   if (!vrm.humanoid) return;
-  const leftUpper = vrm.humanoid.getNormalizedBoneNode(VRMHumanBoneName.LeftUpperArm);
-  const leftLower = vrm.humanoid.getNormalizedBoneNode(VRMHumanBoneName.LeftLowerArm);
-  if (leftUpper && leftLower) {
-    relaxUpperArm({
-      upperArm: leftUpper,
-      lowerArm: leftLower,
-      outward: new Vector3(-1, 0, 0),
-    });
-  }
-  const leftHand = vrm.humanoid.getNormalizedBoneNode(VRMHumanBoneName.LeftHand);
-  if (leftLower && leftHand) {
-    relaxLowerArm({
-      lowerArm: leftLower,
-      hand: leftHand,
-      outward: new Vector3(-1, 0, 0),
-    });
-  }
 
-  const rightUpper = vrm.humanoid.getNormalizedBoneNode(VRMHumanBoneName.RightUpperArm);
-  const rightLower = vrm.humanoid.getNormalizedBoneNode(VRMHumanBoneName.RightLowerArm);
-  if (rightUpper && rightLower) {
-    relaxUpperArm({
-      upperArm: rightUpper,
-      lowerArm: rightLower,
-      outward: new Vector3(1, 0, 0),
+  const { up, right, forward } = getModelAxes(vrm);
+  const down = up.clone().negate();
+
+  const applyArm = (options: {
+    upper: Object3D | null;
+    lower: Object3D | null;
+    hand: Object3D | null;
+    outwardSign: number;
+  }) => {
+    const { upper, lower, hand, outwardSign } = options;
+    if (!upper || !lower || !hand) return;
+
+    upper.updateWorldMatrix(true, false);
+    lower.updateWorldMatrix(true, false);
+    hand.updateWorldMatrix(true, false);
+
+    const shoulderWorld = getWorldPosition(upper);
+    const elbowWorld = getWorldPosition(lower);
+    const handWorld = getWorldPosition(hand);
+
+    const shoulderLocal = vrm.scene.worldToLocal(shoulderWorld.clone());
+    const handLocal = vrm.scene.worldToLocal(handWorld.clone());
+    const handDeltaLocal = handLocal.sub(shoulderLocal);
+
+    const isBehindBack = handDeltaLocal.z < -0.02;
+    const isNotDownEnough = handDeltaLocal.y > -0.12;
+    if (!isBehindBack && !isNotDownEnough) return;
+
+    const behindness = clamp01((-handDeltaLocal.z) / 0.25);
+    const outward = right.clone().multiplyScalar(outwardSign);
+
+    // Push forward harder when the hand starts behind the torso.
+    const upperForward = lerp(0.12, 0.55, behindness);
+    const lowerForward = lerp(0.18, 0.65, behindness);
+
+    const upperTargetDir = down
+      .clone()
+      .multiplyScalar(1.0)
+      .add(outward.clone().multiplyScalar(0.35))
+      .add(forward.clone().multiplyScalar(upperForward))
+      .normalize();
+
+    rotateBoneTowards({
+      bone: upper,
+      from: shoulderWorld,
+      to: elbowWorld,
+      targetDir: upperTargetDir,
     });
-  }
-  const rightHand = vrm.humanoid.getNormalizedBoneNode(VRMHumanBoneName.RightHand);
-  if (rightLower && rightHand) {
-    relaxLowerArm({
-      lowerArm: rightLower,
-      hand: rightHand,
-      outward: new Vector3(1, 0, 0),
+
+    // Re-sample positions after upper arm change.
+    lower.updateWorldMatrix(true, false);
+    hand.updateWorldMatrix(true, false);
+    const elbowWorld2 = getWorldPosition(lower);
+    const handWorld2 = getWorldPosition(hand);
+
+    const lowerTargetDir = down
+      .clone()
+      .multiplyScalar(1.0)
+      .add(outward.clone().multiplyScalar(0.22))
+      .add(forward.clone().multiplyScalar(lowerForward))
+      .normalize();
+
+    rotateBoneTowards({
+      bone: lower,
+      from: elbowWorld2,
+      to: handWorld2,
+      targetDir: lowerTargetDir,
     });
-  }
+  };
+
+  applyArm({
+    upper: vrm.humanoid.getNormalizedBoneNode(VRMHumanBoneName.LeftUpperArm),
+    lower: vrm.humanoid.getNormalizedBoneNode(VRMHumanBoneName.LeftLowerArm),
+    hand: vrm.humanoid.getNormalizedBoneNode(VRMHumanBoneName.LeftHand),
+    outwardSign: -1,
+  });
+
+  applyArm({
+    upper: vrm.humanoid.getNormalizedBoneNode(VRMHumanBoneName.RightUpperArm),
+    lower: vrm.humanoid.getNormalizedBoneNode(VRMHumanBoneName.RightLowerArm),
+    hand: vrm.humanoid.getNormalizedBoneNode(VRMHumanBoneName.RightHand),
+    outwardSign: 1,
+  });
 };
 
 const buildIdleClip = (
@@ -311,10 +341,25 @@ export const useVrmBehavior = ({
   const vrmRef = useRef<VRM | null>(null);
   const restPoseRef = useRef<RestPoseMap | null>(null);
   const lookAtTargetRef = useRef<Object3D | null>(null);
+  const lookAtLocalRef = useRef<{ x: number; y: number } | null>(null);
+  const lookAtLocalAtMsRef = useRef(0);
+  const lookAtGlobalRef = useRef<{ x: number; y: number } | null>(null);
+  const lookAtGlobalAtMsRef = useRef(0);
+  const lookAtSmoothedRef = useRef<{ x: number; y: number } | null>(null);
+  const lookAtTimeRef = useRef(0);
   const timeRef = useRef(0);
   const headRef = useRef<Object3D | null>(null);
   const headBaseRef = useRef<Vector3 | null>(null);
+  const headGazeRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+  const headGazeTimeRef = useRef(0);
+  const gazeDebugAtRef = useRef(0);
+  const gazeDebugRef = useRef<{ x: number; y: number; source: GazeSource }>({
+    x: 0,
+    y: 0,
+    source: "drift",
+  });
   const expressionDriverRef = useRef<ReturnType<typeof createExpressionDriver> | null>(null);
+  const motionControllerRef = useRef<MotionController | null>(null);
   const idleMixerRef = useRef<AnimationMixer | null>(null);
   const idleRootRef = useRef<Object3D | null>(null);
   const idleActionRef = useRef<ReturnType<AnimationMixer["clipAction"]> | null>(null);
@@ -323,6 +368,32 @@ export const useVrmBehavior = ({
     nextBlinkAt: 0,
     phase: "idle",
     phaseStart: 0,
+  });
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const handleMouseMove = (event: MouseEvent) => {
+      const w = window.innerWidth;
+      const h = window.innerHeight;
+      if (!Number.isFinite(w) || w <= 0) return;
+      if (!Number.isFinite(h) || h <= 0) return;
+
+      lookAtLocalRef.current = {
+        x: (event.clientX / w) * 2 - 1,
+        y: 1 - (event.clientY / h) * 2,
+      };
+      lookAtLocalAtMsRef.current = performance.now();
+    };
+
+    window.addEventListener("mousemove", handleMouseMove, { passive: true });
+    return () => window.removeEventListener("mousemove", handleMouseMove);
+  }, []);
+
+  useTauriEvent<{ x: number; y: number }>(EVT_GLOBAL_CURSOR_GAZE, (event) => {
+    const { x, y } = event.payload;
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+    lookAtGlobalRef.current = { x, y };
+    lookAtGlobalAtMsRef.current = performance.now();
   });
 
   const stopIdleMotion = useCallback(() => {
@@ -409,22 +480,34 @@ export const useVrmBehavior = ({
     vrmRef.current = vrm;
     headRef.current = null;
     headBaseRef.current = null;
+    headGazeRef.current = { x: 0, y: 0 };
+    headGazeTimeRef.current = 0;
     lookAtTargetRef.current = null;
+    lookAtLocalRef.current = null;
+    lookAtLocalAtMsRef.current = 0;
+    lookAtGlobalRef.current = null;
+    lookAtGlobalAtMsRef.current = 0;
+    lookAtSmoothedRef.current = null;
+    lookAtTimeRef.current = 0;
     expressionDriverRef.current = null;
+    motionControllerRef.current?.dispose();
+    motionControllerRef.current = null;
     restPoseRef.current = null;
+    gazeDebugAtRef.current = 0;
+    gazeDebugRef.current = { x: 0, y: 0, source: "drift" };
 
     if (!vrm) {
       lipSyncReset();
       return;
     }
 
-    relaxArmsIntoStandPose(vrm);
+    normalizeArmsForIdle(vrm);
     restPoseRef.current = captureRestPose(vrm);
 
     expressionDriverRef.current = createExpressionDriver(vrm.expressionManager ?? null);
 
     const target = new Object3D();
-    target.position.set(0, 1.35, 2.0);
+    target.position.set(0, 1.35, 1.6);
     vrm.scene.add(target);
     lookAtTargetRef.current = target;
 
@@ -450,6 +533,14 @@ export const useVrmBehavior = ({
     timeRef.current = 0;
     lipSyncReset();
     startIdleMotion(vrm);
+
+    motionControllerRef.current = new MotionController(vrm, {
+      onStopped: () => {
+        if (vrmRef.current === vrm) {
+          startIdleMotion(vrm);
+        }
+      },
+    });
   }, [lipSyncReset, startIdleMotion, stopIdleMotion]);
 
   const updateBlink = useCallback((now: number) => {
@@ -493,13 +584,104 @@ export const useVrmBehavior = ({
     driver.setValue("blink", weight);
   }, []);
 
+  const getMotionController = useCallback(() => motionControllerRef.current, []);
+
+  const preloadMotion = useCallback(async (id: string) => {
+    const controller = motionControllerRef.current;
+    if (!controller) return null;
+    return await controller.preloadById(id);
+  }, []);
+
+  const playMotion = useCallback(
+    async (id: string, options?: { loop?: boolean; fadeIn?: number }) => {
+      const controller = motionControllerRef.current;
+      const vrm = vrmRef.current;
+      if (!controller || !vrm) return false;
+      const driver = expressionDriverRef.current;
+      if (driver?.supports("blink")) {
+        driver.setValue("blink", 0);
+      }
+      stopIdleMotion();
+      const ok = await controller.playById(id, options);
+      if (!ok) {
+        startIdleMotion(vrm);
+      }
+      return ok;
+    },
+    [startIdleMotion, stopIdleMotion]
+  );
+
+  const stopMotion = useCallback(() => {
+    motionControllerRef.current?.stop();
+  }, []);
+
+  const afterVrmUpdate = useCallback((delta: number) => {
+    motionControllerRef.current?.postUpdate(delta);
+  }, []);
+
+  const pickGazePointer = useCallback(
+    (nowMs: number) => {
+      const debugState = getGazeRuntimeDebug();
+      if (debugState.manualEnabled) {
+        return {
+          pointer: { x: debugState.manualX, y: debugState.manualY },
+          source: "manual" as GazeSource,
+        };
+      }
+
+      const localAge = nowMs - lookAtLocalAtMsRef.current;
+      if (lookAtLocalRef.current && localAge < 200) {
+        return { pointer: lookAtLocalRef.current, source: "local" as GazeSource };
+      }
+
+      const globalAge = nowMs - lookAtGlobalAtMsRef.current;
+      if (lookAtGlobalRef.current && globalAge < 1500) {
+        return { pointer: lookAtGlobalRef.current, source: "global" as GazeSource };
+      }
+
+      return { pointer: null, source: "drift" as GazeSource };
+    },
+    []
+  );
+
   const updateLookAt = useCallback((time: number) => {
     const target = lookAtTargetRef.current;
     if (!target) return;
 
+    const dt = Math.max(0, Math.min(0.1, time - lookAtTimeRef.current));
+    lookAtTimeRef.current = time;
+
+    const nowMs = performance.now();
+    const { pointer, source } = pickGazePointer(nowMs);
+
     const driftX = Math.sin(time * 0.7) * 0.15;
     const driftY = Math.sin(time * 0.9) * 0.08;
-    target.position.set(driftX, 1.35 + driftY, 2.0);
+
+    // Larger offsets for more noticeable gaze tracking.
+    const desiredX = pointer ? pointer.x * 0.5 : driftX;
+    const desiredY = pointer ? 1.35 + pointer.y * 0.25 : 1.35 + driftY;
+
+    const smooth = lookAtSmoothedRef.current ?? { x: desiredX, y: desiredY };
+    const k = pointer ? 18 : 6;
+    const t = 1 - Math.exp(-k * dt);
+    smooth.x += (desiredX - smooth.x) * t;
+    smooth.y += (desiredY - smooth.y) * t;
+    lookAtSmoothedRef.current = smooth;
+
+    target.position.set(smooth.x, smooth.y, 1.6);
+
+    const pointerX = pointer ? pointer.x : 0;
+    const pointerY = pointer ? pointer.y : 0;
+    const prev = gazeDebugRef.current;
+    const changed =
+      source !== prev.source ||
+      Math.abs(pointerX - prev.x) > 0.01 ||
+      Math.abs(pointerY - prev.y) > 0.01;
+    if (changed || nowMs - gazeDebugAtRef.current > 200) {
+      gazeDebugRef.current = { x: pointerX, y: pointerY, source };
+      gazeDebugAtRef.current = nowMs;
+      setGazeRuntimeDebug({ x: pointerX, y: pointerY, source, updatedAt: nowMs });
+    }
   }, []);
 
   const updateHeadIdle = useCallback((time: number) => {
@@ -507,21 +689,46 @@ export const useVrmBehavior = ({
     const base = headBaseRef.current;
     if (!head || !base) return;
 
+    const dt = Math.max(0, Math.min(0.1, time - headGazeTimeRef.current));
+    headGazeTimeRef.current = time;
+
+    const { pointer } = pickGazePointer(performance.now());
+    const targetX = pointer ? pointer.x : 0;
+    const targetY = pointer ? pointer.y : 0;
+
+    const gaze = headGazeRef.current;
+    const k = pointer ? 10 : 6;
+    const t = 1 - Math.exp(-k * dt);
+    gaze.x += (targetX - gaze.x) * t;
+    gaze.y += (targetY - gaze.y) * t;
+
     const pitch = Math.sin(time * 1.15) * 0.03;
     const yaw = Math.sin(time * 0.8 + 1.2) * 0.04;
     const roll = Math.sin(time * 0.9 + 2.4) * 0.015;
 
-    head.rotation.set(base.x + pitch, base.y + yaw, base.z + roll);
-  }, []);
+    const gazeYaw = gaze.x * 0.25;
+    const gazePitch = -gaze.y * 0.14;
+    const gazeRoll = -gaze.x * 0.05;
+
+    head.rotation.set(
+      base.x + pitch + gazePitch,
+      base.y + yaw + gazeYaw,
+      base.z + roll + gazeRoll
+    );
+  }, [pickGazePointer]);
 
   const onFrame = useCallback((delta: number) => {
     if (!vrmRef.current) return;
     idleMixerRef.current?.update(delta);
+    motionControllerRef.current?.update(delta);
     timeRef.current += delta;
     const now = performance.now();
-    updateBlink(now);
-    updateLookAt(timeRef.current);
-    updateHeadIdle(timeRef.current);
+    const motionActive = motionControllerRef.current?.isPlaying() ?? false;
+    if (!motionActive) {
+      updateBlink(now);
+      updateLookAt(timeRef.current);
+      updateHeadIdle(timeRef.current);
+    }
     const driver = expressionDriverRef.current;
     if (driver?.supports("aa")) {
       const mouth = lipSyncOnFrame(delta);
@@ -531,5 +738,13 @@ export const useVrmBehavior = ({
     }
   }, [lipSyncOnFrame, updateBlink, updateHeadIdle, updateLookAt]);
 
-  return { setVrm, onFrame };
+  return {
+    setVrm,
+    onFrame,
+    afterVrmUpdate,
+    getMotionController,
+    preloadMotion,
+    playMotion,
+    stopMotion,
+  };
 };

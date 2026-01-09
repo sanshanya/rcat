@@ -48,6 +48,7 @@ base64 = { version = "0.22", optional = true }
 windows = { version = "0.62.2", features = [
     "Win32_Foundation",
     "Win32_System_LibraryLoader",
+    "Win32_UI_WindowsAndMessaging",
     "Graphics_Imaging",
     "Media_Ocr",
     "Storage",
@@ -58,3 +59,4 @@ windows = { version = "0.62.2", features = [
 # Enables dev-only Rust -> TS type export binary.
 typegen = ["dep:specta", "dep:specta-typescript"]
 vision = ["dep:xcap", "dep:image", "dep:base64"]
+default = ["vision"]

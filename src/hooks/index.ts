@@ -5,6 +5,7 @@ export * from "./useWindowManager";
 export * from "./useTauriEvents";
 export * from "./useAutoWindowFit";
 export * from "./useAiConfig";
+export * from "./useChatTransport";
 export * from "./useSpeechRecognition";
 export * from "./useConversationHistory";
 export * from "./useConversationActions";
