@@ -1,0 +1,19 @@
+{
+  "duration": 4,
+  "samples": 9,
+  "bones": [
+    { "name": "hips", "sway": [0.01, 0.03, 0.008], "phase": [0, 1.2, 3.14] },
+    { "name": "spine", "sway": [0.02, 0.02, 0.01], "phase": [1.57, 0.3, 2.8] },
+    { "name": "chest", "sway": [0.03, 0.015, 0.012], "phase": [0.7, 1.57, 3.2] },
+    { "name": "upperChest", "sway": [0.02, 0.01, 0.008], "phase": [1.2, 0.9, 2.1] },
+    { "name": "neck", "sway": [0.015, 0.01, 0.01], "phase": [1.8, 1.0, 2.6] },
+    { "name": "leftShoulder", "sway": [0.01, 0, -0.015], "phase": [0, 0, 0] },
+    { "name": "rightShoulder", "sway": [0.01, 0, 0.015], "phase": [0, 0, 0] },
+    { "name": "leftUpperArm", "sway": [0.005, 0, -0.01], "phase": [0.3, 0, 1] },
+    { "name": "rightUpperArm", "sway": [0.005, 0, 0.01], "phase": [0.3, 0, 1] },
+    { "name": "leftLowerArm", "sway": [0.006, 0, -0.008], "phase": [0.6, 0, 1.2] },
+    { "name": "rightLowerArm", "sway": [0.006, 0, 0.008], "phase": [0.6, 0, 1.2] },
+    { "name": "leftHand", "sway": [0.01, 0, -0.01], "phase": [1.1, 0, 2.3] },
+    { "name": "rightHand", "sway": [0.01, 0, 0.01], "phase": [1.1, 0, 2.3] }
+  ]
+}

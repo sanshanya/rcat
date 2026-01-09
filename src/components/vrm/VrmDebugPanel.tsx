@@ -36,6 +36,7 @@ export default function VrmDebugPanel({ inline = false, className }: VrmDebugPan
   const [values, setValues] = useState<Record<DebugExpressionName, number>>(EMPTY_VALUES);
   const [collapsed, setCollapsed] = useState(false);
   const [followAuto, setFollowAuto] = useState(false);
+  const [rmsAgeMs, setRmsAgeMs] = useState<number | null>(null);
   const rafRef = useRef<number | null>(null);
 
   useEffect(() => {
@@ -97,9 +98,21 @@ export default function VrmDebugPanel({ inline = false, className }: VrmDebugPan
     ? "w-full rounded-xl border border-border/60 bg-background/60 p-2 shadow-sm"
     : "absolute right-3 top-3 z-20 w-56 rounded-xl border border-border/60 bg-background/80 p-3 shadow-lg backdrop-blur";
 
-  const rmsAgeMs = lipSync.lastRmsAt
-    ? Math.max(0, Math.round(performance.now() - lipSync.lastRmsAt))
-    : null;
+  useEffect(() => {
+    const lastRmsAt = lipSync.lastRmsAt;
+    if (!lastRmsAt) {
+      setRmsAgeMs(null);
+      return;
+    }
+    if (typeof window === "undefined") return;
+
+    const update = () => {
+      setRmsAgeMs(Math.max(0, Math.round(performance.now() - lastRmsAt)));
+    };
+    update();
+    const handle = window.setInterval(update, 250);
+    return () => window.clearInterval(handle);
+  }, [lipSync.lastRmsAt]);
 
   return (
     <div className={cn(containerClass, className)}>

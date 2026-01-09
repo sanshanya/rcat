@@ -6,11 +6,27 @@
  */
 
 import { invoke } from '@tauri-apps/api/core';
-import type {
-    ScreenCaptureResult,
-    VlmAnalysisResult,
-    WindowInfo,
-} from '@/bindings/tauri-types';
+
+export type ScreenCaptureResult = {
+    text: string;
+    confidence: number | null;
+    timestamp: number;
+    window_name: string | null;
+};
+
+export type VlmAnalysisResult = {
+    content: string;
+    timestamp: number;
+};
+
+export type WindowInfo = {
+    title: string;
+    app_name: string;
+    pid: number;
+    is_focused: boolean;
+    z_index: number;
+    is_minimized: boolean;
+};
 
 /**
  * Capture the screen and perform OCR to extract text.
@@ -78,4 +94,3 @@ export async function getSmartWindow(): Promise<WindowInfo | null> {
 export async function captureSmart(): Promise<ScreenCaptureResult> {
     return invoke<ScreenCaptureResult>('capture_smart');
 }
-

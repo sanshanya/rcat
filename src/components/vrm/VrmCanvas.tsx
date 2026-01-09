@@ -8,13 +8,14 @@ import { useVrmBehavior } from "@/components/vrm/useVrmBehavior";
 export type VrmCanvasProps = {
   url: string;
   className?: string;
+  idleMotionUrl?: string;
 };
 
 const LOAD_TIMEOUT_MS = 5000;
 
-export default function VrmCanvas({ url, className }: VrmCanvasProps) {
+export default function VrmCanvas({ url, className, idleMotionUrl }: VrmCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const behavior = useVrmBehavior();
+  const { onFrame, setVrm } = useVrmBehavior({ idleMotionUrl });
   const loadSeqRef = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
   const urlRef = useRef(url);
@@ -22,7 +23,7 @@ export default function VrmCanvas({ url, className }: VrmCanvasProps) {
   const { handleRef, ready } = useVrmRenderer(canvasRef, {
     onFrame: (vrm, delta) => {
       void vrm;
-      behavior.onFrame(delta);
+      onFrame(delta);
     },
     onContextRestored: () => {
       reloadRef.current?.();
@@ -53,7 +54,7 @@ export default function VrmCanvas({ url, className }: VrmCanvasProps) {
 
       setError(null);
       setVrmState(null);
-      behavior.setVrm(null);
+      setVrm(null);
 
       if (logReload) {
         console.info("VRM renderer: reloading VRM");
@@ -64,7 +65,7 @@ export default function VrmCanvas({ url, className }: VrmCanvasProps) {
         .then((vrm) => {
           if (seq !== loadSeqRef.current) return;
           setVrmState(vrm);
-          behavior.setVrm(vrm);
+          setVrm(vrm);
         })
         .catch((err) => {
           if (seq !== loadSeqRef.current) return;
@@ -87,7 +88,7 @@ export default function VrmCanvas({ url, className }: VrmCanvasProps) {
           }
         });
     },
-    [behavior, handleRef, ready]
+    [handleRef, ready, setVrm]
   );
 
   useEffect(() => {
@@ -100,6 +101,7 @@ export default function VrmCanvas({ url, className }: VrmCanvasProps) {
 
   useEffect(() => {
     if (!ready) return;
+    const handle = handleRef.current;
     loadVrm(url, false);
 
     return () => {
@@ -107,10 +109,10 @@ export default function VrmCanvas({ url, className }: VrmCanvasProps) {
       abortRef.current?.abort();
       abortRef.current = null;
       setVrmState(null);
-      behavior.setVrm(null);
-      handleRef.current?.clearVrm();
+      setVrm(null);
+      handle?.clearVrm();
     };
-  }, [behavior, handleRef, loadVrm, ready, url]);
+  }, [handleRef, loadVrm, ready, setVrm, url]);
 
   return (
     <div className={cn("absolute inset-0 pointer-events-none", className)}>

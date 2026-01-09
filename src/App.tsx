@@ -9,6 +9,7 @@ import {
   ResultView,
   SettingsView,
 } from "./components/views";
+import VrmStage from "@/components/vrm/VrmStage";
 import {
   EVT_CLICK_THROUGH_STATE,
   EVT_CHAT_DONE,
@@ -17,6 +18,7 @@ import {
 import {
   useAiConfig,
   useAutoWindowFit,
+  useChatTransport,
   useConversationActions,
   useConversationHistory,
   useGeneratingTracker,
@@ -28,9 +30,9 @@ import {
   useToggleExpand,
   useWindowManager,
 } from "./hooks";
-import { createTauriChatTransport, voicePrepare } from "./services";
+import { voicePrepare } from "./services";
 import { cn } from "@/lib/utils";
-import { conversationDetailToUiMessages, isTauriContext, reportPromiseError } from "@/utils";
+import { conversationDetailToUiMessages, reportPromiseError } from "@/utils";
 import { ChatProvider } from "@/contexts/ChatContext";
 
 type ChatDonePayload = {
@@ -62,17 +64,10 @@ function App() {
       ),
     [aiConfig?.model, aiConfig?.models, aiConfig?.provider]
   );
-  const { selectedModel, setSelectedModel, selectedModelRef } =
-    useModelSelection(aiConfig, modelOptions);
+  const { selectedModel, setSelectedModel } = useModelSelection(aiConfig, modelOptions);
   const [toolMode, setToolMode] = useState(false);
-  const toolModeRef = useRef(toolMode);
   const [voiceMode, setVoiceMode] = useState(false);
-  const voiceModeRef = useRef(voiceMode);
   const { skinMode, setSkinMode } = useSkinPreference();
-
-  // Keep refs in sync immediately for event handlers/transport (avoid 1-render lag).
-  toolModeRef.current = toolMode;
-  voiceModeRef.current = voiceMode;
 
   useEffect(() => {
     if (!voiceMode) return;
@@ -97,26 +92,13 @@ function App() {
     refreshList,
   } = useConversationHistory();
 
-  const requestConversationIdMapRef = useRef<Map<string, string>>(new Map());
-
-  const activeConversationIdRef = useRef<string | null>(null);
-  activeConversationIdRef.current = activeConversationId;
-
-  const transport = useMemo(
-    // eslint-disable-next-line
-    () =>
-      createTauriChatTransport({
-        getModel: () => selectedModelRef.current,
-        getToolMode: () => toolModeRef.current,
-        getVoiceMode: () => voiceModeRef.current,
-        getConversationId: () => activeConversationIdRef.current ?? undefined,
-        onRequestCreated: ({ requestId, conversationId }) => {
-          if (!conversationId) return;
-          requestConversationIdMapRef.current.set(requestId, conversationId);
-        },
-      }),
-    []
-  );
+  // Transport is stable (created once) but reads latest state via internal refs.
+  const transport = useChatTransport({
+    model: selectedModel,
+    toolMode,
+    voiceMode,
+    conversationId: activeConversationId ?? undefined,
+  });
   const { messages, status, sendMessage, error, setMessages, stop } = useChat({
     id: activeConversationId ?? "loading",
     transport,
@@ -141,8 +123,14 @@ function App() {
       return c.id !== activeConversationId;
     });
   }, [activeConversationId, conversations, windowMode]);
+
+  const showVrmStage =
+    activeRoute === "main" &&
+    !isSettingsOpen &&
+    windowMode !== "mini" &&
+    skinMode === "vrm";
   const shellRef = useRef<HTMLDivElement>(null);
-  useAutoWindowFit(shellRef, windowMode);
+  useAutoWindowFit(shellRef, windowMode, { enabled: !(showVrmStage && busy) });
 
   useSyncWindowModeWithConversation({
     windowMode,
@@ -236,13 +224,7 @@ function App() {
 
   const handleChatDone = useCallback(
     (event: { payload: ChatDonePayload }) => {
-      const requestId = event.payload.requestId;
-      const mappedConversationId =
-        requestConversationIdMapRef.current.get(requestId) ?? null;
-      requestConversationIdMapRef.current.delete(requestId);
-
-      const doneConversationId =
-        event.payload.conversationId ?? mappedConversationId;
+      const doneConversationId = event.payload.conversationId ?? null;
       if (doneConversationId) {
         clearGenerating(doneConversationId);
       }
@@ -286,7 +268,14 @@ function App() {
         })
       );
     },
-    [activeConversationId, loadConversation, markSeen, refreshList, windowMode]
+    [
+      activeConversationId,
+      clearGenerating,
+      loadConversation,
+      markSeen,
+      refreshList,
+      windowMode,
+    ]
   );
 
   useTauriEvent<ChatDonePayload>(EVT_CHAT_DONE, handleChatDone);
@@ -417,8 +406,8 @@ function App() {
         <MotionConfig
           transition={{ type: "spring", stiffness: 350, damping: 30 }}
         >
-          <ChatProvider value={chatUiValue}>
-            {isSettingsOpen ? (
+          {isSettingsOpen ? (
+            <ChatProvider value={chatUiValue}>
               <SettingsView
                 aiConfig={aiConfig}
                 onRefreshAiConfig={refreshAiConfig}
@@ -426,14 +415,24 @@ function App() {
                 skinMode={skinMode}
                 onSkinModeChange={setSkinMode}
               />
-            ) : windowMode === "mini" ? (
+            </ChatProvider>
+          ) : windowMode === "mini" ? (
+            <ChatProvider value={chatUiValue}>
               <MiniView />
-            ) : windowMode === "input" ? (
-              <InputView />
-            ) : (
-              <ResultView />
-            )}
-          </ChatProvider>
+            </ChatProvider>
+          ) : (
+            <div
+              className={cn(
+                "flex min-w-0 items-stretch gap-3",
+                windowMode === "result" && "flex-1 min-h-0"
+              )}
+            >
+              <ChatProvider value={chatUiValue}>
+                {windowMode === "input" ? <InputView /> : <ResultView />}
+              </ChatProvider>
+              <VrmStage enabled={showVrmStage} />
+            </div>
+          )}
         </MotionConfig>
       </div>
     </div>

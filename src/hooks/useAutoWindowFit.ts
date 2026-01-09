@@ -70,12 +70,19 @@ const hasOverlayNode = (node: Node): boolean => {
  */
 export function useAutoWindowFit(
   containerRef: RefObject<HTMLElement | null>,
-  mode: WindowMode
+  mode: WindowMode,
+  options: { enabled?: boolean } = {}
 ): void {
+  const { enabled = true } = options;
   const modeRef = useRef(mode);
   useEffect(() => {
     modeRef.current = mode;
   }, [mode]);
+
+  const enabledRef = useRef(enabled);
+  useEffect(() => {
+    enabledRef.current = enabled;
+  }, [enabled]);
 
   const lastAutoSizeRef = useRef<AutoFitState>({
     mini: null,
@@ -89,6 +96,7 @@ export function useAutoWindowFit(
 
   const scheduleSync = useCallback(
     (allowShrink: boolean) => {
+      if (!enabledRef.current) return;
       if (!isTauriContext()) return;
       if (typeof window === "undefined") return;
 
@@ -97,6 +105,7 @@ export function useAutoWindowFit(
 
       rafRef.current = window.requestAnimationFrame(() => {
         rafRef.current = null;
+        if (!enabledRef.current) return;
         const allowShrinkMerged = allowShrinkRef.current;
         allowShrinkRef.current = false;
 
@@ -111,7 +120,7 @@ export function useAutoWindowFit(
         const currentWidth = window.innerWidth;
 
         if (currentMode === "mini") {
-          let desiredHeight = Math.ceil(rect.height);
+          const desiredHeight = Math.ceil(rect.height);
           if (!Number.isFinite(desiredHeight) || desiredHeight <= 0) return;
 
           const desiredWidth = Math.ceil(rect.width);
@@ -275,11 +284,13 @@ export function useAutoWindowFit(
   );
 
   useEffect(() => {
+    if (!enabled) return;
     if (mode !== "mini" && mode !== "input" && mode !== "result") return;
     scheduleSync(true);
-  }, [mode, scheduleSync]);
+  }, [enabled, mode, scheduleSync]);
 
   useEffect(() => {
+    if (!enabled) return;
     if (mode !== "mini" && mode !== "input" && mode !== "result") return;
     if (typeof ResizeObserver === "undefined") return;
 
@@ -291,9 +302,10 @@ export function useAutoWindowFit(
     });
     observer.observe(el);
     return () => observer.disconnect();
-  }, [containerRef, mode, scheduleSync]);
+  }, [containerRef, enabled, mode, scheduleSync]);
 
   useEffect(() => {
+    if (!enabled) return;
     if (mode !== "mini" && mode !== "input" && mode !== "result") return;
     if (typeof MutationObserver === "undefined") return;
     if (typeof document === "undefined") return;
@@ -314,7 +326,7 @@ export function useAutoWindowFit(
 
     observer.observe(document.body, { childList: true, subtree: true });
     return () => observer.disconnect();
-  }, [mode, scheduleSync]);
+  }, [enabled, mode, scheduleSync]);
 
   useEffect(() => {
     return () => {

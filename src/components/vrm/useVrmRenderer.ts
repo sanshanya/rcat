@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
 import {
   AmbientLight,
+  Box3,
   Clock,
   DirectionalLight,
   Material,
+  MathUtils,
   Mesh,
   Object3D,
   PerspectiveCamera,
@@ -35,7 +37,6 @@ type VrmRendererOptions = {
   onContextRestored?: () => void;
 };
 
-const CAMERA_TARGET = new Vector3(0, 1.35, 0);
 const SPRING_BONE_EXTENSION = "VRMC_springBone";
 
 type SpringBoneSchema = {
@@ -171,6 +172,41 @@ const disposeVrm = (vrm: VRM) => {
   }
 };
 
+const centerObjectOnFloor = (object: Object3D) => {
+  const box = new Box3().setFromObject(object);
+  if (box.isEmpty()) return null;
+  const center = box.getCenter(new Vector3());
+  const minY = box.min.y;
+  object.position.x -= center.x;
+  object.position.z -= center.z;
+  object.position.y -= minY;
+  object.updateMatrixWorld(true);
+  return new Box3().setFromObject(object);
+};
+
+const fitCameraToBox = (
+  camera: PerspectiveCamera,
+  box: Box3,
+  options: { margin?: number } = {}
+) => {
+  if (box.isEmpty()) return;
+  const margin = options.margin ?? 1.2;
+  const size = box.getSize(new Vector3());
+  const center = box.getCenter(new Vector3());
+
+  const vFov = MathUtils.degToRad(camera.fov);
+  const hFov = 2 * Math.atan(Math.tan(vFov / 2) * camera.aspect);
+  const distanceForHeight = (size.y / 2) / Math.tan(vFov / 2);
+  const distanceForWidth = (size.x / 2) / Math.tan(hFov / 2);
+  const distance = Math.max(distanceForHeight, distanceForWidth) * margin + size.z / 2;
+
+  camera.position.set(center.x, center.y, center.z + distance);
+  camera.near = Math.max(0.01, distance / 100);
+  camera.far = Math.max(100, distance * 10);
+  camera.updateProjectionMatrix();
+  camera.lookAt(center);
+};
+
 export const useVrmRenderer = (
   canvasRef: RefObject<HTMLCanvasElement | null>,
   options: VrmRendererOptions = {}
@@ -210,9 +246,9 @@ export const useVrmRenderer = (
     const scene = new Scene();
     scene.background = null;
 
-    const camera = new PerspectiveCamera(30, 1, 0.1, 100);
+    const camera = new PerspectiveCamera(45, 1, 0.1, 100);
     camera.position.set(0, 1.35, 2.5);
-    camera.lookAt(CAMERA_TARGET);
+    camera.lookAt(0, 1.35, 0);
 
     const keyLight = new DirectionalLight(0xffffff, 1.2);
     keyLight.position.set(1.5, 3, 2.5);
@@ -236,6 +272,11 @@ export const useVrmRenderer = (
       renderer.setSize(width, height, false);
       camera.aspect = width / height;
       camera.updateProjectionMatrix();
+      if (currentVrm) {
+        currentVrm.scene.updateMatrixWorld(true);
+        const box = new Box3().setFromObject(currentVrm.scene);
+        fitCameraToBox(camera, box);
+      }
     };
 
     const resizeObserver = new ResizeObserver(() => resize());
@@ -276,9 +317,20 @@ export const useVrmRenderer = (
           )} extensionsRequired=${JSON.stringify(extensionsRequired)})`
         );
       }
+      if (options?.signal?.aborted) {
+        disposeVrm(vrm);
+        throw new DOMException("Aborted", "AbortError");
+      }
+      VRMUtils.removeUnnecessaryVertices(gltf.scene);
       VRMUtils.rotateVRM0(vrm);
+      vrm.scene.traverse((obj) => {
+        obj.frustumCulled = false;
+      });
+      vrm.scene.updateMatrixWorld(true);
+      centerObjectOnFloor(vrm.scene);
       scene.add(vrm.scene);
       currentVrm = vrm;
+      resize();
       return vrm;
     };
 
