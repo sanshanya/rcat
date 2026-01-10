@@ -67,6 +67,32 @@ pub struct AiConfig {
     pub models: Vec<AiModel>,
 }
 
+#[cfg_attr(feature = "typegen", derive(specta::Type))]
+#[cfg_attr(feature = "typegen", specta(rename_all = "camelCase"))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VrmViewState {
+    pub camera_position: [f32; 3],
+    pub target: [f32; 3],
+}
+
+#[cfg_attr(feature = "typegen", derive(specta::Type))]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum VrmFpsMode {
+    Auto,
+    #[serde(rename = "30")]
+    Fps30,
+    #[serde(rename = "60")]
+    Fps60,
+}
+
+impl Default for VrmFpsMode {
+    fn default() -> Self {
+        Self::Auto
+    }
+}
+
 impl Default for AiConfig {
     fn default() -> Self {
         Self {
@@ -163,6 +189,8 @@ struct PersistedSettings {
     ai_provider: Option<AiProvider>,
     #[serde(default)]
     ai: PersistedAiSettings,
+    #[serde(default)]
+    vrm: PersistedVrmSettings,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -187,6 +215,15 @@ struct PersistedAiProfile {
     model: Option<String>,
     #[serde(default, deserialize_with = "deserialize_models")]
     models: Vec<AiModel>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PersistedVrmSettings {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    fps_mode: Option<VrmFpsMode>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    view_states: BTreeMap<String, VrmViewState>,
 }
 
 /// Get provider key for HashMap lookup
@@ -606,6 +643,53 @@ pub async fn test_ai_profile(
         return Err("No choices returned".to_string());
     }
 
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_vrm_fps_mode() -> Option<VrmFpsMode> {
+    let settings = load_settings();
+    settings.vrm.fps_mode
+}
+
+#[tauri::command]
+pub fn set_vrm_fps_mode(app: tauri::AppHandle, mode: VrmFpsMode) -> Result<(), String> {
+    // Ensure data dir exists (and is cached) before writing settings.
+    let _ = crate::services::paths::data_dir(&app)?;
+    let mut settings = load_settings();
+    settings.vrm.fps_mode = Some(mode);
+    save_settings(&settings)?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_vrm_view_state(url: String) -> Option<VrmViewState> {
+    let key = url.trim();
+    if key.is_empty() {
+        return None;
+    }
+    let settings = load_settings();
+    settings.vrm.view_states.get(key).cloned()
+}
+
+#[tauri::command]
+pub fn set_vrm_view_state(
+    app: tauri::AppHandle,
+    url: String,
+    view_state: VrmViewState,
+) -> Result<(), String> {
+    // Ensure data dir exists (and is cached) before writing settings.
+    let _ = crate::services::paths::data_dir(&app)?;
+    let key = url.trim();
+    if key.is_empty() {
+        return Err("VRM url is required".to_string());
+    }
+    let mut settings = load_settings();
+    settings
+        .vrm
+        .view_states
+        .insert(key.to_string(), view_state);
+    save_settings(&settings)?;
     Ok(())
 }
 

@@ -6,6 +6,7 @@ import {
   DirectionalLight,
   Material,
   MathUtils,
+  MOUSE,
   Mesh,
   Object3D,
   PerspectiveCamera,
@@ -19,6 +20,7 @@ import {
   GLTFLoader,
   type GLTF,
 } from "three/examples/jsm/loaders/GLTFLoader.js";
+import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import {
   VRM,
   VRMLoaderPlugin,
@@ -28,6 +30,7 @@ import {
 
 import type { RenderFps, RenderFpsMode } from "@/components/vrm/renderFpsStore";
 import { setRenderFpsStats } from "@/components/vrm/renderFpsStore";
+import { getVrmViewState, setVrmViewState } from "@/services/vrmSettings";
 
 export type VrmRendererHandle = {
   loadVrm: (url: string, options?: { signal?: AbortSignal }) => Promise<VRM>;
@@ -45,6 +48,12 @@ type VrmRendererOptions = {
 const SPRING_BONE_EXTENSION = "VRMC_springBone";
 const MAX_DELTA_SECONDS = 1 / 30;
 const FPS_EPSILON_MS = 0.5;
+const VIEW_STATE_STORAGE_PREFIX = "rcat.vrm.viewState";
+
+type StoredViewState = {
+  cameraPosition: [number, number, number];
+  target: [number, number, number];
+};
 
 type SpringBoneSchema = {
   colliders?: unknown[];
@@ -57,6 +66,52 @@ type SpringBoneSchema = {
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
+
+const isFiniteNumber = (value: unknown): value is number =>
+  typeof value === "number" && Number.isFinite(value);
+
+const isVec3Tuple = (value: unknown): value is [number, number, number] =>
+  Array.isArray(value) &&
+  value.length === 3 &&
+  value.every((entry) => isFiniteNumber(entry));
+
+const viewStateStorageKey = (url: string) =>
+  `${VIEW_STATE_STORAGE_PREFIX}:${encodeURIComponent(url)}`;
+
+const readStoredViewState = (url: string): StoredViewState | null => {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(viewStateStorageKey(url));
+    if (!raw) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!isRecord(parsed)) return null;
+    const cameraPosition = parsed.cameraPosition;
+    const target = parsed.target;
+    if (!isVec3Tuple(cameraPosition) || !isVec3Tuple(target)) return null;
+    return { cameraPosition, target };
+  } catch {
+    return null;
+  }
+};
+
+const writeStoredViewState = (url: string, viewState: StoredViewState) => {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(viewStateStorageKey(url), JSON.stringify(viewState));
+  } catch {
+    // Ignore storage failures.
+  }
+};
+
+const readPersistedViewState = async (url: string): Promise<StoredViewState | null> => {
+  const persisted = await getVrmViewState(url);
+  if (persisted) return persisted;
+  const local = readStoredViewState(url);
+  if (local) {
+    void setVrmViewState(url, local).catch(() => {});
+  }
+  return local;
+};
 
 const sanitizeSpringBone = (json: unknown) => {
   if (!json || typeof json !== "object") return false;
@@ -270,6 +325,21 @@ export const useVrmRenderer = (
     camera.position.set(0, 1.35, 2.5);
     camera.lookAt(0, 1.35, 0);
 
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.08;
+    controls.enableRotate = false;
+    controls.enablePan = true;
+    controls.enableZoom = true;
+    controls.screenSpacePanning = true;
+    controls.zoomSpeed = 0.7;
+    controls.panSpeed = 0.7;
+    controls.mouseButtons = {
+      LEFT: MOUSE.PAN,
+      MIDDLE: MOUSE.DOLLY,
+      RIGHT: MOUSE.PAN,
+    };
+
     const keyLight = new DirectionalLight(0xffffff, 1.2);
     keyLight.position.set(1.5, 3, 2.5);
     const fillLight = new DirectionalLight(0xffffff, 0.4);
@@ -282,8 +352,87 @@ export const useVrmRenderer = (
 
     const clock = new Clock();
     let currentVrm: VRM | null = null;
+    let currentVrmUrl: string | null = null;
     let frameId: number | null = null;
     let contextLost = false;
+    let userAdjustedView = false;
+    let isUserInteracting = false;
+    let viewStateWriteTimer: number | null = null;
+    let hasAttachedResetListener = false;
+
+    const persistViewState = () => {
+      if (!currentVrmUrl) return;
+      const position = camera.position;
+      const target = controls.target;
+      const viewState: StoredViewState = {
+        cameraPosition: [position.x, position.y, position.z],
+        target: [target.x, target.y, target.z],
+      };
+      writeStoredViewState(currentVrmUrl, viewState);
+      void setVrmViewState(currentVrmUrl, viewState).catch(() => {});
+    };
+
+    const schedulePersistViewState = () => {
+      if (typeof window === "undefined") return;
+      if (!currentVrmUrl) return;
+      if (viewStateWriteTimer !== null) {
+        window.clearTimeout(viewStateWriteTimer);
+      }
+      viewStateWriteTimer = window.setTimeout(() => {
+        viewStateWriteTimer = null;
+        persistViewState();
+      }, 200);
+    };
+
+    const fitViewToVrm = (vrm: VRM) => {
+      vrm.scene.updateMatrixWorld(true);
+      const box = new Box3().setFromObject(vrm.scene);
+      if (box.isEmpty()) return;
+
+      const center = box.getCenter(new Vector3());
+      const size = box.getSize(new Vector3());
+      const span = Math.max(size.x, size.y, size.z);
+      controls.minDistance = Math.max(0.05, span * 0.25);
+      controls.maxDistance = Math.max(10, span * 30);
+
+      fitCameraToBox(camera, box, { margin: 1.05 });
+      controls.target.copy(center);
+      controls.update();
+    };
+
+    const resetView = () => {
+      if (!currentVrm) return;
+      userAdjustedView = true;
+      fitViewToVrm(currentVrm);
+      persistViewState();
+    };
+
+    const applyStoredViewState = (stored: StoredViewState) => {
+      camera.position.set(
+        stored.cameraPosition[0],
+        stored.cameraPosition[1],
+        stored.cameraPosition[2]
+      );
+      controls.target.set(stored.target[0], stored.target[1], stored.target[2]);
+      const distance = camera.position.distanceTo(controls.target);
+      camera.near = Math.max(0.01, distance / 100);
+      camera.far = Math.max(100, distance * 10);
+      camera.updateProjectionMatrix();
+      controls.update();
+    };
+
+    controls.addEventListener("start", () => {
+      isUserInteracting = true;
+      userAdjustedView = true;
+    });
+    controls.addEventListener("change", () => {
+      if (!isUserInteracting) return;
+      schedulePersistViewState();
+    });
+    controls.addEventListener("end", () => {
+      isUserInteracting = false;
+      schedulePersistViewState();
+    });
 
     const resize = () => {
       const container = canvas.parentElement ?? canvas;
@@ -292,16 +441,21 @@ export const useVrmRenderer = (
       renderer.setSize(width, height, false);
       camera.aspect = width / height;
       camera.updateProjectionMatrix();
-      if (currentVrm) {
-        currentVrm.scene.updateMatrixWorld(true);
-        const box = new Box3().setFromObject(currentVrm.scene);
-        fitCameraToBox(camera, box);
+      if (currentVrm && !userAdjustedView) {
+        fitViewToVrm(currentVrm);
+      } else {
+        controls.update();
       }
     };
 
     const resizeObserver = new ResizeObserver(() => resize());
     resizeObserver.observe(canvas.parentElement ?? canvas);
     resize();
+
+    if (!hasAttachedResetListener) {
+      canvas.addEventListener("dblclick", resetView);
+      hasAttachedResetListener = true;
+    }
 
     const loader = new GLTFLoader();
     loader.register(
@@ -312,10 +466,13 @@ export const useVrmRenderer = (
     );
 
     const clearVrm = () => {
-      if (!currentVrm) return;
-      scene.remove(currentVrm.scene);
-      disposeVrm(currentVrm);
+      if (currentVrm) {
+        scene.remove(currentVrm.scene);
+        disposeVrm(currentVrm);
+      }
       currentVrm = null;
+      currentVrmUrl = null;
+      userAdjustedView = false;
     };
 
     const loadVrm = async (url: string, options?: { signal?: AbortSignal }) => {
@@ -351,7 +508,23 @@ export const useVrmRenderer = (
       centerObjectOnFloor(vrm.scene);
       scene.add(vrm.scene);
       currentVrm = vrm;
+      currentVrmUrl = url;
+
+      vrm.scene.updateMatrixWorld(true);
+      const limitsBox = new Box3().setFromObject(vrm.scene);
+      if (!limitsBox.isEmpty()) {
+        const size = limitsBox.getSize(new Vector3());
+        const span = Math.max(size.x, size.y, size.z);
+        controls.minDistance = Math.max(0.05, span * 0.25);
+        controls.maxDistance = Math.max(10, span * 30);
+      }
+
+      const stored = await readPersistedViewState(url);
+      userAdjustedView = Boolean(stored);
       resize();
+      if (stored) {
+        applyStoredViewState(stored);
+      }
       return vrm;
     };
 
@@ -435,6 +608,7 @@ export const useVrmRenderer = (
           currentVrm.update(delta);
           onAfterFrameRef.current?.(currentVrm, delta);
         }
+        controls.update();
         renderer.render(scene, camera);
         const workMs = Math.max(0, performance.now() - workStart);
         workEmaMs = workEmaMs * 0.9 + workMs * 0.1;
@@ -486,9 +660,18 @@ export const useVrmRenderer = (
 
     return () => {
       stopLoop();
+      if (hasAttachedResetListener) {
+        canvas.removeEventListener("dblclick", resetView);
+        hasAttachedResetListener = false;
+      }
       canvas.removeEventListener("webglcontextlost", handleContextLost);
       canvas.removeEventListener("webglcontextrestored", handleContextRestored);
       resizeObserver.disconnect();
+      if (viewStateWriteTimer !== null) {
+        window.clearTimeout(viewStateWriteTimer);
+        viewStateWriteTimer = null;
+      }
+      controls.dispose();
       clearVrm();
       renderer.dispose();
       handleRef.current = null;

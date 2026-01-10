@@ -111,7 +111,7 @@ export default function VrmDebugPanel({ inline = false, className }: VrmDebugPan
 
   const containerClass = inline
     ? "w-full rounded-xl border border-border/60 bg-background/60 p-2 shadow-sm"
-    : "absolute right-3 top-3 z-20 w-56 rounded-xl border border-border/60 bg-background/80 p-3 shadow-lg backdrop-blur";
+    : "absolute right-3 top-3 z-20 w-[min(340px,calc(100vw-24px))] max-h-[calc(100vh-24px)] overflow-x-hidden overflow-y-auto rounded-xl border border-border/60 bg-background/80 p-3 shadow-lg backdrop-blur";
 
   useEffect(() => {
     const lastRmsAt = lipSync.lastRmsAt;
@@ -133,9 +133,9 @@ export default function VrmDebugPanel({ inline = false, className }: VrmDebugPan
 
   return (
     <div className={cn(containerClass, className)}>
-      <div className="flex items-center justify-between gap-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="text-xs font-semibold text-foreground/80">VRM Debug</div>
-        <div className="flex items-center gap-1">
+        <div className="flex flex-wrap items-center justify-end gap-1">
           <div className="flex items-center gap-1">
             <select
               className="h-6 rounded-md border border-border/50 bg-background/70 px-1 text-[10px] text-foreground"

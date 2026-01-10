@@ -33,12 +33,13 @@ rcat 是一个 Windows 优先的 **Tauri v2** 桌面应用：前端是 **React +
 
 - 单一事实来源：`savedata/settings.json`（位于 app 可执行文件旁）。
 - Provider profiles：每个 provider 维护 `baseUrl/apiKey/选中 model/model 列表`。
+- VRM 偏好：`vrm.fpsMode`、`vrm.viewStates`（按 VRM URL 存相机视角）。
 - 环境变量只用于“机器级”配置（不进入 UI）：
   - Turso/libSQL：`TURSO_DATABASE_URL` + `TURSO_AUTH_TOKEN`（或 `LIBSQL_*`）
   - VLM 图片压缩：`VLM_IMAGE_MAX_DIM`、`VLM_JPEG_QUALITY`
   - Voice/TTS：`TTS_BACKEND`、`AUDIO_BACKEND`、`GSV_MODEL_DIR`、`LIBTORCH` 等（见第 7 节）
 
-详见 `docs/settings.md`。
+详见 `docs/settings.md`；VRM 模块详见 `docs/VRM.md`。
 
 ## 3) History（对话历史）与数据模型
 
@@ -103,6 +104,13 @@ rcat 是一个 Windows 优先的 **Tauri v2** 桌面应用：前端是 **React +
   - `useToggleExpand`：mini ↔ input/result 切换策略
   - `useRouteController`：settings 路由控制
   - `useAutoWindowFit`：窗口适配
+
+### 6.1) Skins（皮肤）与 VRM
+
+- `SkinMode` 是独立于 `WindowMode` 的外观/布局策略：
+  - `off`：以 chat 为核心的常规布局（窗口可 auto-fit）
+  - `vrm`：以 VRM 为舞台的布局（VRM 全窗口透明层，chat/debug 为 HUD）
+- 详见 `docs/VRM.md`
 
 ## 7) Voice / TTS（语音输出与低延迟朗读）
 

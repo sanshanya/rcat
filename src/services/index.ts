@@ -8,3 +8,4 @@ export * from './vision';
 export * from './window';
 export * from './history';
 export * from './voice';
+export * from './vrmSettings';

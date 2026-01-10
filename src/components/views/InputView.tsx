@@ -1,11 +1,21 @@
 import { Capsule } from "@/components";
 import PromptInput from "@/components/PromptInput";
 import { useChatContext } from "@/contexts/ChatContext";
+import { cn } from "@/lib/utils";
 
-export function InputView() {
+export type InputViewProps = {
+  className?: string;
+};
+
+export function InputView({ className }: InputViewProps) {
   const { capsuleProps, promptProps, errorText } = useChatContext();
   return (
-    <div className="flex min-h-0 w-[var(--chat-column-width)] flex-none flex-col gap-2">
+    <div
+      className={cn(
+        "flex min-h-0 w-[var(--chat-column-width)] flex-none flex-col gap-2",
+        className
+      )}
+    >
       <Capsule {...capsuleProps} />
       <PromptInput {...promptProps} />
       {errorText ? (

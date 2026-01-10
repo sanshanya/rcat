@@ -7,8 +7,13 @@ import ChatMessages from "@/components/ChatMessages";
 import PromptInput from "@/components/PromptInput";
 import { useChatContext } from "@/contexts/ChatContext";
 import { estimateLanguageModelUsageFromMessages } from "@/utils";
+import { cn } from "@/lib/utils";
 
-export function ResultView() {
+export type ResultViewProps = {
+  className?: string;
+};
+
+export function ResultView({ className }: ResultViewProps) {
   const {
     capsuleProps,
     promptProps,
@@ -35,7 +40,12 @@ export function ResultView() {
   );
 
   return (
-    <div className="flex min-h-0 w-[var(--chat-column-width)] flex-none flex-col gap-2">
+    <div
+      className={cn(
+        "flex min-h-0 w-[var(--chat-column-width)] flex-none flex-col gap-2",
+        className
+      )}
+    >
       <Capsule {...capsuleProps} />
       <PromptInput {...promptProps} />
       {showChat ? <ChatMessages {...chatProps} /> : null}

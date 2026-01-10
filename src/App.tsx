@@ -130,7 +130,8 @@ function App() {
     windowMode !== "mini" &&
     skinMode === "vrm";
   const shellRef = useRef<HTMLDivElement>(null);
-  useAutoWindowFit(shellRef, windowMode, { enabled: !(showVrmStage && busy) });
+  // VRM skin is user-sized; auto-fit fights the "VRM is the stage" mental model.
+  useAutoWindowFit(shellRef, windowMode, { enabled: !showVrmStage });
 
   useSyncWindowModeWithConversation({
     windowMode,
@@ -396,10 +397,12 @@ function App() {
         isClickThrough && "opacity-60 grayscale"
       )}
     >
+      <VrmStage enabled={showVrmStage} />
       <div
         ref={shellRef}
         className={cn(
-          "relative z-10 flex flex-col items-stretch gap-2 p-0 w-fit",
+          "relative z-10 flex flex-col items-stretch gap-2 p-0",
+          showVrmStage ? "absolute left-3 top-3" : "w-fit",
           windowMode === "result" && "h-full min-h-0"
         )}
       >
@@ -428,9 +431,20 @@ function App() {
               )}
             >
               <ChatProvider value={chatUiValue}>
-                {windowMode === "input" ? <InputView /> : <ResultView />}
+                {windowMode === "input" ? (
+                  <InputView
+                    className={
+                      showVrmStage ? "w-[min(420px,calc(100vw-24px))]" : undefined
+                    }
+                  />
+                ) : (
+                  <ResultView
+                    className={
+                      showVrmStage ? "w-[min(420px,calc(100vw-24px))]" : undefined
+                    }
+                  />
+                )}
               </ChatProvider>
-              <VrmStage enabled={showVrmStage} />
             </div>
           )}
         </MotionConfig>

@@ -1,5 +1,7 @@
 import { useSyncExternalStore } from "react";
 
+import { getVrmFpsMode, setVrmFpsMode } from "@/services/vrmSettings";
+
 export type RenderFps = 30 | 60;
 export type RenderFpsMode = "auto" | RenderFps;
 
@@ -27,6 +29,12 @@ const readStoredMode = (): RenderFpsMode => {
   return "auto";
 };
 
+const parsePersistedMode = (value: string): RenderFpsMode | null => {
+  if (value === "auto") return "auto";
+  if (isRenderFps(value)) return Number(value) as RenderFps;
+  return null;
+};
+
 let state: RenderFpsState = {
   mode: readStoredMode(),
   effective: 60,
@@ -39,6 +47,28 @@ const listeners = new Set<() => void>();
 const emitChange = () => {
   listeners.forEach((listener) => listener());
 };
+
+const hydrateFromTauri = async () => {
+  const persisted = await getVrmFpsMode();
+  if (persisted) {
+    const next = parsePersistedMode(persisted);
+    if (next && next !== state.mode) {
+      state = { ...state, mode: next };
+      emitChange();
+    }
+    return;
+  }
+
+  // Migrate existing localStorage preference into settings.json once.
+  const local = parsePersistedMode(String(state.mode));
+  if (local && local !== "auto") {
+    void setVrmFpsMode(String(local) as "30" | "60").catch(() => {});
+  }
+};
+
+if (typeof window !== "undefined") {
+  void hydrateFromTauri();
+}
 
 export const getRenderFpsState = () => state;
 
@@ -56,6 +86,7 @@ export const setRenderFpsMode = (mode: RenderFpsMode) => {
       // Ignore storage failures.
     }
   }
+  void setVrmFpsMode(String(mode) as "auto" | "30" | "60").catch(() => {});
   emitChange();
 };
 
@@ -66,4 +97,3 @@ export const setRenderFpsStats = (partial: Partial<Omit<RenderFpsState, "mode">>
 
 export const useRenderFpsState = () =>
   useSyncExternalStore(subscribeRenderFpsState, getRenderFpsState, getRenderFpsState);
-

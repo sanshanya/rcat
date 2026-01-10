@@ -12,6 +12,15 @@ rcat persists runtime settings in `savedata/settings.json` next to the app execu
 
 Each provider has its own profile (Base URL / API key / selected model / model list).
 
+## VRM Preferences
+
+When `skinMode=vrm`, rcat persists VRM view preferences in the same `savedata/settings.json`:
+
+- `vrm.fpsMode`: `"auto"` / `"30"` / `"60"`
+- `vrm.viewStates[url]`: per-VRM URL camera position + target
+
+See `docs/VRM.md` for interaction details and the VRM subsystem overview.
+
 ## API Key Security
 
 The API key is stored as plain text in `savedata/settings.json`. Treat that file as a secret and do not commit or share it.

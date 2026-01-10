@@ -124,8 +124,11 @@ export default function VrmCanvas({ url, className, idleMotionUrl }: VrmCanvasPr
   }, [handleRef, loadVrm, ready, setVrm, url]);
 
   return (
-    <div className={cn("absolute inset-0 pointer-events-none", className)}>
-      <canvas ref={canvasRef} className="block h-full w-full" />
+    <div className={cn("absolute inset-0 pointer-events-auto touch-none", className)}>
+      <canvas
+        ref={canvasRef}
+        className="block h-full w-full cursor-grab active:cursor-grabbing"
+      />
       {error ? (
         <div className="absolute bottom-2 right-2 max-w-[70%] rounded-md bg-black/70 px-2 py-1 text-[10px] text-white/80">
           <div className="font-semibold">VRM 加载失败</div>
