@@ -11,9 +11,15 @@ pub const EVT_GLOBAL_CURSOR_GAZE: &str = "global-cursor-gaze";
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CursorGazePayload {
-    /// Normalized gaze direction X (left=-1 .. right=+1).
+    /// Cursor gaze X relative to the window center.
+    ///
+    /// Roughly: `-1..+1` spans the window inner left/right edge, and values can exceed `±1`
+    /// when the cursor is outside the window.
     pub x: f32,
-    /// Normalized gaze direction Y (down=-1 .. up=+1).
+    /// Cursor gaze Y relative to the window center.
+    ///
+    /// Roughly: `-1..+1` spans the window inner bottom/top edge, and values can exceed `±1`
+    /// when the cursor is outside the window.
     pub y: f32,
 }
 
@@ -57,10 +63,10 @@ pub fn spawn_global_cursor_gaze_emitter(app: AppHandle) {
                 continue;
             };
 
-            let Ok(pos) = window.outer_position() else {
+            let Ok(pos) = window.inner_position().or_else(|_| window.outer_position()) else {
                 continue;
             };
-            let Ok(size) = window.outer_size() else {
+            let Ok(size) = window.inner_size().or_else(|_| window.outer_size()) else {
                 continue;
             };
 
@@ -70,11 +76,11 @@ pub fn spawn_global_cursor_gaze_emitter(app: AppHandle) {
             let dx = cursor_x - center_x;
             let dy = cursor_y - center_y;
 
-            let scale_x = (size.width as f32).max(1.0) * 0.6;
-            let scale_y = (size.height as f32).max(1.0) * 0.7;
+            let half_w = ((size.width as f32) * 0.5).max(1.0);
+            let half_h = ((size.height as f32) * 0.5).max(1.0);
 
-            let x = (dx as f32 / scale_x).clamp(-1.0, 1.0);
-            let y = (-(dy as f32) / scale_y).clamp(-1.0, 1.0);
+            let x = (dx as f32 / half_w).clamp(-3.0, 3.0);
+            let y = (-(dy as f32) / half_h).clamp(-3.0, 3.0);
 
             let _ = app.emit(EVT_GLOBAL_CURSOR_GAZE, CursorGazePayload { x, y });
         }

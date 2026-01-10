@@ -33,7 +33,7 @@ rcat 是一个 Windows 优先的 **Tauri v2** 桌面应用：前端是 **React +
 
 - 单一事实来源：`savedata/settings.json`（位于 app 可执行文件旁）。
 - Provider profiles：每个 provider 维护 `baseUrl/apiKey/选中 model/model 列表`。
-- VRM 偏好：`vrm.fpsMode`、`vrm.viewStates`（按 VRM URL 存相机视角）。
+- VRM 偏好：`vrm.fpsMode`、`vrm.viewStates`（相机视角）、`vrm.avatarStates`（角色位置/缩放）、`vrm.mouseTracking`（头/脊椎/眼 分层追踪参数）、`vrm.hudLayout`（HUD 布局）。
 - 环境变量只用于“机器级”配置（不进入 UI）：
   - Turso/libSQL：`TURSO_DATABASE_URL` + `TURSO_AUTH_TOKEN`（或 `LIBSQL_*`）
   - VLM 图片压缩：`VLM_IMAGE_MAX_DIM`、`VLM_JPEG_QUALITY`

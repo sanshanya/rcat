@@ -77,6 +77,34 @@ pub struct VrmViewState {
 }
 
 #[cfg_attr(feature = "typegen", derive(specta::Type))]
+#[cfg_attr(feature = "typegen", specta(rename_all = "camelCase"))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VrmAvatarState {
+    pub position: [f32; 3],
+    pub scale: f32,
+}
+
+#[cfg_attr(feature = "typegen", derive(specta::Type))]
+#[cfg_attr(feature = "typegen", specta(rename_all = "camelCase"))]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VrmHudPanelPosition {
+    pub x: f32,
+    pub y: f32,
+}
+
+#[cfg_attr(feature = "typegen", derive(specta::Type))]
+#[cfg_attr(feature = "typegen", specta(rename_all = "camelCase"))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VrmHudLayoutSettings {
+    pub locked: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub debug_panel: Option<VrmHudPanelPosition>,
+}
+
+#[cfg_attr(feature = "typegen", derive(specta::Type))]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum VrmFpsMode {
@@ -90,6 +118,149 @@ pub enum VrmFpsMode {
 impl Default for VrmFpsMode {
     fn default() -> Self {
         Self::Auto
+    }
+}
+
+#[cfg_attr(feature = "typegen", derive(specta::Type))]
+#[cfg_attr(feature = "typegen", specta(rename_all = "camelCase"))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VrmMouseTrackingPart {
+    pub enabled: bool,
+    pub yaw_limit_deg: f32,
+    pub pitch_limit_deg: f32,
+    pub smoothness: f32,
+    pub blend: f32,
+}
+
+#[cfg_attr(feature = "typegen", derive(specta::Type))]
+#[cfg_attr(feature = "typegen", specta(rename_all = "camelCase"))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VrmSpineTrackingSettings {
+    pub enabled: bool,
+    pub min_yaw_deg: f32,
+    pub max_yaw_deg: f32,
+    pub smoothness: f32,
+    pub fade_speed: f32,
+    pub falloff: f32,
+    pub blend: f32,
+}
+
+#[cfg_attr(feature = "typegen", derive(specta::Type))]
+#[cfg_attr(feature = "typegen", specta(rename_all = "camelCase"))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VrmMouseTrackingSettings {
+    pub enabled: bool,
+    pub head: VrmMouseTrackingPart,
+    pub spine: VrmSpineTrackingSettings,
+    pub eyes: VrmMouseTrackingPart,
+}
+
+fn clamp_f32(value: f32, min: f32, max: f32) -> f32 {
+    value.clamp(min, max)
+}
+
+impl VrmMouseTrackingPart {
+    fn sanitize(&mut self) {
+        self.yaw_limit_deg = clamp_f32(self.yaw_limit_deg, 0.0, 90.0);
+        self.pitch_limit_deg = clamp_f32(self.pitch_limit_deg, 0.0, 90.0);
+        self.smoothness = clamp_f32(self.smoothness, 0.0, 80.0);
+        self.blend = clamp_f32(self.blend, 0.0, 1.0);
+    }
+}
+
+impl VrmSpineTrackingSettings {
+    fn sanitize(&mut self) {
+        self.min_yaw_deg = clamp_f32(self.min_yaw_deg, -90.0, 90.0);
+        self.max_yaw_deg = clamp_f32(self.max_yaw_deg, -90.0, 90.0);
+        self.smoothness = clamp_f32(self.smoothness, 0.0, 120.0);
+        self.fade_speed = clamp_f32(self.fade_speed, 0.0, 30.0);
+        self.falloff = clamp_f32(self.falloff, 0.0, 1.0);
+        self.blend = clamp_f32(self.blend, 0.0, 1.0);
+    }
+}
+
+impl VrmAvatarState {
+    fn sanitize(&mut self) {
+        self.scale = clamp_f32(self.scale, 0.05, 10.0);
+        if !self.scale.is_finite() {
+            self.scale = 1.0;
+        }
+    }
+}
+
+impl VrmHudPanelPosition {
+    fn sanitize(&mut self) {
+        if !self.x.is_finite() {
+            self.x = 0.0;
+        }
+        if !self.y.is_finite() {
+            self.y = 0.0;
+        }
+        self.x = clamp_f32(self.x, -10000.0, 10000.0);
+        self.y = clamp_f32(self.y, -10000.0, 10000.0);
+    }
+}
+
+impl VrmHudLayoutSettings {
+    fn sanitize(&mut self) {
+        if let Some(pos) = &mut self.debug_panel {
+            pos.sanitize();
+        }
+    }
+}
+
+impl Default for VrmHudLayoutSettings {
+    fn default() -> Self {
+        let mut settings = Self {
+            locked: false,
+            debug_panel: None,
+        };
+        settings.sanitize();
+        settings
+    }
+}
+
+impl VrmMouseTrackingSettings {
+    fn sanitize(&mut self) {
+        self.head.sanitize();
+        self.eyes.sanitize();
+        self.spine.sanitize();
+    }
+}
+
+impl Default for VrmMouseTrackingSettings {
+    fn default() -> Self {
+        let mut settings = Self {
+            enabled: true,
+            head: VrmMouseTrackingPart {
+                enabled: true,
+                yaw_limit_deg: 45.0,
+                pitch_limit_deg: 30.0,
+                smoothness: 10.0,
+                blend: 0.9,
+            },
+            spine: VrmSpineTrackingSettings {
+                enabled: true,
+                min_yaw_deg: -15.0,
+                max_yaw_deg: 15.0,
+                smoothness: 16.0,
+                fade_speed: 5.0,
+                falloff: 0.8,
+                blend: 0.65,
+            },
+            eyes: VrmMouseTrackingPart {
+                enabled: true,
+                yaw_limit_deg: 12.0,
+                pitch_limit_deg: 12.0,
+                smoothness: 10.0,
+                blend: 0.95,
+            },
+        };
+        settings.sanitize();
+        settings
     }
 }
 
@@ -224,6 +395,12 @@ struct PersistedVrmSettings {
     fps_mode: Option<VrmFpsMode>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     view_states: BTreeMap<String, VrmViewState>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    avatar_states: BTreeMap<String, VrmAvatarState>,
+    #[serde(default)]
+    hud_layout: VrmHudLayoutSettings,
+    #[serde(default)]
+    mouse_tracking: VrmMouseTrackingSettings,
 }
 
 /// Get provider key for HashMap lookup
@@ -673,6 +850,22 @@ pub fn get_vrm_view_state(url: String) -> Option<VrmViewState> {
 }
 
 #[tauri::command]
+pub fn get_vrm_avatar_state(url: String) -> Option<VrmAvatarState> {
+    let key = url.trim();
+    if key.is_empty() {
+        return None;
+    }
+    let settings = load_settings();
+    settings.vrm.avatar_states.get(key).cloned()
+}
+
+#[tauri::command]
+pub fn get_vrm_hud_layout() -> VrmHudLayoutSettings {
+    let settings = load_settings();
+    settings.vrm.hud_layout
+}
+
+#[tauri::command]
 pub fn set_vrm_view_state(
     app: tauri::AppHandle,
     url: String,
@@ -689,6 +882,65 @@ pub fn set_vrm_view_state(
         .vrm
         .view_states
         .insert(key.to_string(), view_state);
+    save_settings(&settings)?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn set_vrm_avatar_state(
+    app: tauri::AppHandle,
+    url: String,
+    avatar_state: VrmAvatarState,
+) -> Result<(), String> {
+    // Ensure data dir exists (and is cached) before writing settings.
+    let _ = crate::services::paths::data_dir(&app)?;
+    let key = url.trim();
+    if key.is_empty() {
+        return Err("VRM url is required".to_string());
+    }
+    let mut settings = load_settings();
+    let mut next = avatar_state;
+    next.sanitize();
+    settings
+        .vrm
+        .avatar_states
+        .insert(key.to_string(), next);
+    save_settings(&settings)?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn set_vrm_hud_layout(
+    app: tauri::AppHandle,
+    hud_layout: VrmHudLayoutSettings,
+) -> Result<(), String> {
+    // Ensure data dir exists (and is cached) before writing settings.
+    let _ = crate::services::paths::data_dir(&app)?;
+    let mut settings = load_settings();
+    let mut next = hud_layout;
+    next.sanitize();
+    settings.vrm.hud_layout = next;
+    save_settings(&settings)?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_vrm_mouse_tracking() -> VrmMouseTrackingSettings {
+    let settings = load_settings();
+    settings.vrm.mouse_tracking
+}
+
+#[tauri::command]
+pub fn set_vrm_mouse_tracking(
+    app: tauri::AppHandle,
+    mouse_tracking: VrmMouseTrackingSettings,
+) -> Result<(), String> {
+    // Ensure data dir exists (and is cached) before writing settings.
+    let _ = crate::services::paths::data_dir(&app)?;
+    let mut settings = load_settings();
+    let mut next = mouse_tracking;
+    next.sanitize();
+    settings.vrm.mouse_tracking = next;
     save_settings(&settings)?;
     Ok(())
 }

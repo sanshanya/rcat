@@ -18,6 +18,9 @@ When `skinMode=vrm`, rcat persists VRM view preferences in the same `savedata/se
 
 - `vrm.fpsMode`: `"auto"` / `"30"` / `"60"`
 - `vrm.viewStates[url]`: per-VRM URL camera position + target
+- `vrm.avatarStates[url]`: per-VRM URL avatar position + scale
+- `vrm.mouseTracking`: layered mouse tracking settings (head/spine/eyes blend + limits + smoothing)
+- `vrm.hudLayout`: VRM HUD layout (locked + panel positions)
 
 See `docs/VRM.md` for interaction details and the VRM subsystem overview.
 

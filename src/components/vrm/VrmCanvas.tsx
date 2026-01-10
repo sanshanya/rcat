@@ -5,6 +5,7 @@ import { useVrmRenderer } from "@/components/vrm/useVrmRenderer";
 import { setVrmState } from "@/components/vrm/vrmStore";
 import { useVrmBehavior } from "@/components/vrm/useVrmBehavior";
 import { useRenderFpsState } from "@/components/vrm/renderFpsStore";
+import { useVrmToolMode } from "@/components/vrm/vrmToolModeStore";
 
 export type VrmCanvasProps = {
   url: string;
@@ -20,15 +21,16 @@ export default function VrmCanvas({ url, className, idleMotionUrl }: VrmCanvasPr
     idleMotionUrl,
   });
   const { mode: fpsMode } = useRenderFpsState();
+  const toolMode = useVrmToolMode();
   const loadSeqRef = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
   const urlRef = useRef(url);
   const reloadRef = useRef<(() => void) | null>(null);
   const { handleRef, ready } = useVrmRenderer(canvasRef, {
     fpsMode,
-    onFrame: (vrm, delta) => {
+    onFrame: (vrm, delta, ctx) => {
       void vrm;
-      onFrame(delta);
+      onFrame(delta, ctx.camera);
     },
     onAfterFrame: (_vrm, delta) => {
       void _vrm;
@@ -127,7 +129,12 @@ export default function VrmCanvas({ url, className, idleMotionUrl }: VrmCanvasPr
     <div className={cn("absolute inset-0 pointer-events-auto touch-none", className)}>
       <canvas
         ref={canvasRef}
-        className="block h-full w-full cursor-grab active:cursor-grabbing"
+        className={cn(
+          "block h-full w-full touch-none",
+          toolMode === "avatar"
+            ? "cursor-move active:cursor-grabbing"
+            : "cursor-grab active:cursor-grabbing"
+        )}
       />
       {error ? (
         <div className="absolute bottom-2 right-2 max-w-[70%] rounded-md bg-black/70 px-2 py-1 text-[10px] text-white/80">

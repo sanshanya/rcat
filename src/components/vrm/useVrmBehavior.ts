@@ -3,14 +3,15 @@ import {
   AnimationMixer,
   LoopRepeat,
   Object3D,
-  Vector3,
+  type PerspectiveCamera,
 } from "three";
 import type { VRM } from "@pixiv/three-vrm";
-import { VRMHumanBoneName } from "@pixiv/three-vrm";
 import { EVT_GLOBAL_CURSOR_GAZE } from "@/constants";
+import { EVT_VOICE_SPEECH_END, EVT_VOICE_SPEECH_START } from "@/constants";
 import { useTauriEvent } from "@/hooks";
 import { createExpressionDriver } from "@/components/vrm/ExpressionDriver";
 import { normalizeArmsForIdle } from "@/components/vrm/armNormalization";
+import { AvatarMouseTracking } from "@/components/vrm/AvatarMouseTracking";
 import {
   DEFAULT_IDLE_MOTION,
   DEFAULT_IDLE_MOTION_URL,
@@ -20,6 +21,12 @@ import {
   type RestPoseMap,
 } from "@/components/vrm/idleMotion";
 import { useLipSync } from "@/components/vrm/useLipSync";
+import { getMouseTrackingSettings } from "@/components/vrm/mouseTrackingStore";
+import { getVrmToolMode } from "@/components/vrm/vrmToolModeStore";
+import {
+  computeTrackingPermissionsTarget,
+  TrackingPermissionController,
+} from "@/components/vrm/trackingPermissions";
 import {
   getGazeRuntimeDebug,
   setGazeRuntimeDebug,
@@ -56,24 +63,18 @@ export const useVrmBehavior = ({
   const { onFrame: lipSyncOnFrame, reset: lipSyncReset } = useLipSync();
   const vrmRef = useRef<VRM | null>(null);
   const restPoseRef = useRef<RestPoseMap | null>(null);
-  const lookAtTargetRef = useRef<Object3D | null>(null);
+  const mouseTrackingRef = useRef<AvatarMouseTracking | null>(null);
   const lookAtLocalRef = useRef<{ x: number; y: number } | null>(null);
-  const lookAtLocalAtMsRef = useRef(0);
   const lookAtGlobalRef = useRef<{ x: number; y: number } | null>(null);
-  const lookAtGlobalAtMsRef = useRef(0);
-  const lookAtSmoothedRef = useRef<{ x: number; y: number } | null>(null);
-  const lookAtTimeRef = useRef(0);
   const timeRef = useRef(0);
-  const headRef = useRef<Object3D | null>(null);
-  const headBaseRef = useRef<Vector3 | null>(null);
-  const headGazeRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
-  const headGazeTimeRef = useRef(0);
   const gazeDebugAtRef = useRef(0);
   const gazeDebugRef = useRef<{ x: number; y: number; source: GazeSource }>({
     x: 0,
     y: 0,
     source: "drift",
   });
+  const voiceSpeakingRef = useRef(false);
+  const trackingPermissionsRef = useRef<TrackingPermissionController | null>(null);
   const expressionDriverRef = useRef<ReturnType<typeof createExpressionDriver> | null>(null);
   const motionControllerRef = useRef<MotionController | null>(null);
   const idleMixerRef = useRef<AnimationMixer | null>(null);
@@ -98,7 +99,6 @@ export const useVrmBehavior = ({
         x: (event.clientX / w) * 2 - 1,
         y: 1 - (event.clientY / h) * 2,
       };
-      lookAtLocalAtMsRef.current = performance.now();
     };
 
     window.addEventListener("mousemove", handleMouseMove, { passive: true });
@@ -109,7 +109,13 @@ export const useVrmBehavior = ({
     const { x, y } = event.payload;
     if (!Number.isFinite(x) || !Number.isFinite(y)) return;
     lookAtGlobalRef.current = { x, y };
-    lookAtGlobalAtMsRef.current = performance.now();
+  });
+
+  useTauriEvent<void>(EVT_VOICE_SPEECH_START, () => {
+    voiceSpeakingRef.current = true;
+  });
+  useTauriEvent<void>(EVT_VOICE_SPEECH_END, () => {
+    voiceSpeakingRef.current = false;
   });
 
   const stopIdleMotion = useCallback(() => {
@@ -123,6 +129,7 @@ export const useVrmBehavior = ({
     idleMixerRef.current = null;
     idleRootRef.current = null;
     idleActionRef.current = null;
+    mouseTrackingRef.current?.setAnimatedClip(null);
   }, []);
 
   const startIdleMotion = useCallback(
@@ -143,6 +150,9 @@ export const useVrmBehavior = ({
         action.setLoop(LoopRepeat, Infinity);
         action.play();
         idleActionRef.current = action;
+        mouseTrackingRef.current?.setAnimatedClip(fallbackClip);
+      } else {
+        mouseTrackingRef.current?.setAnimatedClip(null);
       }
 
       void (async () => {
@@ -183,28 +193,18 @@ export const useVrmBehavior = ({
         nextAction.play();
         idleActionRef.current?.fadeOut(0.25);
         idleActionRef.current = nextAction;
+        mouseTrackingRef.current?.setAnimatedClip(loadedClip);
       })();
     },
     [idleMotionUrl]
   );
 
   const setVrm = useCallback((vrm: VRM | null) => {
-    if (vrmRef.current && lookAtTargetRef.current) {
-      vrmRef.current.scene.remove(lookAtTargetRef.current);
-    }
     stopIdleMotion();
     vrmRef.current = vrm;
-    headRef.current = null;
-    headBaseRef.current = null;
-    headGazeRef.current = { x: 0, y: 0 };
-    headGazeTimeRef.current = 0;
-    lookAtTargetRef.current = null;
+    mouseTrackingRef.current = null;
     lookAtLocalRef.current = null;
-    lookAtLocalAtMsRef.current = 0;
     lookAtGlobalRef.current = null;
-    lookAtGlobalAtMsRef.current = 0;
-    lookAtSmoothedRef.current = null;
-    lookAtTimeRef.current = 0;
     expressionDriverRef.current = null;
     motionControllerRef.current?.dispose();
     motionControllerRef.current = null;
@@ -221,25 +221,8 @@ export const useVrmBehavior = ({
     restPoseRef.current = captureRestPose(vrm);
 
     expressionDriverRef.current = createExpressionDriver(vrm.expressionManager ?? null);
-
-    const target = new Object3D();
-    target.position.set(0, 1.35, 1.6);
-    vrm.scene.add(target);
-    lookAtTargetRef.current = target;
-
-    if (vrm.lookAt) {
-      vrm.lookAt.target = target;
-    }
-
-    const head = vrm.humanoid?.getNormalizedBoneNode(VRMHumanBoneName.Head) ?? null;
-    headRef.current = head;
-    if (head) {
-      headBaseRef.current = new Vector3(
-        head.rotation.x,
-        head.rotation.y,
-        head.rotation.z
-      );
-    }
+    mouseTrackingRef.current = new AvatarMouseTracking(vrm, restPoseRef.current);
+    trackingPermissionsRef.current = new TrackingPermissionController();
 
     blinkRef.current = {
       nextBlinkAt: performance.now() + randomRange(BLINK_MIN_MS, BLINK_MAX_MS),
@@ -335,8 +318,7 @@ export const useVrmBehavior = ({
     motionControllerRef.current?.postUpdate(delta);
   }, []);
 
-  const pickGazePointer = useCallback(
-    (nowMs: number) => {
+  const pickGazePointer = useCallback(() => {
       const debugState = getGazeRuntimeDebug();
       if (debugState.manualEnabled) {
         return {
@@ -345,14 +327,13 @@ export const useVrmBehavior = ({
         };
       }
 
-      const localAge = nowMs - lookAtLocalAtMsRef.current;
-      if (lookAtLocalRef.current && localAge < 200) {
-        return { pointer: lookAtLocalRef.current, source: "local" as GazeSource };
+      // Prefer global cursor tracking when available (desk-pet behavior).
+      if (lookAtGlobalRef.current) {
+        return { pointer: lookAtGlobalRef.current, source: "global" as GazeSource };
       }
 
-      const globalAge = nowMs - lookAtGlobalAtMsRef.current;
-      if (lookAtGlobalRef.current && globalAge < 1500) {
-        return { pointer: lookAtGlobalRef.current, source: "global" as GazeSource };
+      if (lookAtLocalRef.current) {
+        return { pointer: lookAtLocalRef.current, source: "local" as GazeSource };
       }
 
       return { pointer: null, source: "drift" as GazeSource };
@@ -360,80 +341,53 @@ export const useVrmBehavior = ({
     []
   );
 
-  const updateLookAt = useCallback((time: number) => {
-    const target = lookAtTargetRef.current;
-    if (!target) return;
+  const updateMouseTracking = useCallback(
+    (delta: number, time: number, camera: PerspectiveCamera | null) => {
+      const tracker = mouseTrackingRef.current;
+      if (!tracker) return;
 
-    const dt = Math.max(0, Math.min(0.1, time - lookAtTimeRef.current));
-    lookAtTimeRef.current = time;
+      const nowMs = performance.now();
+      const { pointer, source } = pickGazePointer();
 
-    const nowMs = performance.now();
-    const { pointer, source } = pickGazePointer(nowMs);
+      const pointerX = pointer ? pointer.x : 0;
+      const pointerY = pointer ? pointer.y : 0;
+      const prev = gazeDebugRef.current;
+      const changed =
+        source !== prev.source ||
+        Math.abs(pointerX - prev.x) > 0.01 ||
+        Math.abs(pointerY - prev.y) > 0.01;
+      if (changed || nowMs - gazeDebugAtRef.current > 200) {
+        gazeDebugRef.current = { x: pointerX, y: pointerY, source };
+        gazeDebugAtRef.current = nowMs;
+        setGazeRuntimeDebug({ x: pointerX, y: pointerY, source, updatedAt: nowMs });
+      }
 
-    const driftX = Math.sin(time * 0.7) * 0.15;
-    const driftY = Math.sin(time * 0.9) * 0.08;
+      const motionActive = motionControllerRef.current?.isPlaying() ?? false;
+      const toolMode = getVrmToolMode();
+      const permissionsTarget = computeTrackingPermissionsTarget({
+        motionActive,
+        speaking: voiceSpeakingRef.current,
+        toolMode,
+      });
+      const permissions =
+        trackingPermissionsRef.current?.update(delta, permissionsTarget) ?? null;
 
-    // Larger offsets for more noticeable gaze tracking.
-    const desiredX = pointer ? pointer.x * 0.5 : driftX;
-    const desiredY = pointer ? 1.35 + pointer.y * 0.25 : 1.35 + driftY;
+      tracker.update({
+        delta,
+        time,
+        pointer,
+        camera,
+        settings: getMouseTrackingSettings(),
+        headWeight: permissions?.headWeight ?? 1,
+        spineWeight: permissions?.spineWeight ?? 1,
+        eyesWeight: permissions?.eyesWeight ?? 1,
+        allowRestPoseOverride: !motionActive,
+      });
+    },
+    [pickGazePointer]
+  );
 
-    const smooth = lookAtSmoothedRef.current ?? { x: desiredX, y: desiredY };
-    const k = pointer ? 18 : 6;
-    const t = 1 - Math.exp(-k * dt);
-    smooth.x += (desiredX - smooth.x) * t;
-    smooth.y += (desiredY - smooth.y) * t;
-    lookAtSmoothedRef.current = smooth;
-
-    target.position.set(smooth.x, smooth.y, 1.6);
-
-    const pointerX = pointer ? pointer.x : 0;
-    const pointerY = pointer ? pointer.y : 0;
-    const prev = gazeDebugRef.current;
-    const changed =
-      source !== prev.source ||
-      Math.abs(pointerX - prev.x) > 0.01 ||
-      Math.abs(pointerY - prev.y) > 0.01;
-    if (changed || nowMs - gazeDebugAtRef.current > 200) {
-      gazeDebugRef.current = { x: pointerX, y: pointerY, source };
-      gazeDebugAtRef.current = nowMs;
-      setGazeRuntimeDebug({ x: pointerX, y: pointerY, source, updatedAt: nowMs });
-    }
-  }, []);
-
-  const updateHeadIdle = useCallback((time: number) => {
-    const head = headRef.current;
-    const base = headBaseRef.current;
-    if (!head || !base) return;
-
-    const dt = Math.max(0, Math.min(0.1, time - headGazeTimeRef.current));
-    headGazeTimeRef.current = time;
-
-    const { pointer } = pickGazePointer(performance.now());
-    const targetX = pointer ? pointer.x : 0;
-    const targetY = pointer ? pointer.y : 0;
-
-    const gaze = headGazeRef.current;
-    const k = pointer ? 10 : 6;
-    const t = 1 - Math.exp(-k * dt);
-    gaze.x += (targetX - gaze.x) * t;
-    gaze.y += (targetY - gaze.y) * t;
-
-    const pitch = Math.sin(time * 1.15) * 0.03;
-    const yaw = Math.sin(time * 0.8 + 1.2) * 0.04;
-    const roll = Math.sin(time * 0.9 + 2.4) * 0.015;
-
-    const gazeYaw = gaze.x * 0.25;
-    const gazePitch = -gaze.y * 0.14;
-    const gazeRoll = -gaze.x * 0.05;
-
-    head.rotation.set(
-      base.x + pitch + gazePitch,
-      base.y + yaw + gazeYaw,
-      base.z + roll + gazeRoll
-    );
-  }, [pickGazePointer]);
-
-  const onFrame = useCallback((delta: number) => {
+  const onFrame = useCallback((delta: number, camera: PerspectiveCamera | null) => {
     if (!vrmRef.current) return;
     idleMixerRef.current?.update(delta);
     motionControllerRef.current?.update(delta);
@@ -442,9 +396,8 @@ export const useVrmBehavior = ({
     const motionActive = motionControllerRef.current?.isPlaying() ?? false;
     if (!motionActive) {
       updateBlink(now);
-      updateLookAt(timeRef.current);
-      updateHeadIdle(timeRef.current);
     }
+    updateMouseTracking(delta, timeRef.current, camera);
     const driver = expressionDriverRef.current;
     if (driver?.supports("aa")) {
       const mouth = lipSyncOnFrame(delta);
@@ -452,7 +405,7 @@ export const useVrmBehavior = ({
         driver.setValue("aa", mouth);
       }
     }
-  }, [lipSyncOnFrame, updateBlink, updateHeadIdle, updateLookAt]);
+  }, [lipSyncOnFrame, updateBlink, updateMouseTracking]);
 
   return {
     setVrm,

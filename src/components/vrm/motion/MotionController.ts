@@ -15,6 +15,7 @@ import { loadVrmAnimation } from "@/components/vrm/motion/vrma/loadVrmAnimation"
 import { loadVmdAnimation } from "@/components/vrm/motion/vmd/loadVmdAnimation";
 import VRMIKHandler from "@/components/vrm/motion/vmd/vrmIkHandler";
 import { getMotionEntryById, type MotionEntry } from "./motionCatalog";
+import { getVmdMotionSettings } from "@/components/vrm/vmdSettingsStore";
 
 type MotionPlayOptions = {
   loop?: boolean;
@@ -97,9 +98,19 @@ export class MotionController {
 
   public postUpdate(delta: number) {
     if (this.currentMotionType !== "vmd") return;
+    const vmdSettings = getVmdMotionSettings();
+    this.smoothingTauSeconds = vmdSettings.smoothingTauSeconds;
     if (this.ikHandler) {
-      this.vrm.scene.updateMatrixWorld(true);
-      this.ikHandler.update();
+      if (vmdSettings.enableIk) {
+        this.ikHandler.getAndEnableIK(VRMHumanBoneName.LeftFoot);
+        this.ikHandler.getAndEnableIK(VRMHumanBoneName.RightFoot);
+        this.ikHandler.getAndEnableIK(VRMHumanBoneName.LeftToes);
+        this.ikHandler.getAndEnableIK(VRMHumanBoneName.RightToes);
+        this.vrm.scene.updateMatrixWorld(true);
+        this.ikHandler.update();
+      } else {
+        this.ikHandler.disableAll();
+      }
     }
     this.applySmoothing(delta);
   }

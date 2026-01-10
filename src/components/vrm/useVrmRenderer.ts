@@ -9,10 +9,13 @@ import {
   MOUSE,
   Mesh,
   Object3D,
+  Plane,
   PerspectiveCamera,
+  Raycaster,
   Scene,
   SRGBColorSpace,
   Texture,
+  Vector2,
   Vector3,
   WebGLRenderer,
 } from "three";
@@ -30,16 +33,29 @@ import {
 
 import type { RenderFps, RenderFpsMode } from "@/components/vrm/renderFpsStore";
 import { setRenderFpsStats } from "@/components/vrm/renderFpsStore";
-import { getVrmViewState, setVrmViewState } from "@/services/vrmSettings";
+import {
+  getVrmAvatarState,
+  getVrmViewState,
+  setVrmAvatarState,
+  setVrmViewState,
+} from "@/services/vrmSettings";
+import { getVrmToolMode, subscribeVrmToolMode } from "@/components/vrm/vrmToolModeStore";
 
 export type VrmRendererHandle = {
   loadVrm: (url: string, options?: { signal?: AbortSignal }) => Promise<VRM>;
   clearVrm: () => void;
 };
 
+export type VrmRendererFrameContext = {
+  canvas: HTMLCanvasElement;
+  renderer: WebGLRenderer;
+  camera: PerspectiveCamera;
+  controls: OrbitControls;
+};
+
 type VrmRendererOptions = {
-  onFrame?: (vrm: VRM, delta: number) => void;
-  onAfterFrame?: (vrm: VRM, delta: number) => void;
+  onFrame?: (vrm: VRM, delta: number, ctx: VrmRendererFrameContext) => void;
+  onAfterFrame?: (vrm: VRM, delta: number, ctx: VrmRendererFrameContext) => void;
   onContextLost?: () => void;
   onContextRestored?: () => void;
   fpsMode?: RenderFpsMode;
@@ -49,10 +65,16 @@ const SPRING_BONE_EXTENSION = "VRMC_springBone";
 const MAX_DELTA_SECONDS = 1 / 30;
 const FPS_EPSILON_MS = 0.5;
 const VIEW_STATE_STORAGE_PREFIX = "rcat.vrm.viewState";
+const AVATAR_STATE_STORAGE_PREFIX = "rcat.vrm.avatarState";
 
 type StoredViewState = {
   cameraPosition: [number, number, number];
   target: [number, number, number];
+};
+
+type StoredAvatarState = {
+  position: [number, number, number];
+  scale: number;
 };
 
 type SpringBoneSchema = {
@@ -75,8 +97,14 @@ const isVec3Tuple = (value: unknown): value is [number, number, number] =>
   value.length === 3 &&
   value.every((entry) => isFiniteNumber(entry));
 
+const isAvatarScale = (value: unknown): value is number =>
+  isFiniteNumber(value) && value > 0.01 && value < 100;
+
 const viewStateStorageKey = (url: string) =>
   `${VIEW_STATE_STORAGE_PREFIX}:${encodeURIComponent(url)}`;
+
+const avatarStateStorageKey = (url: string) =>
+  `${AVATAR_STATE_STORAGE_PREFIX}:${encodeURIComponent(url)}`;
 
 const readStoredViewState = (url: string): StoredViewState | null => {
   if (typeof window === "undefined") return null;
@@ -94,10 +122,35 @@ const readStoredViewState = (url: string): StoredViewState | null => {
   }
 };
 
+const readStoredAvatarState = (url: string): StoredAvatarState | null => {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(avatarStateStorageKey(url));
+    if (!raw) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!isRecord(parsed)) return null;
+    const position = parsed.position;
+    const scale = parsed.scale;
+    if (!isVec3Tuple(position) || !isAvatarScale(scale)) return null;
+    return { position, scale };
+  } catch {
+    return null;
+  }
+};
+
 const writeStoredViewState = (url: string, viewState: StoredViewState) => {
   if (typeof window === "undefined") return;
   try {
     window.localStorage.setItem(viewStateStorageKey(url), JSON.stringify(viewState));
+  } catch {
+    // Ignore storage failures.
+  }
+};
+
+const writeStoredAvatarState = (url: string, avatarState: StoredAvatarState) => {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(avatarStateStorageKey(url), JSON.stringify(avatarState));
   } catch {
     // Ignore storage failures.
   }
@@ -109,6 +162,16 @@ const readPersistedViewState = async (url: string): Promise<StoredViewState | nu
   const local = readStoredViewState(url);
   if (local) {
     void setVrmViewState(url, local).catch(() => {});
+  }
+  return local;
+};
+
+const readPersistedAvatarState = async (url: string): Promise<StoredAvatarState | null> => {
+  const persisted = await getVrmAvatarState(url);
+  if (persisted) return persisted;
+  const local = readStoredAvatarState(url);
+  if (local) {
+    void setVrmAvatarState(url, local).catch(() => {});
   }
   return local;
 };
@@ -340,6 +403,13 @@ export const useVrmRenderer = (
       RIGHT: MOUSE.PAN,
     };
 
+    const frameContext: VrmRendererFrameContext = {
+      canvas,
+      renderer,
+      camera,
+      controls,
+    };
+
     const keyLight = new DirectionalLight(0xffffff, 1.2);
     keyLight.position.set(1.5, 3, 2.5);
     const fillLight = new DirectionalLight(0xffffff, 0.4);
@@ -358,7 +428,19 @@ export const useVrmRenderer = (
     let userAdjustedView = false;
     let isUserInteracting = false;
     let viewStateWriteTimer: number | null = null;
+    let avatarStateWriteTimer: number | null = null;
     let hasAttachedResetListener = false;
+    let toolModeUnsubscribe: (() => void) | null = null;
+    let toolMode = getVrmToolMode();
+
+    const avatarRaycaster = new Raycaster();
+    const avatarNdc = new Vector2();
+    const avatarDragPlane = new Plane();
+    const avatarDragStart = new Vector3();
+    const avatarStartPos = new Vector3();
+    const avatarDragDelta = new Vector3();
+    let avatarDragging = false;
+    let avatarDraggingPointerId: number | null = null;
 
     const persistViewState = () => {
       if (!currentVrmUrl) return;
@@ -372,6 +454,18 @@ export const useVrmRenderer = (
       void setVrmViewState(currentVrmUrl, viewState).catch(() => {});
     };
 
+    const persistAvatarState = () => {
+      if (!currentVrm || !currentVrmUrl) return;
+      const position = currentVrm.scene.position;
+      const scale = currentVrm.scene.scale.x;
+      const avatarState: StoredAvatarState = {
+        position: [position.x, position.y, position.z],
+        scale,
+      };
+      writeStoredAvatarState(currentVrmUrl, avatarState);
+      void setVrmAvatarState(currentVrmUrl, avatarState).catch(() => {});
+    };
+
     const schedulePersistViewState = () => {
       if (typeof window === "undefined") return;
       if (!currentVrmUrl) return;
@@ -382,6 +476,18 @@ export const useVrmRenderer = (
         viewStateWriteTimer = null;
         persistViewState();
       }, 200);
+    };
+
+    const schedulePersistAvatarState = () => {
+      if (typeof window === "undefined") return;
+      if (!currentVrmUrl) return;
+      if (avatarStateWriteTimer !== null) {
+        window.clearTimeout(avatarStateWriteTimer);
+      }
+      avatarStateWriteTimer = window.setTimeout(() => {
+        avatarStateWriteTimer = null;
+        persistAvatarState();
+      }, 250);
     };
 
     const fitViewToVrm = (vrm: VRM) => {
@@ -421,6 +527,13 @@ export const useVrmRenderer = (
       controls.update();
     };
 
+    const applyStoredAvatarState = (vrm: VRM, stored: StoredAvatarState) => {
+      vrm.scene.position.set(stored.position[0], stored.position[1], stored.position[2]);
+      const nextScale = Math.max(0.05, Math.min(10, stored.scale));
+      vrm.scene.scale.setScalar(nextScale);
+      vrm.scene.updateMatrixWorld(true);
+    };
+
     controls.addEventListener("start", () => {
       isUserInteracting = true;
       userAdjustedView = true;
@@ -433,6 +546,94 @@ export const useVrmRenderer = (
       isUserInteracting = false;
       schedulePersistViewState();
     });
+
+    const updateToolMode = (nextMode: typeof toolMode) => {
+      toolMode = nextMode;
+      controls.enabled = toolMode === "camera";
+      if (toolMode !== "avatar") {
+        avatarDragging = false;
+        avatarDraggingPointerId = null;
+      }
+    };
+
+    updateToolMode(toolMode);
+    toolModeUnsubscribe = subscribeVrmToolMode(() => {
+      updateToolMode(getVrmToolMode());
+    });
+
+    const pointerToNdc = (event: PointerEvent | WheelEvent) => {
+      const rect = canvas.getBoundingClientRect();
+      const width = Math.max(1, rect.width);
+      const height = Math.max(1, rect.height);
+      const x = ((event.clientX - rect.left) / width) * 2 - 1;
+      const y = -((event.clientY - rect.top) / height) * 2 + 1;
+      avatarNdc.set(x, y);
+      return avatarNdc;
+    };
+
+    const onPointerDown = (event: PointerEvent) => {
+      if (toolMode !== "avatar") return;
+      if (event.button !== 0) return;
+      if (!currentVrm) return;
+
+      const ndc = pointerToNdc(event);
+      const normal = camera.getWorldDirection(avatarDragDelta);
+      const anchor = currentVrm.scene.getWorldPosition(avatarStartPos);
+      avatarDragPlane.setFromNormalAndCoplanarPoint(normal, anchor);
+      avatarRaycaster.setFromCamera(ndc, camera);
+      const hit = avatarRaycaster.ray.intersectPlane(avatarDragPlane, avatarDragStart);
+      if (!hit) return;
+
+      event.preventDefault();
+      avatarDragging = true;
+      avatarDraggingPointerId = event.pointerId;
+      avatarStartPos.copy(currentVrm.scene.position);
+      canvas.setPointerCapture(event.pointerId);
+    };
+
+    const onPointerMove = (event: PointerEvent) => {
+      if (!avatarDragging) return;
+      if (avatarDraggingPointerId !== event.pointerId) return;
+      if (!currentVrm) return;
+      const ndc = pointerToNdc(event);
+      avatarRaycaster.setFromCamera(ndc, camera);
+      const hit = avatarRaycaster.ray.intersectPlane(avatarDragPlane, avatarDragDelta);
+      if (!hit) return;
+      avatarDragDelta.sub(avatarDragStart);
+      currentVrm.scene.position.copy(avatarStartPos).add(avatarDragDelta);
+      currentVrm.scene.updateMatrixWorld(true);
+    };
+
+    const endAvatarDrag = (event: PointerEvent) => {
+      if (!avatarDragging) return;
+      if (avatarDraggingPointerId !== event.pointerId) return;
+      avatarDragging = false;
+      avatarDraggingPointerId = null;
+      try {
+        canvas.releasePointerCapture(event.pointerId);
+      } catch {
+        // Ignore capture release failures.
+      }
+      persistAvatarState();
+    };
+
+    const onWheel = (event: WheelEvent) => {
+      if (toolMode !== "avatar") return;
+      if (!currentVrm) return;
+      event.preventDefault();
+      const current = currentVrm.scene.scale.x;
+      const factor = Math.exp(-event.deltaY * 0.001);
+      const next = Math.max(0.05, Math.min(10, current * factor));
+      currentVrm.scene.scale.setScalar(next);
+      currentVrm.scene.updateMatrixWorld(true);
+      schedulePersistAvatarState();
+    };
+
+    canvas.addEventListener("pointerdown", onPointerDown);
+    canvas.addEventListener("pointermove", onPointerMove);
+    canvas.addEventListener("pointerup", endAvatarDrag);
+    canvas.addEventListener("pointercancel", endAvatarDrag);
+    canvas.addEventListener("wheel", onWheel, { passive: false });
 
     const resize = () => {
       const container = canvas.parentElement ?? canvas;
@@ -473,6 +674,8 @@ export const useVrmRenderer = (
       currentVrm = null;
       currentVrmUrl = null;
       userAdjustedView = false;
+      avatarDragging = false;
+      avatarDraggingPointerId = null;
     };
 
     const loadVrm = async (url: string, options?: { signal?: AbortSignal }) => {
@@ -517,6 +720,11 @@ export const useVrmRenderer = (
         const span = Math.max(size.x, size.y, size.z);
         controls.minDistance = Math.max(0.05, span * 0.25);
         controls.maxDistance = Math.max(10, span * 30);
+      }
+
+      const storedAvatar = await readPersistedAvatarState(url);
+      if (storedAvatar) {
+        applyStoredAvatarState(vrm, storedAvatar);
       }
 
       const stored = await readPersistedViewState(url);
@@ -604,9 +812,9 @@ export const useVrmRenderer = (
         const rawDelta = clock.getDelta();
         const delta = Math.min(rawDelta, MAX_DELTA_SECONDS);
         if (currentVrm) {
-          onFrameRef.current?.(currentVrm, delta);
+          onFrameRef.current?.(currentVrm, delta, frameContext);
           currentVrm.update(delta);
-          onAfterFrameRef.current?.(currentVrm, delta);
+          onAfterFrameRef.current?.(currentVrm, delta, frameContext);
         }
         controls.update();
         renderer.render(scene, camera);
@@ -664,12 +872,25 @@ export const useVrmRenderer = (
         canvas.removeEventListener("dblclick", resetView);
         hasAttachedResetListener = false;
       }
+      canvas.removeEventListener("pointerdown", onPointerDown);
+      canvas.removeEventListener("pointermove", onPointerMove);
+      canvas.removeEventListener("pointerup", endAvatarDrag);
+      canvas.removeEventListener("pointercancel", endAvatarDrag);
+      canvas.removeEventListener("wheel", onWheel);
+      if (toolModeUnsubscribe) {
+        toolModeUnsubscribe();
+        toolModeUnsubscribe = null;
+      }
       canvas.removeEventListener("webglcontextlost", handleContextLost);
       canvas.removeEventListener("webglcontextrestored", handleContextRestored);
       resizeObserver.disconnect();
       if (viewStateWriteTimer !== null) {
         window.clearTimeout(viewStateWriteTimer);
         viewStateWriteTimer = null;
+      }
+      if (avatarStateWriteTimer !== null) {
+        window.clearTimeout(avatarStateWriteTimer);
+        avatarStateWriteTimer = null;
       }
       controls.dispose();
       clearVrm();

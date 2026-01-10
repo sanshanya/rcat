@@ -100,3 +100,4 @@ models/
 lobe-vidol-main/
 /target-win
 /src-tauri/target-win
+/example/

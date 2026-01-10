@@ -3,6 +3,18 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { VRMExpressionManager } from "@pixiv/three-vrm";
 import { createExpressionDriver } from "@/components/vrm/ExpressionDriver";
 import { setRenderFpsMode, useRenderFpsState } from "@/components/vrm/renderFpsStore";
+import {
+  setMouseTrackingSettings,
+  useMouseTrackingSettings,
+} from "@/components/vrm/mouseTrackingStore";
+import { DEFAULT_VRM_MOUSE_TRACKING_SETTINGS } from "@/components/vrm/mouseTrackingTypes";
+import { setVrmToolMode, useVrmToolMode } from "@/components/vrm/vrmToolModeStore";
+import {
+  getVrmHudLayoutSettings,
+  setVrmHudLayoutSettings,
+  useVrmHudLayoutSettings,
+} from "@/components/vrm/hudLayoutStore";
+import { setVmdMotionSettings, useVmdMotionSettings } from "@/components/vrm/vmdSettingsStore";
 import { useGazeDebug } from "@/components/vrm/useGazeDebug";
 import { useMotionCatalog } from "@/components/vrm/motion/motionCatalog";
 import { useLipSyncDebug } from "@/components/vrm/useLipSyncDebug";
@@ -37,6 +49,10 @@ export default function VrmDebugPanel({ inline = false, className }: VrmDebugPan
   const driver = useMemo(() => createExpressionDriver(manager), [manager]);
   const renderFps = useRenderFpsState();
   const gaze = useGazeDebug();
+  const mouseTracking = useMouseTrackingSettings();
+  const toolMode = useVrmToolMode();
+  const hudLayout = useVrmHudLayoutSettings();
+  const vmdSettings = useVmdMotionSettings();
   const lipSync = useLipSyncDebug();
   const motionCatalog = useMotionCatalog();
   const [motionId, setMotionId] = useState<string>("");
@@ -47,6 +63,17 @@ export default function VrmDebugPanel({ inline = false, className }: VrmDebugPan
   const [followAuto, setFollowAuto] = useState(false);
   const [rmsAgeMs, setRmsAgeMs] = useState<number | null>(null);
   const rafRef = useRef<number | null>(null);
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  const dragRef = useRef<{
+    pointerId: number;
+    startX: number;
+    startY: number;
+    originX: number;
+    originY: number;
+    width: number;
+    height: number;
+  } | null>(null);
+  const [dragging, setDragging] = useState(false);
 
   useEffect(() => {
     if (!manager) {
@@ -111,7 +138,100 @@ export default function VrmDebugPanel({ inline = false, className }: VrmDebugPan
 
   const containerClass = inline
     ? "w-full rounded-xl border border-border/60 bg-background/60 p-2 shadow-sm"
-    : "absolute right-3 top-3 z-20 w-[min(340px,calc(100vw-24px))] max-h-[calc(100vh-24px)] overflow-x-hidden overflow-y-auto rounded-xl border border-border/60 bg-background/80 p-3 shadow-lg backdrop-blur";
+    : cn(
+        "absolute z-20 w-[min(340px,calc(100vw-24px))] max-h-[calc(100vh-24px)] overflow-x-hidden overflow-y-auto rounded-xl border border-border/60 bg-background/80 p-3 shadow-lg backdrop-blur",
+        hudLayout.debugPanel ? "" : "right-3 top-3"
+      );
+
+  const panelStyle =
+    inline || !hudLayout.debugPanel
+      ? undefined
+      : {
+          left: Math.round(hudLayout.debugPanel.x),
+          top: Math.round(hudLayout.debugPanel.y),
+        };
+
+  useEffect(() => {
+    if (inline) return;
+    if (!dragging) return;
+
+    const onMove = (event: PointerEvent) => {
+      const drag = dragRef.current;
+      if (!drag) return;
+      if (event.pointerId !== drag.pointerId) return;
+
+      const dx = event.clientX - drag.startX;
+      const dy = event.clientY - drag.startY;
+      const width = Math.max(1, drag.width);
+      const height = Math.max(1, drag.height);
+      const maxX = Math.max(0, window.innerWidth - width);
+      const maxY = Math.max(0, window.innerHeight - height);
+      const x = Math.max(0, Math.min(maxX, drag.originX + dx));
+      const y = Math.max(0, Math.min(maxY, drag.originY + dy));
+      const current = getVrmHudLayoutSettings();
+      setVrmHudLayoutSettings(
+        { ...current, debugPanel: { x, y } },
+        { persist: false }
+      );
+    };
+
+    const end = (event: PointerEvent) => {
+      const drag = dragRef.current;
+      if (!drag) return;
+      if (event.pointerId !== drag.pointerId) return;
+      dragRef.current = null;
+      setDragging(false);
+      setVrmHudLayoutSettings(getVrmHudLayoutSettings(), { persist: true });
+    };
+
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", end);
+    window.addEventListener("pointercancel", end);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", end);
+      window.removeEventListener("pointercancel", end);
+    };
+  }, [dragging, inline]);
+
+  const startDrag = (event: React.PointerEvent) => {
+    if (inline) return;
+    if (hudLayout.locked) return;
+    if (event.button !== 0) return;
+
+    const panel = panelRef.current;
+    if (!panel) return;
+
+    event.preventDefault();
+
+    const rect = panel.getBoundingClientRect();
+    const originX = hudLayout.debugPanel?.x ?? rect.left;
+    const originY = hudLayout.debugPanel?.y ?? rect.top;
+
+    dragRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      originX,
+      originY,
+      width: rect.width,
+      height: rect.height,
+    };
+    setDragging(true);
+
+    if (!hudLayout.debugPanel) {
+      setVrmHudLayoutSettings(
+        { ...hudLayout, debugPanel: { x: originX, y: originY } },
+        { persist: false }
+      );
+    }
+
+    try {
+      (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+    } catch {
+      // Ignore capture failures.
+    }
+  };
 
   useEffect(() => {
     const lastRmsAt = lipSync.lastRmsAt;
@@ -132,9 +252,17 @@ export default function VrmDebugPanel({ inline = false, className }: VrmDebugPan
   const fpsModeValue = String(renderFps.mode);
 
   return (
-    <div className={cn(containerClass, className)}>
+    <div ref={panelRef} className={cn(containerClass, className)} style={panelStyle}>
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="text-xs font-semibold text-foreground/80">VRM Debug</div>
+        <div
+          className={cn(
+            "text-xs font-semibold text-foreground/80",
+            inline || hudLayout.locked ? "cursor-default" : "cursor-move select-none"
+          )}
+          onPointerDown={startDrag}
+        >
+          VRM Debug
+        </div>
         <div className="flex flex-wrap items-center justify-end gap-1">
           <div className="flex items-center gap-1">
             <select
@@ -183,6 +311,74 @@ export default function VrmDebugPanel({ inline = false, className }: VrmDebugPan
 
       {collapsed ? null : (
         <div className="mt-2 space-y-2">
+          <div className="rounded-md border border-border/50 bg-muted/30 px-2 py-2 text-[10px] text-muted-foreground">
+            <div className="flex items-center justify-between">
+              <span className="font-semibold text-foreground/80">Tool</span>
+              <span>{toolMode === "avatar" ? "Avatar" : "Camera"}</span>
+            </div>
+            <div className="mt-2 flex items-center gap-1">
+              <button
+                type="button"
+                className={cn(
+                  "rounded-md px-2 py-1 text-[10px]",
+                  toolMode === "camera"
+                    ? "bg-primary/20 text-foreground"
+                    : "text-muted-foreground hover:text-foreground"
+                )}
+                onClick={() => setVrmToolMode("camera")}
+              >
+                Camera
+              </button>
+              <button
+                type="button"
+                className={cn(
+                  "rounded-md px-2 py-1 text-[10px]",
+                  toolMode === "avatar"
+                    ? "bg-primary/20 text-foreground"
+                    : "text-muted-foreground hover:text-foreground"
+                )}
+                onClick={() => setVrmToolMode("avatar")}
+              >
+                Avatar
+              </button>
+            </div>
+            <div className="mt-2 flex items-center justify-between">
+              <span>HUD</span>
+              <button
+                type="button"
+                className={cn(
+                  "rounded-md px-2 py-0.5 text-[10px]",
+                  hudLayout.locked
+                    ? "bg-primary/20 text-foreground"
+                    : "text-muted-foreground hover:text-foreground"
+                )}
+                onClick={() =>
+                  setVrmHudLayoutSettings(
+                    { ...hudLayout, locked: !hudLayout.locked },
+                    { persist: true }
+                  )
+                }
+              >
+                {hudLayout.locked ? "Locked" : "Unlocked"}
+              </button>
+            </div>
+          </div>
+          <div className="rounded-md border border-border/50 bg-muted/30 px-2 py-2 text-[10px] text-muted-foreground">
+            <div className="flex items-center justify-between">
+              <span className="font-semibold text-foreground/80">Perf</span>
+              <span>{renderFps.effective}fps</span>
+            </div>
+            <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1">
+              <span>raf</span>
+              <span>
+                {renderFps.rafEmaMs === null ? "-" : `${renderFps.rafEmaMs.toFixed(1)}ms`}
+              </span>
+              <span>work</span>
+              <span>
+                {renderFps.workEmaMs === null ? "-" : `${renderFps.workEmaMs.toFixed(1)}ms`}
+              </span>
+            </div>
+          </div>
           {manager ? null : (
             <div className="rounded-md border border-border/50 bg-muted/40 px-2 py-1 text-[11px] text-muted-foreground">
               没有检测到 VRM 表情通道
@@ -304,6 +500,553 @@ export default function VrmDebugPanel({ inline = false, className }: VrmDebugPan
               <span>
                 {gaze.runtime.source === "drift" ? "drift" : "tracking"}
               </span>
+            </div>
+          </div>
+          <div className="rounded-md border border-border/50 bg-muted/30 px-2 py-2 text-[10px] text-muted-foreground">
+            <div className="flex items-center justify-between">
+              <span className="font-semibold text-foreground/80">Mouse Tracking</span>
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  className="rounded-md px-2 py-0.5 text-[10px] text-muted-foreground hover:text-foreground"
+                  onClick={() => setMouseTrackingSettings(DEFAULT_VRM_MOUSE_TRACKING_SETTINGS)}
+                >
+                  Reset
+                </button>
+                <button
+                  type="button"
+                  className={cn(
+                    "rounded-md px-2 py-0.5 text-[10px]",
+                    mouseTracking.enabled
+                      ? "bg-primary/20 text-foreground"
+                      : "text-muted-foreground hover:text-foreground"
+                  )}
+                  onClick={() =>
+                    setMouseTrackingSettings({
+                      ...mouseTracking,
+                      enabled: !mouseTracking.enabled,
+                    })
+                  }
+                >
+                  {mouseTracking.enabled ? "On" : "Off"}
+                </button>
+              </div>
+            </div>
+
+            <div className="mt-2 space-y-3">
+              <div className="rounded-md border border-border/50 bg-background/40 px-2 py-2">
+                <div className="flex items-center justify-between">
+                  <span className="font-semibold text-foreground/80">Eyes</span>
+                  <button
+                    type="button"
+                    className={cn(
+                      "rounded-md px-2 py-0.5 text-[10px]",
+                      mouseTracking.eyes.enabled
+                        ? "bg-primary/20 text-foreground"
+                        : "text-muted-foreground hover:text-foreground"
+                    )}
+                    onClick={() =>
+                      setMouseTrackingSettings({
+                        ...mouseTracking,
+                        eyes: {
+                          ...mouseTracking.eyes,
+                          enabled: !mouseTracking.eyes.enabled,
+                        },
+                      })
+                    }
+                  >
+                    {mouseTracking.eyes.enabled ? "On" : "Off"}
+                  </button>
+                </div>
+
+                <label className="mt-2 grid gap-1 text-[11px]">
+                  <div className="flex items-center justify-between">
+                    <span className="text-foreground/80">Blend</span>
+                    <span className="text-muted-foreground">
+                      {mouseTracking.eyes.blend.toFixed(2)}
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={1}
+                    step={0.01}
+                    value={mouseTracking.eyes.blend}
+                    onChange={(event) => {
+                      const next = Number(event.target.value);
+                      setMouseTrackingSettings({
+                        ...mouseTracking,
+                        eyes: { ...mouseTracking.eyes, blend: next },
+                      });
+                    }}
+                    className="h-2 w-full cursor-pointer appearance-none rounded-full bg-muted/70 accent-primary"
+                  />
+                </label>
+
+                <label className="mt-2 grid gap-1 text-[11px]">
+                  <div className="flex items-center justify-between">
+                    <span className="text-foreground/80">Yaw</span>
+                    <span className="text-muted-foreground">
+                      {Math.round(mouseTracking.eyes.yawLimitDeg)}°
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={45}
+                    step={1}
+                    value={mouseTracking.eyes.yawLimitDeg}
+                    onChange={(event) => {
+                      const next = Number(event.target.value);
+                      setMouseTrackingSettings({
+                        ...mouseTracking,
+                        eyes: { ...mouseTracking.eyes, yawLimitDeg: next },
+                      });
+                    }}
+                    className="h-2 w-full cursor-pointer appearance-none rounded-full bg-muted/70 accent-primary"
+                  />
+                </label>
+
+                <label className="mt-2 grid gap-1 text-[11px]">
+                  <div className="flex items-center justify-between">
+                    <span className="text-foreground/80">Pitch</span>
+                    <span className="text-muted-foreground">
+                      {Math.round(mouseTracking.eyes.pitchLimitDeg)}°
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={45}
+                    step={1}
+                    value={mouseTracking.eyes.pitchLimitDeg}
+                    onChange={(event) => {
+                      const next = Number(event.target.value);
+                      setMouseTrackingSettings({
+                        ...mouseTracking,
+                        eyes: { ...mouseTracking.eyes, pitchLimitDeg: next },
+                      });
+                    }}
+                    className="h-2 w-full cursor-pointer appearance-none rounded-full bg-muted/70 accent-primary"
+                  />
+                </label>
+
+                <label className="mt-2 grid gap-1 text-[11px]">
+                  <div className="flex items-center justify-between">
+                    <span className="text-foreground/80">Smooth</span>
+                    <span className="text-muted-foreground">
+                      {mouseTracking.eyes.smoothness.toFixed(0)}
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={30}
+                    step={1}
+                    value={mouseTracking.eyes.smoothness}
+                    onChange={(event) => {
+                      const next = Number(event.target.value);
+                      setMouseTrackingSettings({
+                        ...mouseTracking,
+                        eyes: { ...mouseTracking.eyes, smoothness: next },
+                      });
+                    }}
+                    className="h-2 w-full cursor-pointer appearance-none rounded-full bg-muted/70 accent-primary"
+                  />
+                </label>
+              </div>
+
+              <div className="rounded-md border border-border/50 bg-background/40 px-2 py-2">
+                <div className="flex items-center justify-between">
+                  <span className="font-semibold text-foreground/80">Head</span>
+                  <button
+                    type="button"
+                    className={cn(
+                      "rounded-md px-2 py-0.5 text-[10px]",
+                      mouseTracking.head.enabled
+                        ? "bg-primary/20 text-foreground"
+                        : "text-muted-foreground hover:text-foreground"
+                    )}
+                    onClick={() =>
+                      setMouseTrackingSettings({
+                        ...mouseTracking,
+                        head: {
+                          ...mouseTracking.head,
+                          enabled: !mouseTracking.head.enabled,
+                        },
+                      })
+                    }
+                  >
+                    {mouseTracking.head.enabled ? "On" : "Off"}
+                  </button>
+                </div>
+
+                <label className="mt-2 grid gap-1 text-[11px]">
+                  <div className="flex items-center justify-between">
+                    <span className="text-foreground/80">Blend</span>
+                    <span className="text-muted-foreground">
+                      {mouseTracking.head.blend.toFixed(2)}
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={1}
+                    step={0.01}
+                    value={mouseTracking.head.blend}
+                    onChange={(event) => {
+                      const next = Number(event.target.value);
+                      setMouseTrackingSettings({
+                        ...mouseTracking,
+                        head: { ...mouseTracking.head, blend: next },
+                      });
+                    }}
+                    className="h-2 w-full cursor-pointer appearance-none rounded-full bg-muted/70 accent-primary"
+                  />
+                </label>
+
+                <label className="mt-2 grid gap-1 text-[11px]">
+                  <div className="flex items-center justify-between">
+                    <span className="text-foreground/80">Yaw</span>
+                    <span className="text-muted-foreground">
+                      {Math.round(mouseTracking.head.yawLimitDeg)}°
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={90}
+                    step={1}
+                    value={mouseTracking.head.yawLimitDeg}
+                    onChange={(event) => {
+                      const next = Number(event.target.value);
+                      setMouseTrackingSettings({
+                        ...mouseTracking,
+                        head: { ...mouseTracking.head, yawLimitDeg: next },
+                      });
+                    }}
+                    className="h-2 w-full cursor-pointer appearance-none rounded-full bg-muted/70 accent-primary"
+                  />
+                </label>
+
+                <label className="mt-2 grid gap-1 text-[11px]">
+                  <div className="flex items-center justify-between">
+                    <span className="text-foreground/80">Pitch</span>
+                    <span className="text-muted-foreground">
+                      {Math.round(mouseTracking.head.pitchLimitDeg)}°
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={90}
+                    step={1}
+                    value={mouseTracking.head.pitchLimitDeg}
+                    onChange={(event) => {
+                      const next = Number(event.target.value);
+                      setMouseTrackingSettings({
+                        ...mouseTracking,
+                        head: { ...mouseTracking.head, pitchLimitDeg: next },
+                      });
+                    }}
+                    className="h-2 w-full cursor-pointer appearance-none rounded-full bg-muted/70 accent-primary"
+                  />
+                </label>
+
+                <label className="mt-2 grid gap-1 text-[11px]">
+                  <div className="flex items-center justify-between">
+                    <span className="text-foreground/80">Smooth</span>
+                    <span className="text-muted-foreground">
+                      {mouseTracking.head.smoothness.toFixed(0)}
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={30}
+                    step={1}
+                    value={mouseTracking.head.smoothness}
+                    onChange={(event) => {
+                      const next = Number(event.target.value);
+                      setMouseTrackingSettings({
+                        ...mouseTracking,
+                        head: { ...mouseTracking.head, smoothness: next },
+                      });
+                    }}
+                    className="h-2 w-full cursor-pointer appearance-none rounded-full bg-muted/70 accent-primary"
+                  />
+                </label>
+              </div>
+
+              <div className="rounded-md border border-border/50 bg-background/40 px-2 py-2">
+                <div className="flex items-center justify-between">
+                  <span className="font-semibold text-foreground/80">Spine</span>
+                  <button
+                    type="button"
+                    className={cn(
+                      "rounded-md px-2 py-0.5 text-[10px]",
+                      mouseTracking.spine.enabled
+                        ? "bg-primary/20 text-foreground"
+                        : "text-muted-foreground hover:text-foreground"
+                    )}
+                    onClick={() =>
+                      setMouseTrackingSettings({
+                        ...mouseTracking,
+                        spine: {
+                          ...mouseTracking.spine,
+                          enabled: !mouseTracking.spine.enabled,
+                        },
+                      })
+                    }
+                  >
+                    {mouseTracking.spine.enabled ? "On" : "Off"}
+                  </button>
+                </div>
+
+                <label className="mt-2 grid gap-1 text-[11px]">
+                  <div className="flex items-center justify-between">
+                    <span className="text-foreground/80">Blend</span>
+                    <span className="text-muted-foreground">
+                      {mouseTracking.spine.blend.toFixed(2)}
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={1}
+                    step={0.01}
+                    value={mouseTracking.spine.blend}
+                    onChange={(event) => {
+                      const next = Number(event.target.value);
+                      setMouseTrackingSettings({
+                        ...mouseTracking,
+                        spine: { ...mouseTracking.spine, blend: next },
+                      });
+                    }}
+                    className="h-2 w-full cursor-pointer appearance-none rounded-full bg-muted/70 accent-primary"
+                  />
+                </label>
+
+                <label className="mt-2 grid gap-1 text-[11px]">
+                  <div className="flex items-center justify-between">
+                    <span className="text-foreground/80">Min Yaw</span>
+                    <span className="text-muted-foreground">
+                      {Math.round(mouseTracking.spine.minYawDeg)}°
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={-45}
+                    max={45}
+                    step={1}
+                    value={mouseTracking.spine.minYawDeg}
+                    onChange={(event) => {
+                      const next = Number(event.target.value);
+                      setMouseTrackingSettings({
+                        ...mouseTracking,
+                        spine: { ...mouseTracking.spine, minYawDeg: next },
+                      });
+                    }}
+                    className="h-2 w-full cursor-pointer appearance-none rounded-full bg-muted/70 accent-primary"
+                  />
+                </label>
+
+                <label className="mt-2 grid gap-1 text-[11px]">
+                  <div className="flex items-center justify-between">
+                    <span className="text-foreground/80">Max Yaw</span>
+                    <span className="text-muted-foreground">
+                      {Math.round(mouseTracking.spine.maxYawDeg)}°
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={-45}
+                    max={45}
+                    step={1}
+                    value={mouseTracking.spine.maxYawDeg}
+                    onChange={(event) => {
+                      const next = Number(event.target.value);
+                      setMouseTrackingSettings({
+                        ...mouseTracking,
+                        spine: { ...mouseTracking.spine, maxYawDeg: next },
+                      });
+                    }}
+                    className="h-2 w-full cursor-pointer appearance-none rounded-full bg-muted/70 accent-primary"
+                  />
+                </label>
+
+                <label className="mt-2 grid gap-1 text-[11px]">
+                  <div className="flex items-center justify-between">
+                    <span className="text-foreground/80">Smooth</span>
+                    <span className="text-muted-foreground">
+                      {mouseTracking.spine.smoothness.toFixed(0)}
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={50}
+                    step={1}
+                    value={mouseTracking.spine.smoothness}
+                    onChange={(event) => {
+                      const next = Number(event.target.value);
+                      setMouseTrackingSettings({
+                        ...mouseTracking,
+                        spine: { ...mouseTracking.spine, smoothness: next },
+                      });
+                    }}
+                    className="h-2 w-full cursor-pointer appearance-none rounded-full bg-muted/70 accent-primary"
+                  />
+                </label>
+
+                <label className="mt-2 grid gap-1 text-[11px]">
+                  <div className="flex items-center justify-between">
+                    <span className="text-foreground/80">Fade</span>
+                    <span className="text-muted-foreground">
+                      {mouseTracking.spine.fadeSpeed.toFixed(1)}
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={10}
+                    step={0.5}
+                    value={mouseTracking.spine.fadeSpeed}
+                    onChange={(event) => {
+                      const next = Number(event.target.value);
+                      setMouseTrackingSettings({
+                        ...mouseTracking,
+                        spine: { ...mouseTracking.spine, fadeSpeed: next },
+                      });
+                    }}
+                    className="h-2 w-full cursor-pointer appearance-none rounded-full bg-muted/70 accent-primary"
+                  />
+                </label>
+
+                <label className="mt-2 grid gap-1 text-[11px]">
+                  <div className="flex items-center justify-between">
+                    <span className="text-foreground/80">Falloff</span>
+                    <span className="text-muted-foreground">
+                      {mouseTracking.spine.falloff.toFixed(2)}
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    value={mouseTracking.spine.falloff}
+                    onChange={(event) => {
+                      const next = Number(event.target.value);
+                      setMouseTrackingSettings({
+                        ...mouseTracking,
+                        spine: { ...mouseTracking.spine, falloff: next },
+                      });
+                    }}
+                    className="h-2 w-full cursor-pointer appearance-none rounded-full bg-muted/70 accent-primary"
+                  />
+                </label>
+              </div>
+            </div>
+          </div>
+          <div className="rounded-md border border-border/50 bg-muted/30 px-2 py-2 text-[10px] text-muted-foreground">
+            <div className="flex items-center justify-between">
+              <span className="font-semibold text-foreground/80">VMD</span>
+              <span>{vmdSettings.enableIk ? "IK on" : "IK off"}</span>
+            </div>
+
+            <div className="mt-2 flex items-center gap-1">
+              <button
+                type="button"
+                className="rounded-md px-2 py-0.5 text-[10px] text-muted-foreground hover:text-foreground"
+                onClick={() =>
+                  setVmdMotionSettings({
+                    ...vmdSettings,
+                    enableIk: true,
+                    includeFingers: false,
+                    smoothingTauSeconds: 0.12,
+                  })
+                }
+              >
+                Low
+              </button>
+              <button
+                type="button"
+                className="rounded-md px-2 py-0.5 text-[10px] text-muted-foreground hover:text-foreground"
+                onClick={() =>
+                  setVmdMotionSettings({
+                    ...vmdSettings,
+                    enableIk: true,
+                    includeFingers: true,
+                    smoothingTauSeconds: 0.08,
+                  })
+                }
+              >
+                High
+              </button>
+            </div>
+
+            <div className="mt-2 flex items-center justify-between">
+              <span>IK</span>
+              <button
+                type="button"
+                className={cn(
+                  "rounded-md px-2 py-0.5 text-[10px]",
+                  vmdSettings.enableIk
+                    ? "bg-primary/20 text-foreground"
+                    : "text-muted-foreground hover:text-foreground"
+                )}
+                onClick={() =>
+                  setVmdMotionSettings({ ...vmdSettings, enableIk: !vmdSettings.enableIk })
+                }
+              >
+                {vmdSettings.enableIk ? "On" : "Off"}
+              </button>
+            </div>
+
+            <div className="mt-2 flex items-center justify-between">
+              <span>Fingers</span>
+              <button
+                type="button"
+                className={cn(
+                  "rounded-md px-2 py-0.5 text-[10px]",
+                  vmdSettings.includeFingers
+                    ? "bg-primary/20 text-foreground"
+                    : "text-muted-foreground hover:text-foreground"
+                )}
+                onClick={() =>
+                  setVmdMotionSettings({
+                    ...vmdSettings,
+                    includeFingers: !vmdSettings.includeFingers,
+                  })
+                }
+              >
+                {vmdSettings.includeFingers ? "On" : "Off"}
+              </button>
+            </div>
+
+            <label className="mt-2 grid gap-1 text-[11px]">
+              <div className="flex items-center justify-between">
+                <span className="text-foreground/80">Smooth</span>
+                <span className="text-muted-foreground">
+                  {vmdSettings.smoothingTauSeconds.toFixed(2)}s
+                </span>
+              </div>
+              <input
+                type="range"
+                min={0.04}
+                max={0.3}
+                step={0.01}
+                value={vmdSettings.smoothingTauSeconds}
+                onChange={(event) => {
+                  const next = Number(event.target.value);
+                  setVmdMotionSettings({ ...vmdSettings, smoothingTauSeconds: next });
+                }}
+                className="h-2 w-full cursor-pointer appearance-none rounded-full bg-muted/70 accent-primary"
+              />
+            </label>
+            <div className="mt-2 text-[10px] text-muted-foreground/80">
+              IK 与 smoothing 可实时切换；手指轨道通常需重新加载 VMD 才生效。
             </div>
           </div>
           <div className="rounded-md border border-border/50 bg-muted/30 px-2 py-2 text-[10px] text-muted-foreground">
