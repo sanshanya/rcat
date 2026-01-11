@@ -14,6 +14,7 @@ rcat 支持一个 `skinMode=vrm` 的“VRM 皮肤”：**VRM 是舞台（全窗�
 - **鼠标追踪（分层）**：Eyes / Head / Spine 三路叠加（权重/上限/平滑可调），在 VRM Debug → Mouse Tracking 调参。
   - 参考：`docs/MATE_ENGINE.md`（Mate-Engine 的实现思路与 rcat 映射）
   - 参考：`docs/LOBE_VIDOL.md`（Lobe Vidol 的 Viewer/交互/LookAt 平滑实现）
+- **表情 / 情感（8 类情感）**：在 VRM Debug → Emotion 选择并调强度；支持按 VRM URL 绑定到模型的实际表情通道，并可选“情感 → 动作”映射（见 `docs/VRM_EXPRESSIONS.md`）。
 
 ## 代码结构（关键文件）
 
@@ -47,6 +48,12 @@ rcat 支持一个 `skinMode=vrm` 的“VRM 皮肤”：**VRM 是舞台（全窗�
   - VRM 加载时的手臂姿态归一化（避免“手背后/过度 T-pose”影响 idle 表现）。
 - `src/components/vrm/ExpressionDriver.ts`
   - 表情通道别名解析 + bindings 检测（兼容不同 VRM 表情命名）。
+- `src/components/vrm/ExpressionMixer.ts`
+  - 多通道表情混合器：`base/emotion`、`hover`、`blink`、`mouth` 等统一在一处合成，避免模块互相覆盖。
+- `src/components/vrm/emotionRecipes.ts`
+  - 8 类情感 → 表情权重 recipe（缺失时用组合兜底）。
+- `src/components/vrm/emotionApi.ts`
+  - 面向“外部调用（含 AI）”的最小接口：设置情感/强度、按标签解析情感。
 
 ### 状态与设置
 
@@ -56,6 +63,12 @@ rcat 支持一个 `skinMode=vrm` 的“VRM 皮肤”：**VRM 是舞台（全窗�
   - 渲染帧率模式（`auto/30/60`），Tauri 主存储为 `savedata/settings.json`（保留 localStorage 兜底/迁移）。
 - `src/components/vrm/mouseTrackingStore.ts`
   - 鼠标追踪参数（head/spine/eyes），Tauri 主存储为 `savedata/settings.json`（保留 localStorage 兜底/迁移）。
+- `src/components/vrm/expressionBindingsStore.ts`
+  - 表情槽位绑定（按 VRM URL）：把内部表情槽（happy/sad/...）映射到模型实际 expression name。
+- `src/components/vrm/emotionStore.ts`
+  - 当前情感状态（8 类 + 强度）。
+- `src/components/vrm/emotionProfileStore.ts`
+  - “情感 → 动作”映射（按 VRM URL），用于情感驱动可选动作播放。
 
 ## 资源与动作（public/vrm）
 
@@ -72,6 +85,8 @@ rcat 支持一个 `skinMode=vrm` 的“VRM 皮肤”：**VRM 是舞台（全窗�
 - `savedata/settings.json` → `vrm.fpsMode`：渲染帧率模式
 - `savedata/settings.json` → `vrm.viewStates[url]`：相机位置 + target（按 VRM URL）
 - `savedata/settings.json` → `vrm.avatarStates[url]`：角色位置 + scale（按 VRM URL）
+- `savedata/settings.json` → `vrm.expressionBindings[url]`：表情 bindings（按 VRM URL）
+- `savedata/settings.json` → `vrm.emotionProfiles[url]`：情感 motion profile（按 VRM URL）
 - `savedata/settings.json` → `vrm.mouseTracking`：鼠标追踪参数（head/spine/eyes）
 - `savedata/settings.json` → `vrm.hudLayout`：VRM HUD 布局（锁定 + 面板位置）
 
@@ -81,6 +96,8 @@ rcat 支持一个 `skinMode=vrm` 的“VRM 皮肤”：**VRM 是舞台（全窗�
 - `rcat.vrm.viewState:<encodedUrl>`：相机位置 + target
 - `rcat.vrm.avatarState:<encodedUrl>`：角色位置 + scale
 - `rcat.vrm.hudLayout`：VRM HUD 布局
+- `rcat.vrm.expressionBindings:<encodedUrl>`：表情 bindings
+- `rcat.vrm.emotionProfile:<encodedUrl>`：情感 motion profile
 
 > 说明：Tauri 环境以 `savedata/settings.json` 为准；localStorage 仅用于 Web 预览/兜底与旧数据迁移。
 

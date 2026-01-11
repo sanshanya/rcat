@@ -11,6 +11,9 @@
 - VRM 偏好持久化：`vrm.fpsMode` / `vrm.viewStates` 写入 `savedata/settings.json`（保留 localStorage 兜底）
 - VRM 鼠标追踪（分层）：Eyes / Head / Spine 三路叠加（权重/上限/平滑可调）并持久化到 `vrm.mouseTracking`
 - VRM Debug：增加 Mouse Tracking 调参与 Reset，一次拖动产生的持久化写入做了 debounce（避免频繁写 settings.json）
+- VRM 表情工程化：Expressions 浏览器 + Bindings（按 VRM URL 持久化），覆盖 “Sorrow/sad” 等命名差异
+- VRM 情感系统：8 类情感（含强度 slider）→ ExpressionMixer.base，支持可选 “情感 → 动作” 映射并持久化
+- 文档补齐：新增 `docs/VRM_EXPRESSIONS.md`（表情槽/Bindings/Emotion/AI 调用入口）
 
 ## 🔴 建议尽快处理
 

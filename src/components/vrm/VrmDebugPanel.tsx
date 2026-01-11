@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { VRMExpressionManager } from "@pixiv/three-vrm";
-import { createExpressionDriver } from "@/components/vrm/ExpressionDriver";
+import { createExpressionDriver, type ExpressionName } from "@/components/vrm/ExpressionDriver";
+import { setExpressionOverrides } from "@/components/vrm/expressionOverrideStore";
+import { useExpressionBindings } from "@/components/vrm/expressionBindingsStore";
 import { setRenderFpsMode, useRenderFpsState } from "@/components/vrm/renderFpsStore";
 import {
   setMouseTrackingSettings,
@@ -18,24 +20,54 @@ import { setVmdMotionSettings, useVmdMotionSettings } from "@/components/vrm/vmd
 import { useGazeDebug } from "@/components/vrm/useGazeDebug";
 import { useMotionCatalog } from "@/components/vrm/motion/motionCatalog";
 import { useLipSyncDebug } from "@/components/vrm/useLipSyncDebug";
+import { useAvatarInteractionRuntime } from "@/components/vrm/avatarInteractionStore";
+import { useEmotion } from "@/components/vrm/emotionStore";
+import { useEmotionProfile } from "@/components/vrm/emotionProfileStore";
+import { EMOTION_OPTIONS } from "@/components/vrm/emotionTypes";
 import { useVrmState } from "@/components/vrm/vrmStore";
 import { cn } from "@/lib/utils";
 
-type DebugExpressionName = "aa" | "happy";
+type DebugExpressionName = "aa" | "happy" | "blush" | "angry" | "sad" | "relaxed";
 
 type SliderConfig = {
   id: DebugExpressionName;
   label: string;
 };
 
+type BindingSlot = {
+  id: ExpressionName;
+  label: string;
+};
+
 const SLIDERS: SliderConfig[] = [
   { id: "aa", label: "AA" },
-  { id: "happy", label: "Happy" },
+  { id: "happy", label: "Joy" },
+  { id: "blush", label: "Blush" },
+  { id: "angry", label: "Angry" },
+  { id: "sad", label: "Sorrow" },
+  { id: "relaxed", label: "Fun" },
+];
+
+const BINDING_SLOTS: BindingSlot[] = [
+  { id: "happy", label: "Joy" },
+  { id: "blush", label: "Blush" },
+  { id: "angry", label: "Angry" },
+  { id: "relaxed", label: "Fun" },
+  { id: "sad", label: "Sorrow" },
+  { id: "surprised", label: "Surprised" },
+  { id: "shy", label: "Shy" },
+  { id: "anxious", label: "Anxious" },
+  { id: "confused", label: "Confused" },
+  { id: "neutral", label: "Neutral" },
 ];
 
 const EMPTY_VALUES: Record<DebugExpressionName, number> = {
   aa: 0,
   happy: 0,
+  blush: 0,
+  angry: 0,
+  sad: 0,
+  relaxed: 0,
 };
 
 export type VrmDebugPanelProps = {
@@ -43,10 +75,33 @@ export type VrmDebugPanelProps = {
   className?: string;
 };
 
+const PRESET_DISPLAY: Record<string, string> = {
+  happy: "Joy",
+  sad: "Sorrow",
+  relaxed: "Fun",
+  blink: "Blink",
+  aa: "A",
+  ih: "I",
+  ou: "U",
+  ee: "E",
+  oh: "O",
+};
+
+const getExpressionLabel = (name: string) => {
+  const preset = PRESET_DISPLAY[name];
+  if (!preset) return name;
+  if (preset.toLowerCase() === name.toLowerCase()) return name;
+  return `${preset} (${name})`;
+};
+
 export default function VrmDebugPanel({ inline = false, className }: VrmDebugPanelProps) {
-  const { vrm, motionController } = useVrmState();
+  const { vrm, motionController, url } = useVrmState();
   const manager = (vrm?.expressionManager ?? null) as VRMExpressionManager | null;
-  const driver = useMemo(() => createExpressionDriver(manager), [manager]);
+  const expressionBindings = useExpressionBindings(url);
+  const driver = useMemo(
+    () => createExpressionDriver(manager, { bindings: expressionBindings.bindings }),
+    [expressionBindings.bindings, manager]
+  );
   const renderFps = useRenderFpsState();
   const gaze = useGazeDebug();
   const mouseTracking = useMouseTrackingSettings();
@@ -55,15 +110,25 @@ export default function VrmDebugPanel({ inline = false, className }: VrmDebugPan
   const vmdSettings = useVmdMotionSettings();
   const lipSync = useLipSyncDebug();
   const motionCatalog = useMotionCatalog();
+  const interaction = useAvatarInteractionRuntime();
+  const emotionState = useEmotion();
+  const emotionProfile = useEmotionProfile(url);
+  const availableMotions = useMemo(() => {
+    const embedded = motionController?.getEmbeddedEntries() ?? [];
+    return embedded.length > 0 ? [...embedded, ...motionCatalog] : motionCatalog;
+  }, [motionCatalog, motionController]);
   const [motionId, setMotionId] = useState<string>("");
   const [motionLoop, setMotionLoop] = useState(true);
   const [motionBusy, setMotionBusy] = useState(false);
   const [values, setValues] = useState<Record<DebugExpressionName, number>>(EMPTY_VALUES);
   const [collapsed, setCollapsed] = useState(false);
-  const [followAuto, setFollowAuto] = useState(false);
+  const [followAuto, setFollowAuto] = useState(true);
+  const [expressionSearch, setExpressionSearch] = useState("");
+  const [showExpressions, setShowExpressions] = useState(false);
   const [rmsAgeMs, setRmsAgeMs] = useState<number | null>(null);
   const rafRef = useRef<number | null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
+  const rawEditedRef = useRef<Set<string>>(new Set());
   const dragRef = useRef<{
     pointerId: number;
     startX: number;
@@ -84,22 +149,37 @@ export default function VrmDebugPanel({ inline = false, className }: VrmDebugPan
     setValues({
       aa: driver.getValue("aa"),
       happy: driver.getValue("happy"),
+      blush: driver.getValue("blush"),
+      angry: driver.getValue("angry"),
+      sad: driver.getValue("sad"),
+      relaxed: driver.getValue("relaxed"),
     });
   }, [driver, manager]);
 
   useEffect(() => {
-    if (motionId || motionCatalog.length === 0) return;
-    setMotionId(motionCatalog[0].id);
-    setMotionLoop(motionCatalog[0].loop ?? true);
-  }, [motionCatalog, motionId]);
+    if (availableMotions.length === 0) return;
+    if (motionId && availableMotions.some((item) => item.id === motionId)) return;
+    setMotionId(availableMotions[0].id);
+    setMotionLoop(availableMotions[0].loop ?? true);
+  }, [availableMotions, motionId]);
 
   useEffect(() => {
-    if (!manager) return;
+    if (followAuto) {
+      setExpressionOverrides({ enabled: false, values: {} });
+      const edited = rawEditedRef.current;
+      if (edited.size > 0) {
+        edited.forEach((name) => driver.setRawValue(name, 0));
+        edited.clear();
+      }
+    } else {
+      setExpressionOverrides({ enabled: true });
+    }
+  }, [followAuto]);
+
+  useEffect(() => {
     if (followAuto) return;
-    (Object.keys(values) as DebugExpressionName[]).forEach((key) => {
-      driver.setValue(key, values[key]);
-    });
-  }, [driver, followAuto, manager, values]);
+    setExpressionOverrides({ enabled: true, values });
+  }, [followAuto, values]);
 
   useEffect(() => {
     if (!manager || !followAuto) {
@@ -117,10 +197,18 @@ export default function VrmDebugPanel({ inline = false, className }: VrmDebugPan
         const next = {
           aa: driver.getValue("aa"),
           happy: driver.getValue("happy"),
+          blush: driver.getValue("blush"),
+          angry: driver.getValue("angry"),
+          sad: driver.getValue("sad"),
+          relaxed: driver.getValue("relaxed"),
         };
         const diff =
           Math.abs(prev.aa - next.aa) > 0.001 ||
-          Math.abs(prev.happy - next.happy) > 0.001;
+          Math.abs(prev.happy - next.happy) > 0.001 ||
+          Math.abs(prev.blush - next.blush) > 0.001 ||
+          Math.abs(prev.angry - next.angry) > 0.001 ||
+          Math.abs(prev.sad - next.sad) > 0.001 ||
+          Math.abs(prev.relaxed - next.relaxed) > 0.001;
         return diff ? next : prev;
       });
       rafRef.current = requestAnimationFrame(tick);
@@ -135,6 +223,49 @@ export default function VrmDebugPanel({ inline = false, className }: VrmDebugPan
       }
     };
   }, [driver, followAuto, manager]);
+
+  const expressionList = useMemo(() => {
+    if (!manager) return [];
+    const list = driver
+      .getAvailableExpressionNames()
+      .map((name) => ({
+        name,
+        label: getExpressionLabel(name),
+        bindings: driver.getRawBindings(name),
+      }))
+      .sort((a, b) => {
+        if (a.bindings !== b.bindings) return b.bindings - a.bindings;
+        return a.label.localeCompare(b.label);
+      });
+    return list;
+  }, [driver, manager]);
+
+  const bindableExpressionNames = useMemo(
+    () => expressionList.filter((item) => item.bindings > 0).map((item) => item.name),
+    [expressionList]
+  );
+
+  const filteredExpressions = useMemo(() => {
+    if (!showExpressions) return [];
+    const needle = expressionSearch.trim().toLowerCase();
+    if (!needle) return expressionList;
+    return expressionList.filter((item) => {
+      const haystack = `${item.name} ${item.label}`.toLowerCase();
+      return haystack.includes(needle);
+    });
+  }, [expressionList, expressionSearch, showExpressions]);
+
+  const currentEmotionMapping = emotionProfile.profile[emotionState.emotion];
+  const emotionMotionOptions = useMemo(() => {
+    const current = currentEmotionMapping?.motionId;
+    if (!current) return availableMotions;
+    const exists = availableMotions.some((item) => item.id === current);
+    if (exists) return availableMotions;
+    return [
+      { id: current, name: `(missing) ${current}` },
+      ...availableMotions,
+    ];
+  }, [availableMotions, currentEmotionMapping?.motionId]);
 
   const containerClass = inline
     ? "w-full rounded-xl border border-border/60 bg-background/60 p-2 shadow-sm"
@@ -386,13 +517,13 @@ export default function VrmDebugPanel({ inline = false, className }: VrmDebugPan
           )}
           {SLIDERS.map((slider) => {
             const disabled = !driver.supports(slider.id) || followAuto;
-            const bindings = manager ? driver.getBindings(slider.id) : 0;
+            const bindingCount = manager ? driver.getBindings(slider.id) : 0;
             return (
               <label key={slider.id} className="grid gap-1 text-[11px]">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <span className="text-foreground/80">{slider.label}</span>
-                    {manager && bindings === 0 ? (
+                    {manager && bindingCount === 0 ? (
                       <span className="text-[10px] text-muted-foreground">
                         无表情绑定
                       </span>
@@ -421,6 +552,240 @@ export default function VrmDebugPanel({ inline = false, className }: VrmDebugPan
               </label>
             );
           })}
+          <div className="rounded-md border border-border/50 bg-muted/30 px-2 py-2 text-[10px] text-muted-foreground">
+            <div className="flex items-center justify-between">
+              <span className="font-semibold text-foreground/80">Emotion</span>
+              <span>{emotionState.emotion}</span>
+            </div>
+            <div className="mt-2 grid gap-2">
+              {EMOTION_OPTIONS.map((item) => {
+                const active = emotionState.emotion === item.id;
+                const value = active ? emotionState.intensity : 0;
+                return (
+                  <label key={item.id} className="grid gap-1 text-[11px]">
+                    <div className="flex items-center justify-between">
+                      <span className={cn("text-foreground/80", active ? "" : "opacity-70")}>
+                        {item.label}
+                      </span>
+                      <span className="text-muted-foreground">{value.toFixed(2)}</span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0}
+                      max={2}
+                      step={0.01}
+                      value={value}
+                      onChange={(event) => {
+                        const next = Number(event.target.value);
+                        emotionState.set(item.id, next);
+                      }}
+                      className={cn(
+                        "h-2 w-full cursor-pointer appearance-none rounded-full bg-muted/70",
+                        "accent-primary"
+                      )}
+                    />
+                  </label>
+                );
+              })}
+            </div>
+            <div className="mt-2 grid gap-2">
+              <label className="grid gap-1 text-[11px]">
+                <div className="flex items-center justify-between">
+                  <span className="text-foreground/80">Motion</span>
+                  <button
+                    type="button"
+                    className="rounded-md px-2 py-0.5 text-[10px] text-muted-foreground hover:text-foreground disabled:opacity-40"
+                    onClick={() => emotionProfile.reset()}
+                    disabled={!url}
+                    title="Reset emotion motion mappings for this model URL"
+                  >
+                    Reset
+                  </button>
+                </div>
+                <select
+                  className="h-7 rounded-md border border-border/50 bg-background/70 px-2 text-[11px] text-foreground"
+                  value={currentEmotionMapping?.motionId ?? ""}
+                  onChange={(event) => {
+                    const next = event.target.value;
+                    emotionProfile.setMotion(emotionState.emotion, next ? next : null);
+                  }}
+                  disabled={!url || emotionMotionOptions.length === 0}
+                >
+                  <option value="">None</option>
+                  {emotionMotionOptions.map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {item.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="flex items-center justify-between text-[11px]">
+                <span className="text-foreground/80">Loop</span>
+                <input
+                  type="checkbox"
+                  checked={currentEmotionMapping?.loopMotion ?? true}
+                  onChange={(event) =>
+                    emotionProfile.setLoop(emotionState.emotion, event.target.checked)
+                  }
+                  disabled={!url}
+                />
+              </label>
+            </div>
+          </div>
+          <div className="rounded-md border border-border/50 bg-muted/30 px-2 py-2 text-[10px] text-muted-foreground">
+            <div className="flex items-center justify-between">
+              <span className="font-semibold text-foreground/80">Bindings</span>
+              <button
+                type="button"
+                className="rounded-md px-2 py-0.5 text-[10px] text-muted-foreground hover:text-foreground disabled:opacity-40"
+                onClick={() => expressionBindings.reset()}
+                disabled={!url}
+              >
+                Reset
+              </button>
+            </div>
+            {!manager ? (
+              <div className="mt-1 text-[10px] text-muted-foreground/80">
+                No expression manager.
+              </div>
+            ) : (
+              <div className="mt-2 grid gap-2">
+                {BINDING_SLOTS.map((slot) => {
+                  const bound = expressionBindings.bindings[slot.id] ?? "";
+                  const resolved = driver.getResolvedName(slot.id);
+                  const resolvedBindings =
+                    resolved && manager ? driver.getRawBindings(resolved) : 0;
+                  const options =
+                    bound && !bindableExpressionNames.includes(bound)
+                      ? [bound, ...bindableExpressionNames]
+                      : bindableExpressionNames;
+                  return (
+                    <label key={slot.id} className="grid gap-1 text-[11px]">
+                      <div className="flex items-center justify-between">
+                        <span className="text-foreground/80">{slot.label}</span>
+                        <span className="text-muted-foreground">
+                          {resolved
+                            ? `${getExpressionLabel(resolved)} (${resolvedBindings})`
+                            : "-"}
+                        </span>
+                      </div>
+                      <select
+                        className="h-7 rounded-md border border-border/50 bg-background/70 px-2 text-[11px] text-foreground"
+                        value={bound}
+                        onChange={(event) => {
+                          const next = event.target.value;
+                          expressionBindings.setBinding(slot.id, next ? next : null);
+                        }}
+                      >
+                        <option value="">Auto</option>
+                        {options.map((name) => (
+                          <option key={name} value={name}>
+                            {getExpressionLabel(name)}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  );
+                })}
+                <div className="text-[10px] text-muted-foreground/80">
+                  Auto uses built-in aliases; bind overrides per model URL.
+                </div>
+              </div>
+            )}
+          </div>
+          <div className="rounded-md border border-border/50 bg-muted/30 px-2 py-2 text-[10px] text-muted-foreground">
+            <div className="flex items-center justify-between">
+              <span className="font-semibold text-foreground/80">Expressions</span>
+              <button
+                type="button"
+                className="rounded-md px-2 py-0.5 text-[10px] text-muted-foreground hover:text-foreground"
+                onClick={() => setShowExpressions((prev) => !prev)}
+                disabled={!manager}
+              >
+                {showExpressions ? "Hide" : "Show"}
+              </button>
+            </div>
+            {showExpressions ? (
+              <>
+                <input
+                  type="text"
+                  value={expressionSearch}
+                  onChange={(event) => setExpressionSearch(event.target.value)}
+                  placeholder="Search expression..."
+                  className="mt-2 h-7 w-full rounded-md border border-border/50 bg-background/70 px-2 text-[11px] text-foreground placeholder:text-muted-foreground"
+                />
+                <div className="mt-2 grid gap-2">
+                  {filteredExpressions.length === 0 ? (
+                    <div className="text-[10px] text-muted-foreground/80">
+                      No expressions.
+                    </div>
+                  ) : (
+                    filteredExpressions.slice(0, 40).map((item) => {
+                      const value = driver.getRawValue(item.name);
+                      const disabled = followAuto || item.bindings === 0;
+                      return (
+                        <label key={item.name} className="grid gap-1 text-[11px]">
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-2">
+                              <span className="truncate text-foreground/80">
+                                {item.label}
+                              </span>
+                              <span className="text-[10px] text-muted-foreground">
+                                binds:{item.bindings}
+                              </span>
+                            </div>
+                            <span className="text-muted-foreground">{value.toFixed(2)}</span>
+                          </div>
+                          <input
+                            type="range"
+                            min={0}
+                            max={1}
+                            step={0.01}
+                            value={value}
+                            disabled={disabled}
+                            onChange={(event) => {
+                              const next = Number(event.target.value);
+                              rawEditedRef.current.add(item.name);
+                              driver.setRawValue(item.name, next);
+                            }}
+                            className={cn(
+                              "h-2 w-full cursor-pointer appearance-none rounded-full bg-muted/70",
+                              "accent-primary disabled:cursor-not-allowed disabled:opacity-40"
+                            )}
+                          />
+                        </label>
+                      );
+                    })
+                  )}
+                  {filteredExpressions.length > 40 ? (
+                    <div className="text-[10px] text-muted-foreground/80">
+                      Showing first 40. Use search to narrow down.
+                    </div>
+                  ) : null}
+                </div>
+                <div className="mt-2 text-[10px] text-muted-foreground/80">
+                  Tip: switch to Manual to edit; switching back to Follow will reset edited
+                  expressions.
+                </div>
+              </>
+            ) : (
+              <div className="mt-1 text-[10px] text-muted-foreground/80">
+                Browse and tweak all model-provided expressions.
+              </div>
+            )}
+          </div>
+          <div className="rounded-md border border-border/50 bg-muted/30 px-2 py-2 text-[10px] text-muted-foreground">
+            <div className="flex items-center justify-between">
+              <span className="font-semibold text-foreground/80">Hover</span>
+              <span>{interaction.zone ?? "-"}</span>
+            </div>
+            <div className="mt-1 grid grid-cols-2 gap-x-3 gap-y-1">
+              <span>dist</span>
+              <span>
+                {interaction.distance === null ? "-" : interaction.distance.toFixed(2)}
+              </span>
+            </div>
+          </div>
           <div className="rounded-md border border-border/50 bg-muted/30 px-2 py-2 text-[10px] text-muted-foreground">
             <div className="flex items-center justify-between">
               <span className="font-semibold text-foreground/80">Gaze</span>
@@ -1063,15 +1428,15 @@ export default function VrmDebugPanel({ inline = false, className }: VrmDebugPan
                   onChange={(event) => {
                     const next = event.target.value;
                     setMotionId(next);
-                    const entry = motionCatalog.find((item) => item.id === next);
+                    const entry = availableMotions.find((item) => item.id === next);
                     setMotionLoop(entry?.loop ?? true);
                   }}
-                  disabled={motionCatalog.length === 0 || motionBusy}
+                  disabled={availableMotions.length === 0 || motionBusy}
                 >
-                  {motionCatalog.length === 0 ? (
+                  {availableMotions.length === 0 ? (
                     <option value="">No local motions</option>
                   ) : (
-                    motionCatalog.map((item) => (
+                    availableMotions.map((item) => (
                       <option key={item.id} value={item.id}>
                         {item.name}
                       </option>

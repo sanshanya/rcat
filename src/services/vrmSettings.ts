@@ -49,6 +49,15 @@ export type PersistedVrmMouseTrackingSettings = {
   eyes: PersistedVrmMouseTrackingPart;
 };
 
+export type PersistedVrmExpressionBindings = Record<string, string>;
+
+export type PersistedVrmEmotionMotion = {
+  motionId?: string | null;
+  loopMotion?: boolean | null;
+};
+
+export type PersistedVrmEmotionProfile = Record<string, PersistedVrmEmotionMotion>;
+
 const reporters = {
   getFpsMode: reportPromiseError("vrmSettings.getFpsMode", {
     onceKey: "vrmSettings.getFpsMode",
@@ -72,6 +81,22 @@ const reporters = {
   }),
   setAvatarState: reportPromiseError("vrmSettings.setAvatarState", {
     onceKey: "vrmSettings.setAvatarState",
+    devOnly: true,
+  }),
+  getExpressionBindings: reportPromiseError("vrmSettings.getExpressionBindings", {
+    onceKey: "vrmSettings.getExpressionBindings",
+    devOnly: true,
+  }),
+  setExpressionBindings: reportPromiseError("vrmSettings.setExpressionBindings", {
+    onceKey: "vrmSettings.setExpressionBindings",
+    devOnly: true,
+  }),
+  getEmotionProfile: reportPromiseError("vrmSettings.getEmotionProfile", {
+    onceKey: "vrmSettings.getEmotionProfile",
+    devOnly: true,
+  }),
+  setEmotionProfile: reportPromiseError("vrmSettings.setEmotionProfile", {
+    onceKey: "vrmSettings.setEmotionProfile",
     devOnly: true,
   }),
   getHudLayout: reportPromiseError("vrmSettings.getHudLayout", {
@@ -168,6 +193,67 @@ export const setVrmAvatarState = async (
     await invoke<void>("set_vrm_avatar_state", { url: normalized, avatarState });
   } catch (err) {
     reporters.setAvatarState(err);
+  }
+};
+
+export const getVrmExpressionBindings = async (
+  url: string
+): Promise<PersistedVrmExpressionBindings | null> => {
+  const normalized = url.trim();
+  if (!normalized) return null;
+  if (!isTauriContext()) return null;
+  try {
+    return await invoke<PersistedVrmExpressionBindings | null>(
+      "get_vrm_expression_bindings",
+      { url: normalized }
+    );
+  } catch (err) {
+    reporters.getExpressionBindings(err);
+    return null;
+  }
+};
+
+export const setVrmExpressionBindings = async (
+  url: string,
+  bindings: PersistedVrmExpressionBindings
+): Promise<void> => {
+  const normalized = url.trim();
+  if (!normalized) return;
+  if (!isTauriContext()) return;
+  try {
+    await invoke<void>("set_vrm_expression_bindings", { url: normalized, bindings });
+  } catch (err) {
+    reporters.setExpressionBindings(err);
+  }
+};
+
+export const getVrmEmotionProfile = async (
+  url: string
+): Promise<PersistedVrmEmotionProfile | null> => {
+  const normalized = url.trim();
+  if (!normalized) return null;
+  if (!isTauriContext()) return null;
+  try {
+    return await invoke<PersistedVrmEmotionProfile | null>("get_vrm_emotion_profile", {
+      url: normalized,
+    });
+  } catch (err) {
+    reporters.getEmotionProfile(err);
+    return null;
+  }
+};
+
+export const setVrmEmotionProfile = async (
+  url: string,
+  profile: PersistedVrmEmotionProfile
+): Promise<void> => {
+  const normalized = url.trim();
+  if (!normalized) return;
+  if (!isTauriContext()) return;
+  try {
+    await invoke<void>("set_vrm_emotion_profile", { url: normalized, profile });
+  } catch (err) {
+    reporters.setEmotionProfile(err);
   }
 };
 

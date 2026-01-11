@@ -158,6 +158,15 @@ pub struct VrmMouseTrackingSettings {
     pub eyes: VrmMouseTrackingPart,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VrmEmotionMotion {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub motion_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loop_motion: Option<bool>,
+}
+
 fn clamp_f32(value: f32, min: f32, max: f32) -> f32 {
     value.clamp(min, max)
 }
@@ -397,6 +406,10 @@ struct PersistedVrmSettings {
     view_states: BTreeMap<String, VrmViewState>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     avatar_states: BTreeMap<String, VrmAvatarState>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    expression_bindings: BTreeMap<String, BTreeMap<String, String>>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    emotion_profiles: BTreeMap<String, BTreeMap<String, VrmEmotionMotion>>,
     #[serde(default)]
     hud_layout: VrmHudLayoutSettings,
     #[serde(default)]
@@ -860,6 +873,26 @@ pub fn get_vrm_avatar_state(url: String) -> Option<VrmAvatarState> {
 }
 
 #[tauri::command]
+pub fn get_vrm_expression_bindings(url: String) -> Option<BTreeMap<String, String>> {
+    let key = url.trim();
+    if key.is_empty() {
+        return None;
+    }
+    let settings = load_settings();
+    settings.vrm.expression_bindings.get(key).cloned()
+}
+
+#[tauri::command]
+pub fn get_vrm_emotion_profile(url: String) -> Option<BTreeMap<String, VrmEmotionMotion>> {
+    let key = url.trim();
+    if key.is_empty() {
+        return None;
+    }
+    let settings = load_settings();
+    settings.vrm.emotion_profiles.get(key).cloned()
+}
+
+#[tauri::command]
 pub fn get_vrm_hud_layout() -> VrmHudLayoutSettings {
     let settings = load_settings();
     settings.vrm.hud_layout
@@ -905,6 +938,91 @@ pub fn set_vrm_avatar_state(
         .vrm
         .avatar_states
         .insert(key.to_string(), next);
+    save_settings(&settings)?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn set_vrm_expression_bindings(
+    app: tauri::AppHandle,
+    url: String,
+    bindings: BTreeMap<String, String>,
+) -> Result<(), String> {
+    // Ensure data dir exists (and is cached) before writing settings.
+    let _ = crate::services::paths::data_dir(&app)?;
+    let key = url.trim();
+    if key.is_empty() {
+        return Err("VRM url is required".to_string());
+    }
+
+    let mut next: BTreeMap<String, String> = BTreeMap::new();
+    for (slot, expression) in bindings {
+        let slot = slot.trim();
+        let expression = expression.trim();
+        if slot.is_empty() || expression.is_empty() {
+            continue;
+        }
+        next.insert(slot.to_string(), expression.to_string());
+    }
+
+    let mut settings = load_settings();
+    if next.is_empty() {
+        settings.vrm.expression_bindings.remove(key);
+    } else {
+        settings
+            .vrm
+            .expression_bindings
+            .insert(key.to_string(), next);
+    }
+    save_settings(&settings)?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn set_vrm_emotion_profile(
+    app: tauri::AppHandle,
+    url: String,
+    profile: BTreeMap<String, VrmEmotionMotion>,
+) -> Result<(), String> {
+    // Ensure data dir exists (and is cached) before writing settings.
+    let _ = crate::services::paths::data_dir(&app)?;
+    let key = url.trim();
+    if key.is_empty() {
+        return Err("VRM url is required".to_string());
+    }
+
+    let mut next: BTreeMap<String, VrmEmotionMotion> = BTreeMap::new();
+    for (emotion, mapping) in profile {
+        let emotion = emotion.trim();
+        if emotion.is_empty() {
+            continue;
+        }
+        let motion_id = mapping.motion_id.and_then(|value| {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        });
+        if motion_id.is_none() {
+            continue;
+        }
+        next.insert(
+            emotion.to_string(),
+            VrmEmotionMotion {
+                motion_id,
+                loop_motion: mapping.loop_motion,
+            },
+        );
+    }
+
+    let mut settings = load_settings();
+    if next.is_empty() {
+        settings.vrm.emotion_profiles.remove(key);
+    } else {
+        settings.vrm.emotion_profiles.insert(key.to_string(), next);
+    }
     save_settings(&settings)?;
     Ok(())
 }

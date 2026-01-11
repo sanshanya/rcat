@@ -35,6 +35,8 @@ export class MotionController {
   private currentLoop = false;
   private onStopped?: () => void;
   private preloadedMotions = new Map<string, AnimationClip>();
+  private embeddedClips = new Map<string, AnimationClip>();
+  private embeddedEntries: MotionEntry[] = [];
   private ikHandler: VRMIKHandler | null = null;
   private smoothBones: Array<{ node: Object3D; quaternion: Quaternion; position: Vector3 }> = [];
   private smoothingNeedsReset = true;
@@ -56,18 +58,50 @@ export class MotionController {
     return this.currentMotionId;
   }
 
+  public getEmbeddedEntries() {
+    return this.embeddedEntries;
+  }
+
+  public setEmbeddedClips(clips: AnimationClip[] | null | undefined) {
+    this.embeddedClips.clear();
+    this.embeddedEntries = [];
+    if (!Array.isArray(clips) || clips.length === 0) return;
+    clips.forEach((clip, index) => {
+      if (!clip) return;
+      const label = typeof clip.name === "string" && clip.name.trim().length > 0
+        ? clip.name.trim()
+        : `Embedded ${index + 1}`;
+      const id = `embedded:${index}`;
+      this.embeddedClips.set(id, clip);
+      this.embeddedEntries.push({
+        id,
+        name: label,
+        type: "embedded",
+        path: id,
+        loop: true,
+        category: "Embedded",
+      });
+    });
+  }
+
   public isPlaying() {
     return Boolean(this.currentAction);
   }
 
+  private async resolveEntryById(id: string) {
+    const embedded = this.embeddedEntries.find((entry) => entry.id === id) ?? null;
+    if (embedded) return embedded;
+    return await getMotionEntryById(id);
+  }
+
   public async preloadById(id: string) {
-    const entry = await getMotionEntryById(id);
+    const entry = await this.resolveEntryById(id);
     if (!entry) return null;
     return await this.preloadEntry(entry);
   }
 
   public async playById(id: string, options: MotionPlayOptions = {}) {
-    const entry = await getMotionEntryById(id);
+    const entry = await this.resolveEntryById(id);
     if (!entry) {
       console.warn(`Motion not found: ${id}`);
       return false;
@@ -216,6 +250,8 @@ export class MotionController {
       case "glb":
       case "gltf":
         return await loadVrmAnimation(entry.path, this.vrm);
+      case "embedded":
+        return this.embeddedClips.get(entry.path) ?? null;
       case "vmd":
         this.ikHandler = VRMIKHandler.get(this.vrm);
         return await loadVmdAnimation(entry.path, this.vrm);

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-export type MotionFileType = "fbx" | "vrma" | "vmd" | "glb" | "gltf";
+export type MotionFileType = "fbx" | "vrma" | "vmd" | "glb" | "gltf" | "embedded";
 
 export type MotionEntry = {
   id: string;
@@ -25,7 +25,8 @@ const normalizeType = (value: unknown): MotionFileType | null => {
     normalized === "vrma" ||
     normalized === "vmd" ||
     normalized === "glb" ||
-    normalized === "gltf"
+    normalized === "gltf" ||
+    normalized === "embedded"
   ) {
     return normalized;
   }

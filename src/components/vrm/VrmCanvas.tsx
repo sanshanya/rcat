@@ -64,8 +64,8 @@ export default function VrmCanvas({ url, className, idleMotionUrl }: VrmCanvasPr
       }, LOAD_TIMEOUT_MS);
 
       setError(null);
-      setVrmState(null, null);
-      setVrm(null);
+      setVrmState(null, null, null);
+      setVrm(null, null);
 
       if (logReload) {
         console.info("VRM renderer: reloading VRM");
@@ -75,8 +75,8 @@ export default function VrmCanvas({ url, className, idleMotionUrl }: VrmCanvasPr
         .loadVrm(nextUrl, { signal: controller.signal })
         .then((vrm) => {
           if (seq !== loadSeqRef.current) return;
-          setVrm(vrm);
-          setVrmState(vrm, getMotionController());
+          setVrm(vrm, nextUrl);
+          setVrmState(vrm, getMotionController(), nextUrl);
         })
         .catch((err) => {
           if (seq !== loadSeqRef.current) return;
@@ -119,8 +119,8 @@ export default function VrmCanvas({ url, className, idleMotionUrl }: VrmCanvasPr
       loadSeqRef.current += 1;
       abortRef.current?.abort();
       abortRef.current = null;
-      setVrmState(null, null);
-      setVrm(null);
+      setVrmState(null, null, null);
+      setVrm(null, null);
       handle?.clearVrm();
     };
   }, [handleRef, loadVrm, ready, setVrm, url]);

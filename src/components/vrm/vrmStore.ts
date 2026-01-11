@@ -5,9 +5,10 @@ import type { MotionController } from "@/components/vrm/motion/MotionController"
 type VrmState = {
   vrm: VRM | null;
   motionController: MotionController | null;
+  url: string | null;
 };
 
-let state: VrmState = { vrm: null, motionController: null };
+let state: VrmState = { vrm: null, motionController: null, url: null };
 const listeners = new Set<() => void>();
 
 const emitChange = () => {
@@ -16,9 +17,10 @@ const emitChange = () => {
 
 export const setVrmState = (
   vrm: VRM | null,
-  motionController: MotionController | null
+  motionController: MotionController | null,
+  url: string | null
 ) => {
-  state = { vrm, motionController };
+  state = { vrm, motionController, url };
   emitChange();
 };
 

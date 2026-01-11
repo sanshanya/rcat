@@ -704,6 +704,8 @@ export const useVrmRenderer = (
       VRMUtils.removeUnnecessaryVertices(gltf.scene);
       VRMUtils.removeUnnecessaryJoints(gltf.scene);
       VRMUtils.rotateVRM0(vrm);
+      (vrm.scene.userData as Record<string, unknown>).__rcatEmbeddedAnimations =
+        gltf.animations ?? [];
       vrm.scene.traverse((obj) => {
         obj.frustumCulled = false;
       });

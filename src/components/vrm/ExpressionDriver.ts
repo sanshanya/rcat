@@ -7,12 +7,18 @@ export type ExpressionName =
   | "ee"
   | "oh"
   | "blink"
+  | "blush"
   | "happy"
   | "angry"
   | "sad"
   | "relaxed"
   | "surprised"
+  | "shy"
+  | "anxious"
+  | "confused"
   | "neutral";
+
+export type ExpressionBindings = Partial<Record<ExpressionName, string | null>>;
 
 const EXPRESSION_ALIASES: Record<ExpressionName, string[]> = {
   aa: ["aa", "AA", "Aa", "A", "a", "Ah", "ah"],
@@ -21,11 +27,15 @@ const EXPRESSION_ALIASES: Record<ExpressionName, string[]> = {
   ee: ["ee", "E", "e"],
   oh: ["oh", "O", "o"],
   blink: ["blink", "Blink"],
+  blush: ["blush", "Blush", "Embarrassed", "embarrassed", "Cheek", "cheek"],
   happy: ["happy", "Happy", "Joy", "joy", "Smile", "smile"],
   angry: ["angry", "Angry"],
   sad: ["sad", "Sorrow", "sorrow"],
   relaxed: ["relaxed", "Fun", "fun"],
   surprised: ["surprised", "Surprised"],
+  shy: ["shy", "Shy", "Embarrassed", "embarrassed"],
+  anxious: ["anxious", "Anxious", "Worried", "worried", "Nervous", "nervous"],
+  confused: ["confused", "Confused", "Doubt", "doubt", "Thinking", "thinking"],
   neutral: ["neutral", "Neutral"],
 };
 
@@ -94,8 +104,35 @@ const getBindingsCount = (entry: unknown): number => {
   return Array.isArray(binds) ? binds.length : 0;
 };
 
-export const createExpressionDriver = (manager: VRMExpressionManager | null) => {
-  const resolveAlias = (aliases: string[]) => {
+export const createExpressionDriver = (
+  manager: VRMExpressionManager | null,
+  options: { bindings?: ExpressionBindings } = {}
+) => {
+  const resolveAlias = (expression: ExpressionName, aliases: string[]) => {
+    if (!manager) return null;
+    const bound = options.bindings?.[expression];
+    if (typeof bound === "string") {
+      const trimmed = bound.trim();
+      if (trimmed && getExpressionEntry(manager, trimmed)) {
+        return trimmed;
+      }
+    }
+    for (const alias of aliases) {
+      if (getExpressionEntry(manager, alias)) {
+        return alias;
+      }
+    }
+    const aliasSet = new Set(aliases.map((alias) => alias.toLowerCase()));
+    const names = getExpressionNames(manager);
+    for (const name of names) {
+      if (aliasSet.has(name.toLowerCase())) {
+        return name;
+      }
+    }
+    return null;
+  };
+
+  const resolveAliasWithoutBinding = (aliases: string[]) => {
     if (!manager) return null;
     for (const alias of aliases) {
       if (getExpressionEntry(manager, alias)) {
@@ -117,15 +154,21 @@ export const createExpressionDriver = (manager: VRMExpressionManager | null) => 
     string | null
   >;
   (Object.keys(EXPRESSION_ALIASES) as ExpressionName[]).forEach((name) => {
-    resolved[name] = resolveAlias(EXPRESSION_ALIASES[name]);
+    resolved[name] = resolveAlias(name, EXPRESSION_ALIASES[name]);
   });
 
-  const blinkLeftName = resolveAlias(BLINK_LEFT_ALIASES);
-  const blinkRightName = resolveAlias(BLINK_RIGHT_ALIASES);
+  const blinkLeftName = resolveAliasWithoutBinding(BLINK_LEFT_ALIASES);
+  const blinkRightName = resolveAliasWithoutBinding(BLINK_RIGHT_ALIASES);
+
+  const bindingCountCache = new Map<string, number>();
 
   const bindingCountForName = (name: string | null) => {
     if (!manager || !name) return 0;
-    return getBindingsCount(getExpressionEntry(manager, name));
+    const cached = bindingCountCache.get(name);
+    if (typeof cached === "number") return cached;
+    const count = getBindingsCount(getExpressionEntry(manager, name));
+    bindingCountCache.set(name, count);
+    return count;
   };
 
   const supports = (name: ExpressionName) => {
@@ -183,5 +226,37 @@ export const createExpressionDriver = (manager: VRMExpressionManager | null) => 
     return 0;
   };
 
-  return { supports, setValue, getValue, getBindings };
+  const getAvailableExpressionNames = () => getExpressionNames(manager);
+
+  const getRawBindings = (expression: string) => bindingCountForName(expression);
+
+  const supportsRaw = (expression: string) => getRawBindings(expression) > 0;
+
+  const setRawValue = (expression: string, value: number) => {
+    if (!manager) return;
+    if (!supportsRaw(expression)) return;
+    manager.setValue(expression, clamp01(value));
+  };
+
+  const getRawValue = (expression: string) => {
+    if (!manager) return 0;
+    const getter = (manager as { getValue?: (key: string) => number }).getValue;
+    if (typeof getter !== "function") return 0;
+    return clamp01(getter.call(manager, expression) ?? 0);
+  };
+
+  const getResolvedName = (name: ExpressionName) => resolved[name];
+
+  return {
+    supports,
+    setValue,
+    getValue,
+    getBindings,
+    getAvailableExpressionNames,
+    supportsRaw,
+    getRawBindings,
+    setRawValue,
+    getRawValue,
+    getResolvedName,
+  };
 };
