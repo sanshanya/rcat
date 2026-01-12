@@ -46,22 +46,20 @@ The Tauri backend integrates the `rcat-voice` subproject (`rcat-voice/`) for low
 ```powershell
 # TTS (recommended in-process)
 $env:TTS_BACKEND="gpt-sovits-onnx"
-$env:GSV_ONNX_MODEL_DIR="E:\rcat\rcat-voice\onnx"
 
-# ASR (sherpa)
-$env:ASR_MODELS_ROOT="E:\rcat\rcat-voice\models"
-$env:ASR_MODEL="funasr-nano-int8"
+# Unified models root (contains ASR/TTS/TURN/VAD)
+$env:RCAT_MODELS_DIR="E:\rcat\models"
 
-# Smart Turn (optional)
-$env:SMART_TURN_MODEL="E:\rcat\rcat-voice\models"  # or a specific smart-turn-*.onnx file
-$env:SMART_TURN_VARIANT="gpu"                      # when directory has both cpu/gpu models
+# Optional overrides
+$env:ASR_MODEL="funasr-nano-int8"                  # pick an ASR model variant
+$env:SMART_TURN_VARIANT="gpu"                      # when TURN/ has both cpu/gpu models
 
 bun tauri dev
 ```
 
 Notes:
-- Unset `SMART_TURN_MODEL` to disable Smart Turn; the app will fall back to treating each VAD segment as a complete turn.
 - Voice model paths can be absolute (recommended) to avoid working-directory ambiguity.
+- Set `SMART_TURN_DISABLE=1` to force-disable Smart Turn even when `RCAT_MODELS_DIR` is set.
 - More details: `rcat-voice/README.md` and `rcat-voice/docs/TROUBLESHOOTING.md`.
 - Full voice manual (asr-nano + smartturn + remote gpt-sovits): `docs/VOICE_MANUAL.md`.
 
@@ -78,7 +76,7 @@ $env:LIBTORCH="C:\\libtorch"
 $env:Path="$env:LIBTORCH\\lib;$env:Path"
 $env:LIBTORCH_BYPASS_VERSION_CHECK="1"   # optional
 
-$env:GSV_MODEL_DIR="F:\\github\\rcat\\rcat-voice\\v2pro"
+$env:RCAT_MODELS_DIR="F:\\github\\rcat\\models"
 $env:TTS_WORKER_BIND="127.0.0.1:7878"
 
 cargo run --bin tts_worker --features tts-worker --release

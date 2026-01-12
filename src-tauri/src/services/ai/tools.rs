@@ -1,5 +1,5 @@
 use async_openai::error::OpenAIError;
-use async_openai::{config::OpenAIConfig, Client};
+use async_openai::{Client, config::OpenAIConfig};
 use futures_util::StreamExt;
 use tauri::{Emitter, Manager};
 
@@ -74,7 +74,16 @@ pub(super) async fn run_chat_generic(
             Ok(engine) => {
                 // Ensure previous playback is stopped before starting a new streaming session.
                 let _ = engine.stop().await;
-                let session = rcat_voice::streaming::StreamSession::from_env(engine);
+                let turn_id = match voice_state.allocate_turn_id() {
+                    Ok(id) => id,
+                    Err(err) => {
+                        log::warn!("Voice auto mode: failed to allocate turn_id: {err}");
+                        0
+                    }
+                };
+                let session = rcat_voice::streaming::StreamSessionBuilder::from_env(engine)
+                    .turn_id(turn_id)
+                    .build();
                 voice_state
                     .set_stream_handle(Some(session.cancel_handle()))
                     .await;
@@ -142,7 +151,11 @@ pub(super) async fn run_chat_generic(
         }
     }
 
-    let tools = if tools_active { Some(tools_schema) } else { None };
+    let tools = if tools_active {
+        Some(tools_schema)
+    } else {
+        None
+    };
 
     let retry = RetryConfig::from_env();
     let max_tool_rounds = if tools_active {

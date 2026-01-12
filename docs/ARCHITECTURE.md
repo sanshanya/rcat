@@ -37,7 +37,7 @@ rcat 是一个 Windows 优先的 **Tauri v2** 桌面应用：前端是 **React +
 - 环境变量只用于“机器级”配置（不进入 UI）：
   - Turso/libSQL：`TURSO_DATABASE_URL` + `TURSO_AUTH_TOKEN`（或 `LIBSQL_*`）
   - VLM 图片压缩：`VLM_IMAGE_MAX_DIM`、`VLM_JPEG_QUALITY`
-  - Voice/TTS：`TTS_BACKEND`、`AUDIO_BACKEND`、`GSV_MODEL_DIR`、`LIBTORCH` 等（见第 7 节）
+  - Voice/TTS：`TTS_BACKEND`、`AUDIO_BACKEND`、`RCAT_MODELS_DIR`、`LIBTORCH` 等（见第 7 节）
 
 详见 `docs/settings.md`；VRM 模块详见 `docs/VRM.md`。
 
@@ -150,7 +150,8 @@ rcat 的语音能力来自子模块 crate `rcat-voice`，目标是：
 3. 后端 `run_chat_generic`（`src-tauri/src/services/ai/tools.rs`）在 `voice_enabled` 时：
    - `VoiceState.cancel_active_stream()`：打断上一轮 streaming。
    - `get_or_build_engine(true)`：拿到并缓存引擎（强制 persist）。
-   - `StreamSession::from_env(engine)`：创建流式会话（内部 spawn Tokenizer/Pipeline/Buffer 三个任务）。
+   - `voice_state.allocate_turn_id()`：分配 `turn_id`（用于将本轮语音/埋点与 UI 事件绑定）。
+   - `StreamSessionBuilder::from_env(engine).turn_id(turn_id).build()`：创建流式会话（内部 spawn Tokenizer/Pipeline/Buffer 三个任务）。
    - 将 `StreamCancelHandle` 存入 `VoiceState`，并拿到 `delta_tx` 用于写入 LLM 增量。
 4. LLM streaming 每个 `content` delta 到来时：
    - 前端照常 emit `chat-stream(kind=text)` 给 UI。
@@ -169,7 +170,7 @@ rcat/rcat-voice 的语音配置主要靠 env（不会写入 settings.json）：
 
 - 引擎选择：`TTS_BACKEND=os|gpt-sovits|gpt-sovits-onnx`（Windows 上常用 `gpt-sovits`）
 - 音频后端：`AUDIO_BACKEND=rodio`（以及 `AUDIO_SAMPLE_RATE=32000`、`AUDIO_CHANNELS=1` 等）
-- SoVITS 模型：`GSV_MODEL_DIR=/path/to/v2pro`
+- 统一模型目录：`RCAT_MODELS_DIR=/path/to/models`（包含 `ASR/`、`TTS/`、`TURN/`、`VAD/`）
 - libtorch：`LIBTORCH=C:\\libtorch`（并确保 `%LIBTORCH%\\lib` 在 `PATH`）
 - 版本检查绕过：`LIBTORCH_BYPASS_VERSION_CHECK=1`（tch/torch-sys 版本不匹配时）
 - 模型常驻：`VOICE_PERSIST=1` 或 `RCAT_VOICE_PERSIST=1`（rcat 侧缓存策略仍会优先复用 cached）

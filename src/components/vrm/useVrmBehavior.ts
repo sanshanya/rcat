@@ -142,10 +142,10 @@ export const useVrmBehavior = ({
     lookAtGlobalRef.current = { x, y };
   });
 
-  useTauriEvent<void>(EVT_VOICE_SPEECH_START, () => {
+  useTauriEvent<{ turnId: number }>(EVT_VOICE_SPEECH_START, () => {
     voiceSpeakingRef.current = true;
   });
-  useTauriEvent<void>(EVT_VOICE_SPEECH_END, () => {
+  useTauriEvent<{ turnId: number }>(EVT_VOICE_SPEECH_END, () => {
     voiceSpeakingRef.current = false;
   });
 

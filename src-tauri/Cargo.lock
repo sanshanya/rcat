@@ -5309,6 +5309,7 @@ dependencies = [
  "crossbeam-queue",
  "futures-util",
  "gpt-sovits-onnx-rs",
+ "ort",
  "rand_core 0.10.0-rc-2",
  "reqwest",
  "rodio",

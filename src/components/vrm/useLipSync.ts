@@ -102,13 +102,13 @@ export const useLipSync = () => {
     });
   });
 
-  useTauriEvent<void>(EVT_VOICE_SPEECH_START, () => {
+  useTauriEvent<{ turnId: number }>(EVT_VOICE_SPEECH_START, () => {
     fallbackActiveRef.current = true;
     fallbackPhaseRef.current = 0;
     hadRmsRef.current = false;
   });
 
-  useTauriEvent<void>(EVT_VOICE_SPEECH_END, () => {
+  useTauriEvent<{ turnId: number }>(EVT_VOICE_SPEECH_END, () => {
     fallbackActiveRef.current = false;
   });
 

@@ -11,7 +11,7 @@ $env:LIBTORCH="C:\libtorch"
 $env:Path="$env:LIBTORCH\lib;$env:Path"
 $env:LIBTORCH_BYPASS_VERSION_CHECK="1"   # 可选：torch-sys 版本校验不一致时
 
-$env:GSV_MODEL_DIR="F:\github\rcat\rcat-voice\v2pro"
+$env:RCAT_MODELS_DIR="F:\github\rcat\models"
 $env:TTS_WORKER_BIND="127.0.0.1:7878"
 
 $env:TTS_WORKER_METRICS="1"              # 可选：打印 req ttfb/gen/rtf
@@ -36,13 +36,14 @@ $env:AUDIO_BACKEND="rodio"
 $env:AUDIO_SAMPLE_RATE="32000"
 $env:AUDIO_CHANNELS="1"
 
+# Unified models root (contains ASR/TTS/TURN/VAD)
+$env:RCAT_MODELS_DIR="F:\github\rcat\models"
+
 # ASR（FunASR Nano int8 via sherpa-onnx）
-$env:ASR_MODELS_ROOT="F:\github\rcat\asrmodel"
 $env:ASR_MODEL="funasr-nano-int8"
 
 # Smart Turn（ONNX）
-$env:SMART_TURN_MODEL="F:\path\to\smart-turn-v3*.onnx"
-$env:SMART_TURN_THRESHOLD="0.5"
+$env:SMART_TURN_VARIANT="gpu"            # when models/TURN has both cpu/gpu
 
 # 可选：指标/日志
 $env:VOICE_TTS_METRICS="1"
@@ -58,4 +59,3 @@ bun tauri dev
   - ASR 会通过事件持续推送 `turnText`
   - SmartTurn 判定 turn end 后触发发送到 LLM
   - TTS 通过 worker 进行推理并流式播放
-

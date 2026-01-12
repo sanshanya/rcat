@@ -68,7 +68,7 @@ export const useLipSyncDebug = () => {
     }));
   });
 
-  useTauriEvent<void>(EVT_VOICE_SPEECH_START, () => {
+  useTauriEvent<{ turnId: number }>(EVT_VOICE_SPEECH_START, () => {
     const now = performance.now();
     setState((prev) => ({
       ...prev,
@@ -77,7 +77,7 @@ export const useLipSyncDebug = () => {
     }));
   });
 
-  useTauriEvent<void>(EVT_VOICE_SPEECH_END, () => {
+  useTauriEvent<{ turnId: number }>(EVT_VOICE_SPEECH_END, () => {
     const now = performance.now();
     setState((prev) => ({
       ...prev,

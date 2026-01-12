@@ -26,6 +26,7 @@ pub struct VoiceAsrResultPayload {
     pub start: Option<f32>,
     pub end: Option<f32>,
     pub is_final: bool,
+    pub turn_id: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -361,21 +362,36 @@ async fn run_voice_asr_loop(
     let barge_in_confirm_ms = env_u64_clamped("BARGE_IN_CONFIRM_MS", 100, 0, 1000);
     let barge_in_threshold_ms = barge_in_confirm_ms.saturating_add(barge_in_min_speech_ms);
 
-    let mut turn_detector = match std::env::var("SMART_TURN_MODEL") {
-        Ok(value) if !value.trim().is_empty() => {
-            let detector = SmartTurnBoundaryDetector::from_env()
-                .map_err(|e| format!("Smart Turn init failed: {e}"))?;
-            log::info!(
-                "voice_conversation: smart_turn enabled (threshold={:.2}, model={})",
-                detector.inner().threshold(),
-                value
-            );
-            TurnDetector::Smart(detector)
+    let smart_turn_disabled = std::env::var("SMART_TURN_DISABLE")
+        .ok()
+        .is_some_and(|v| matches!(v.trim().to_lowercase().as_str(), "1" | "true" | "yes" | "y" | "on"));
+    let smart_turn_enabled = !smart_turn_disabled
+        && (std::env::var("SMART_TURN_MODEL")
+            .ok()
+            .is_some_and(|v| !v.trim().is_empty())
+            || std::env::var("RCAT_MODELS_DIR")
+                .ok()
+                .is_some_and(|v| !v.trim().is_empty()));
+    let mut turn_detector = if smart_turn_enabled {
+        match SmartTurnBoundaryDetector::from_env() {
+            Ok(detector) => {
+                log::info!(
+                    "voice_conversation: smart_turn enabled (threshold={:.2})",
+                    detector.inner().threshold()
+                );
+                TurnDetector::Smart(detector)
+            }
+            Err(err) => {
+                log::warn!("voice_conversation: smart_turn disabled: {err}");
+                TurnDetector::Vad(VadGateTurnDetector::from_env())
+            }
         }
-        _ => TurnDetector::Vad(VadGateTurnDetector::from_env()),
+    } else {
+        TurnDetector::Vad(VadGateTurnDetector::from_env())
     };
 
     let mut turn_text = String::new();
+    let mut turn_id: u64 = 1;
     let mut barge_in_speech_start_ts: Option<Instant> = None;
     let mut barge_in_triggered = false;
     let mut events = SmallVec::<[TurnEvent; 4]>::new();
@@ -466,6 +482,7 @@ async fn run_voice_asr_loop(
                             start: Some(seg.start),
                             end: Some(seg.end),
                             is_final: false,
+                            turn_id,
                         },
                     );
                 }
@@ -519,6 +536,7 @@ async fn run_voice_asr_loop(
                                 start: Some(seg.start),
                                 end: Some(seg.end),
                                 is_final: false,
+                                turn_id,
                             },
                         );
                     }
@@ -538,9 +556,12 @@ async fn run_voice_asr_loop(
                                 start: None,
                                 end: None,
                                 is_final: true,
+                                turn_id,
                             },
                         );
                     }
+
+                    turn_id = turn_id.wrapping_add(1);
                 }
             }
         }
