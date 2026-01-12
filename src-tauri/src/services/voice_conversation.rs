@@ -3,10 +3,17 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{Emitter, Manager};
 use tokio::sync::{Mutex, watch};
+use tokio::time::Instant;
 
 use crate::services::ai::{
     ChatDeltaKind, ChatDonePayload, ChatStreamPayload, EVT_CHAT_DONE, EVT_CHAT_STREAM,
 };
+
+use rcat_voice::turn::{
+    AudioFrameRef, SmartTurnBoundaryDetector, TurnBoundaryDetector, TurnEvent, TurnEventKind,
+    VadGateTurnDetector,
+};
+use smallvec::SmallVec;
 
 pub const EVT_VOICE_ASR_RESULT: &str = "voice-asr-result";
 pub const EVT_VOICE_CONVERSATION_STATE: &str = "voice-conversation-state";
@@ -260,25 +267,39 @@ fn env_u64_clamped(key: &str, default: u64, min: u64, max: u64) -> u64 {
         .clamp(min, max)
 }
 
-fn env_u16_clamped(key: &str, default: u16, min: u16, max: u16) -> u16 {
-    std::env::var(key)
-        .ok()
-        .and_then(|v| v.trim().parse::<u16>().ok())
-        .unwrap_or(default)
-        .clamp(min, max)
+enum TurnDetector {
+    Vad(VadGateTurnDetector),
+    Smart(SmartTurnBoundaryDetector),
 }
 
-fn is_silence_chunk(pcm: &[i16], abs_threshold: u16) -> bool {
-    if pcm.is_empty() {
-        return true;
+impl TurnBoundaryDetector for TurnDetector {
+    fn push_audio(&mut self, frame: AudioFrameRef<'_>, out: &mut SmallVec<[TurnEvent; 4]>) {
+        match self {
+            TurnDetector::Vad(inner) => inner.push_audio(frame, out),
+            TurnDetector::Smart(inner) => inner.push_audio(frame, out),
+        }
     }
-    let threshold = abs_threshold as i64;
-    let mut sum: i64 = 0;
-    for &sample in pcm {
-        sum += (sample as i32).abs() as i64;
+
+    fn push_vad(&mut self, event: rcat_voice::asr::VadEvent, out: &mut SmallVec<[TurnEvent; 4]>) {
+        match self {
+            TurnDetector::Vad(inner) => inner.push_vad(event, out),
+            TurnDetector::Smart(inner) => inner.push_vad(event, out),
+        }
     }
-    let avg = sum / pcm.len() as i64;
-    avg <= threshold
+
+    fn tick(&mut self, now: tokio::time::Instant, out: &mut SmallVec<[TurnEvent; 4]>) {
+        match self {
+            TurnDetector::Vad(inner) => inner.tick(now, out),
+            TurnDetector::Smart(inner) => inner.tick(now, out),
+        }
+    }
+
+    fn reset(&mut self) {
+        match self {
+            TurnDetector::Vad(inner) => inner.reset(),
+            TurnDetector::Smart(inner) => inner.reset(),
+        }
+    }
 }
 
 async fn run_voice_asr_loop(
@@ -286,7 +307,6 @@ async fn run_voice_asr_loop(
     conversation_id: watch::Receiver<Option<String>>,
     mut cancel: watch::Receiver<bool>,
 ) -> Result<(), String> {
-    use std::time::Instant;
     use tokio::sync::oneshot;
 
     // Create MicStream on a blocking thread since cpal::Stream is !Send.
@@ -338,37 +358,27 @@ async fn run_voice_asr_loop(
     let drop_warn_samples = env_u64_clamped("ASR_MIC_DROP_WARN_SAMPLES", 100, 1, 1_000_000);
 
     let barge_in_min_speech_ms = env_u64_clamped("BARGE_IN_MIN_SPEECH_MS", 450, 50, 10_000);
-    let turn_silence_abs = env_u16_clamped("SMART_TURN_SILENCE_ABS", 200, 0, 20_000);
-    let barge_in_silence_abs =
-        env_u16_clamped("BARGE_IN_SILENCE_ABS", turn_silence_abs, 0, 20_000);
+    let barge_in_confirm_ms = env_u64_clamped("BARGE_IN_CONFIRM_MS", 100, 0, 1000);
+    let barge_in_threshold_ms = barge_in_confirm_ms.saturating_add(barge_in_min_speech_ms);
+
+    let mut turn_detector = match std::env::var("SMART_TURN_MODEL") {
+        Ok(value) if !value.trim().is_empty() => {
+            let detector = SmartTurnBoundaryDetector::from_env()
+                .map_err(|e| format!("Smart Turn init failed: {e}"))?;
+            log::info!(
+                "voice_conversation: smart_turn enabled (threshold={:.2}, model={})",
+                detector.inner().threshold(),
+                value
+            );
+            TurnDetector::Smart(detector)
+        }
+        _ => TurnDetector::Vad(VadGateTurnDetector::from_env()),
+    };
 
     let mut turn_text = String::new();
-    let mut speech_streak_ms: u64 = 0;
-
-    let turn_min_silence_ms = env_u64_clamped("SMART_TURN_MIN_SILENCE_MS", 400, 50, 10_000);
-    let turn_commit_ms = env_u64_clamped("SMART_TURN_COMMIT_MS", 300, 0, 10_000);
-    let turn_force_end_ms = env_u64_clamped(
-        "SMART_TURN_FORCE_END_MS",
-        2000,
-        turn_min_silence_ms.saturating_add(turn_commit_ms),
-        60_000,
-    );
-    let turn_eval_interval_ms = env_u64_clamped("SMART_TURN_EVAL_INTERVAL_MS", 200, 50, 5000);
-
-    let mut smart_turn: Option<rcat_voice::turn::SmartTurnDetector> =
-        match std::env::var("SMART_TURN_MODEL") {
-            Ok(value) if !value.trim().is_empty() => Some(
-                rcat_voice::turn::SmartTurnDetector::from_env()
-                    .map_err(|e| format!("Smart Turn init failed: {e}"))?,
-            ),
-            _ => None,
-        };
-    let mut smart_turn_threshold = smart_turn.as_ref().map(|d| d.threshold()).unwrap_or(0.5);
-    let mut turn_dirty = false;
-    let mut trailing_silence_ms: u64 = 0;
-    let mut endpoint_armed = false;
-    let mut last_eval_at: Option<Instant> = None;
-    let mut smart_turn_infer: Option<tokio::task::JoinHandle<Result<f32, String>>> = None;
+    let mut barge_in_speech_start_ts: Option<Instant> = None;
+    let mut barge_in_triggered = false;
+    let mut events = SmallVec::<[TurnEvent; 4]>::new();
 
     let frames = ((sample_rate as u64 * feed_ms) / 1000).max(1) as usize;
     let chunk_samples = frames
@@ -399,6 +409,23 @@ async fn run_voice_asr_loop(
                 }
             }
             _ = poll.tick() => {
+                let now = Instant::now();
+                events.clear();
+
+                while let Some(vad) = asr.try_read_vad_event() {
+                    match &vad {
+                        rcat_voice::asr::VadEvent::SpeechStart { ts } => {
+                            barge_in_speech_start_ts = Some(*ts);
+                            barge_in_triggered = false;
+                        }
+                        rcat_voice::asr::VadEvent::SpeechEnd { .. } => {
+                            barge_in_speech_start_ts = None;
+                            barge_in_triggered = false;
+                        }
+                    }
+                    turn_detector.push_vad(vad, &mut events);
+                }
+
                 while chunk.len() < chunk_samples {
                     let Some(sample) = mic_handle.try_pop_sample() else {
                         break;
@@ -407,38 +434,13 @@ async fn run_voice_asr_loop(
                 }
 
                 if chunk.len() >= chunk_samples {
-                    let is_silence = is_silence_chunk(&chunk, barge_in_silence_abs);
-                    if is_silence {
-                        speech_streak_ms = 0;
-                    } else {
-                        speech_streak_ms = speech_streak_ms.saturating_add(feed_ms);
-                    }
-
-                    if speech_streak_ms >= barge_in_min_speech_ms {
-                        speech_streak_ms = 0;
-                        stop_voice_playback_best_effort(&app).await;
-                        if let Some(cid) = conversation_id.borrow().as_deref() {
-                            abort_chat_conversation_best_effort(&app, cid);
-                        }
-                    }
-
-                    if let Some(detector) = smart_turn.as_mut() {
-                        let is_silence = is_silence_chunk(&chunk, turn_silence_abs);
-                        if is_silence {
-                            trailing_silence_ms = trailing_silence_ms.saturating_add(feed_ms);
-                        } else {
-                            trailing_silence_ms = 0;
-                            endpoint_armed = false;
-                            if let Some(handle) = smart_turn_infer.take() {
-                                handle.abort();
-                            }
-                            last_eval_at = None;
-                        }
-                        detector
-                            .push_pcm_i16(&chunk, sample_rate, channels)
-                            .map_err(|e| format!("Smart Turn audio push failed: {e}"))?;
-                    }
-
+                    let frame = AudioFrameRef {
+                        samples: &chunk,
+                        sample_rate,
+                        channels,
+                        ts: now,
+                    };
+                    turn_detector.push_audio(frame, &mut events);
                     asr.write_pcm_i16(&chunk, sample_rate, channels)
                         .await
                         .map_err(|e| format!("ASR write failed: {e}"))?;
@@ -456,28 +458,6 @@ async fn run_voice_asr_loop(
                     }
                     turn_text.push_str(seg_text);
 
-                    if smart_turn.is_none() {
-                        // No smart-turn: treat each VAD segment as a complete user turn.
-                        let user_text = turn_text.trim().to_string();
-                        turn_text.clear();
-                        if user_text.is_empty() {
-                            continue;
-                        }
-
-                        let _ = app.emit(
-                            EVT_VOICE_ASR_RESULT,
-                            VoiceAsrResultPayload {
-                                text: user_text.clone(),
-                                turn_text: user_text,
-                                start: Some(seg.start),
-                                end: Some(seg.end),
-                                is_final: true,
-                            },
-                        );
-                        continue;
-                    }
-
-                    turn_dirty = true;
                     let _ = app.emit(
                         EVT_VOICE_ASR_RESULT,
                         VoiceAsrResultPayload {
@@ -490,112 +470,76 @@ async fn run_voice_asr_loop(
                     );
                 }
 
-                if smart_turn_infer
-                    .as_ref()
-                    .is_some_and(|handle| handle.is_finished())
-                {
-                    let handle = smart_turn_infer.take().expect("smart_turn_infer");
-                    match handle.await {
-                        Ok(Ok(prob)) => {
-                            smart_turn_threshold = smart_turn_threshold.clamp(0.0, 1.0);
-                            endpoint_armed = prob >= smart_turn_threshold;
-                            turn_dirty = false;
-                            log::debug!(
-                                "voice_conversation: smart_turn p={:.3} endpoint={} silence_ms={}",
-                                prob,
-                                endpoint_armed,
-                                trailing_silence_ms
+                turn_detector.tick(now, &mut events);
+
+                if !barge_in_triggered {
+                    if let Some(start_ts) = barge_in_speech_start_ts {
+                        let speech_ms =
+                            now.saturating_duration_since(start_ts).as_millis() as u64;
+                        if speech_ms >= barge_in_threshold_ms {
+                            barge_in_triggered = true;
+                            log::warn!(
+                                "voice_conversation: barge-in detected (speech_ms={} >= {}, confirm_ms={}), aborting playback/conversation",
+                                speech_ms,
+                                barge_in_min_speech_ms,
+                                barge_in_confirm_ms
                             );
-                        }
-                        Ok(Err(e)) => {
-                            log::warn!("voice_conversation: smart_turn predict failed: {e}");
-                            endpoint_armed = false;
-                        }
-                        Err(e) => {
-                            log::warn!("voice_conversation: smart_turn join failed: {e}");
-                            endpoint_armed = false;
+                            stop_voice_playback_best_effort(&app).await;
+                            if let Some(cid) = conversation_id.borrow().as_deref() {
+                                abort_chat_conversation_best_effort(&app, cid);
+                            }
                         }
                     }
                 }
 
-                if let Some(detector) = smart_turn.as_mut() {
-                    if turn_text.trim().is_empty() {
-                        endpoint_armed = false;
-                        turn_dirty = false;
-                        if let Some(handle) = smart_turn_infer.take() {
-                            handle.abort();
-                        }
-                    } else if trailing_silence_ms >= turn_force_end_ms {
-                        let user_text = turn_text.trim().to_string();
-                        turn_text.clear();
-                        detector.reset();
-                        trailing_silence_ms = 0;
-                        endpoint_armed = false;
-                        turn_dirty = false;
-                        last_eval_at = None;
-                        if let Some(handle) = smart_turn_infer.take() {
-                            handle.abort();
+                let mut committed = false;
+                for event in events.drain(..) {
+                    if event.kind == TurnEventKind::TurnCommitted {
+                        committed = true;
+                    }
+                }
+
+                if committed {
+                    while let Some(seg) = asr.try_read() {
+                        let seg_text = seg.text.trim();
+                        if seg_text.is_empty() {
+                            continue;
                         }
 
-                        if !user_text.is_empty() {
-                            let _ = app.emit(
-                                EVT_VOICE_ASR_RESULT,
-                                VoiceAsrResultPayload {
-                                    text: user_text.clone(),
-                                    turn_text: user_text,
-                                    start: None,
-                                    end: None,
-                                    is_final: true,
-                                },
-                            );
+                        if !turn_text.is_empty() {
+                            turn_text.push(' ');
                         }
-                    } else if trailing_silence_ms >= turn_min_silence_ms {
-                        let now = Instant::now();
-                        let should_eval = turn_dirty
-                            || last_eval_at
-                                .map(|t| {
-                                    now.duration_since(t).as_millis() as u64 >= turn_eval_interval_ms
-                                })
-                                .unwrap_or(true);
-                        if should_eval && smart_turn_infer.is_none() {
-                            let audio = detector.snapshot_audio();
-                            let model = detector.model();
-                            smart_turn_infer = Some(tokio::task::spawn_blocking(move || {
-                                model
-                                    .predict_probability(&audio)
-                                    .map_err(|e| e.to_string())
-                            }));
-                            last_eval_at = Some(now);
-                        }
+                        turn_text.push_str(seg_text);
 
-                        if endpoint_armed
-                            && trailing_silence_ms
-                                >= turn_min_silence_ms.saturating_add(turn_commit_ms)
-                        {
-                            let user_text = turn_text.trim().to_string();
-                            turn_text.clear();
-                            detector.reset();
-                            trailing_silence_ms = 0;
-                            endpoint_armed = false;
-                            turn_dirty = false;
-                            last_eval_at = None;
-                            if let Some(handle) = smart_turn_infer.take() {
-                                handle.abort();
-                            }
+                        let _ = app.emit(
+                            EVT_VOICE_ASR_RESULT,
+                            VoiceAsrResultPayload {
+                                text: seg_text.to_string(),
+                                turn_text: turn_text.clone(),
+                                start: Some(seg.start),
+                                end: Some(seg.end),
+                                is_final: false,
+                            },
+                        );
+                    }
 
-                            if !user_text.is_empty() {
-                                let _ = app.emit(
-                                    EVT_VOICE_ASR_RESULT,
-                                    VoiceAsrResultPayload {
-                                        text: user_text.clone(),
-                                        turn_text: user_text,
-                                        start: None,
-                                        end: None,
-                                        is_final: true,
-                                    },
-                                );
-                            }
-                        }
+                    let user_text = turn_text.trim().to_string();
+                    turn_text.clear();
+                    barge_in_speech_start_ts = None;
+                    barge_in_triggered = false;
+                    turn_detector.reset();
+
+                    if !user_text.is_empty() {
+                        let _ = app.emit(
+                            EVT_VOICE_ASR_RESULT,
+                            VoiceAsrResultPayload {
+                                text: user_text.clone(),
+                                turn_text: user_text,
+                                start: None,
+                                end: None,
+                                is_final: true,
+                            },
+                        );
                     }
                 }
             }
