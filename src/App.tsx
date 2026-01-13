@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { MotionConfig } from "framer-motion";
 import type { ChatStatus } from "ai";
 import { useChat } from "@ai-sdk/react";
+import type { SkinMode } from "@/types";
 
 import {
   InputView,
@@ -9,7 +10,7 @@ import {
   ResultView,
   SettingsView,
 } from "./components/views";
-import VrmStage from "@/components/vrm/VrmStage";
+import AvatarApp from "./AvatarApp";
 import {
   EVT_CLICK_THROUGH_STATE,
   EVT_CHAT_DONE,
@@ -24,15 +25,16 @@ import {
   useGeneratingTracker,
   useModelSelection,
   useRouteController,
-  useSkinPreference,
   useSyncWindowModeWithConversation,
   useTauriEvent,
   useToggleExpand,
   useWindowManager,
 } from "./hooks";
+import { useSkinPreference } from "./hooks/useSkinPreference";
 import { voicePrepare } from "./services";
+import { setSkinMode as setBackendSkinMode } from "@/services/windowManager";
 import { cn } from "@/lib/utils";
-import { conversationDetailToUiMessages, reportPromiseError } from "@/utils";
+import { conversationDetailToUiMessages, isTauriContext, reportPromiseError } from "@/utils";
 import { ChatProvider } from "@/contexts/ChatContext";
 
 type ChatDonePayload = {
@@ -43,7 +45,13 @@ type ChatDonePayload = {
 const isChatBusy = (status: ChatStatus) =>
   status === "submitted" || status === "streaming";
 
-function App() {
+function ClassicApp({
+  skinMode,
+  setSkinMode,
+}: {
+  skinMode: SkinMode;
+  setSkinMode: (mode: SkinMode) => void;
+}) {
   const [isClickThrough, setIsClickThrough] = useState(false);
 
   // Use custom hooks for cleaner separation of concerns
@@ -67,7 +75,6 @@ function App() {
   const { selectedModel, setSelectedModel } = useModelSelection(aiConfig, modelOptions);
   const [toolMode, setToolMode] = useState(false);
   const [voiceMode, setVoiceMode] = useState(false);
-  const { skinMode, setSkinMode } = useSkinPreference();
 
   useEffect(() => {
     if (!voiceMode) return;
@@ -124,14 +131,8 @@ function App() {
     });
   }, [activeConversationId, conversations, windowMode]);
 
-  const showVrmStage =
-    activeRoute === "main" &&
-    !isSettingsOpen &&
-    windowMode !== "mini" &&
-    skinMode === "vrm";
   const shellRef = useRef<HTMLDivElement>(null);
-  // VRM skin is user-sized; auto-fit fights the "VRM is the stage" mental model.
-  useAutoWindowFit(shellRef, windowMode, { enabled: !showVrmStage });
+  useAutoWindowFit(shellRef, windowMode);
 
   useSyncWindowModeWithConversation({
     windowMode,
@@ -397,12 +398,11 @@ function App() {
         isClickThrough && "opacity-60 grayscale"
       )}
     >
-      <VrmStage enabled={showVrmStage} />
       <div
         ref={shellRef}
         className={cn(
           "relative z-10 flex flex-col items-stretch gap-2 p-0",
-          showVrmStage ? "absolute left-3 top-3" : "w-fit",
+          "w-fit",
           windowMode === "result" && "h-full min-h-0"
         )}
       >
@@ -431,19 +431,7 @@ function App() {
               )}
             >
               <ChatProvider value={chatUiValue}>
-                {windowMode === "input" ? (
-                  <InputView
-                    className={
-                      showVrmStage ? "w-[min(420px,calc(100vw-24px))]" : undefined
-                    }
-                  />
-                ) : (
-                  <ResultView
-                    className={
-                      showVrmStage ? "w-[min(420px,calc(100vw-24px))]" : undefined
-                    }
-                  />
-                )}
+                {windowMode === "input" ? <InputView /> : <ResultView />}
               </ChatProvider>
             </div>
           )}
@@ -451,6 +439,23 @@ function App() {
       </div>
     </div>
   );
+}
+
+function App() {
+  const { skinMode, setSkinMode } = useSkinPreference();
+
+  useEffect(() => {
+    if (!isTauriContext()) return;
+    void setBackendSkinMode(skinMode).catch(
+      reportPromiseError("App.setSkinMode", { onceKey: "App.setSkinMode" })
+    );
+  }, [skinMode]);
+
+  if (skinMode === "vrm") {
+    return <AvatarApp />;
+  }
+
+  return <ClassicApp skinMode={skinMode} setSkinMode={setSkinMode} />;
 }
 
 export default App;

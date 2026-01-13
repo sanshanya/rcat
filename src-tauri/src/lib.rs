@@ -292,11 +292,19 @@ pub fn run() {
         .manage(services::voice::VoiceState::new())
         .manage(services::voice_conversation::VoiceConversationController::new())
         .manage(WindowStateStore::new())
+        .manage(services::window_manager::WindowManager::new())
         .invoke_handler(tauri::generate_handler![
             set_window_mode,
             resize_input_height,
             resize_window,
             set_window_min_size,
+            services::window_manager::set_skin_mode,
+            services::window_manager::open_context_panel,
+            services::window_manager::hide_context_panel,
+            services::window_manager::scale_avatar_window,
+            services::window_manager::fit_avatar_window_to_aspect,
+            services::window_manager::set_interaction_mode,
+            services::window_manager::set_avatar_interaction_bounds,
             services::ai::commands::chat_stream,
             services::ai::commands::chat_abort,
             services::ai::commands::chat_abort_conversation,
@@ -350,25 +358,41 @@ pub fn run() {
             services::vision::capture_smart
         ])
         .on_window_event(|window, event| {
-            if window.label() != "main" {
-                return;
-            }
-
             let app = window.app_handle();
             let window_state = app.state::<WindowStateStore>();
+            let window_manager = app.state::<services::window_manager::WindowManager>();
 
-            match event {
-                tauri::WindowEvent::Moved(pos) => {
-                    window_state.update_anchor(pos.x, pos.y);
-                }
-                tauri::WindowEvent::Resized(_) | tauri::WindowEvent::ScaleFactorChanged { .. } => {
-                    if let Some(w) = app.get_webview_window("main") {
-                        window_state.update_size_from_window(&w);
+            match window.label() {
+                "main" => match event {
+                    tauri::WindowEvent::Moved(pos) => {
+                        window_state.update_anchor(pos.x, pos.y);
+                        window_manager.handle_avatar_moved_or_resized(&app);
                     }
-                }
-                tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed => {
-                    window_state.flush(&app);
-                }
+                    tauri::WindowEvent::Resized(_)
+                    | tauri::WindowEvent::ScaleFactorChanged { .. } => {
+                        if let Some(w) = app.get_webview_window("main") {
+                            if window_manager.skin() == services::window_manager::SkinMode::Vrm {
+                                window_state.update_vrm_size_from_window(&w);
+                            } else {
+                                window_state.update_size_from_window(&w);
+                            }
+                        }
+                        window_manager.handle_avatar_moved_or_resized(&app);
+                    }
+                    tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed => {
+                        window_state.flush(&app);
+                    }
+                    _ => {}
+                },
+                "context" => match event {
+                    tauri::WindowEvent::Focused(focused) => {
+                        window_manager.handle_context_focus_change(&app, *focused);
+                    }
+                    tauri::WindowEvent::Destroyed => {
+                        window_manager.handle_context_destroyed();
+                    }
+                    _ => {}
+                },
                 _ => {}
             }
         })
@@ -412,6 +436,8 @@ pub fn run() {
             let voice_state = app.state::<services::voice::VoiceState>();
             voice_state.spawn_rms_emitter(app_handle.clone());
             services::cursor::spawn_global_cursor_gaze_emitter(app_handle.clone());
+            let window_manager = app.state::<services::window_manager::WindowManager>();
+            window_manager.spawn_interaction_gate(app_handle.clone());
 
             if let Some(window) = app.get_webview_window("main") {
                 window_state.restore_anchor_to_window(&window);

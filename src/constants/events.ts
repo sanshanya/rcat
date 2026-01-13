@@ -30,3 +30,6 @@ export const EVT_VOICE_SPEECH_END = 'voice-speech-end' as const;
 
 /** Global cursor gaze (backend-provided; works even in click-through mode) */
 export const EVT_GLOBAL_CURSOR_GAZE = 'global-cursor-gaze' as const;
+
+/** Context panel opened (focus input / restore tab) */
+export const EVT_CONTEXT_PANEL_OPENED = 'context-panel-opened' as const;

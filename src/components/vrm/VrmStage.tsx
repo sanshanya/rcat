@@ -8,12 +8,21 @@ export type VrmStageProps = {
   enabled: boolean;
   url?: string;
   idleMotionUrl?: string;
+  showDebugOverlay?: boolean;
+  autoFitCamera?: boolean;
   className?: string;
 };
 
 const DEFAULT_VRM_URL = "/vrm/default.vrm";
 
-function VrmStage({ enabled, url, idleMotionUrl, className }: VrmStageProps) {
+function VrmStage({
+  enabled,
+  url,
+  idleMotionUrl,
+  showDebugOverlay = false,
+  autoFitCamera = false,
+  className,
+}: VrmStageProps) {
   if (!enabled) return null;
   const resolvedUrl = url ?? DEFAULT_VRM_URL;
 
@@ -22,9 +31,12 @@ function VrmStage({ enabled, url, idleMotionUrl, className }: VrmStageProps) {
       <VrmCanvas
         url={resolvedUrl}
         idleMotionUrl={idleMotionUrl}
+        autoFitCamera={autoFitCamera}
         className="pointer-events-auto"
       />
-      <VrmDebugPanel className="pointer-events-auto" />
+      {showDebugOverlay ? (
+        <VrmDebugPanel className="pointer-events-auto" />
+      ) : null}
     </div>
   );
 }

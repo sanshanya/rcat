@@ -30,6 +30,8 @@ struct PersistedWindowState {
     anchor: Option<PersistedPosition>,
     input_width: Option<f64>,
     result_size: Option<PersistedSize>,
+    #[serde(default)]
+    vrm_size: Option<PersistedSize>,
 }
 
 impl Default for PersistedWindowState {
@@ -39,6 +41,7 @@ impl Default for PersistedWindowState {
             anchor: None,
             input_width: None,
             result_size: None,
+            vrm_size: None,
         }
     }
 }
@@ -87,6 +90,10 @@ impl WindowStateStore {
         self.inner.state.lock().ok()?.result_size
     }
 
+    pub(crate) fn get_vrm_size(&self) -> Option<PersistedSize> {
+        self.inner.state.lock().ok()?.vrm_size
+    }
+
     pub(crate) fn update_anchor(&self, x: i32, y: i32) {
         if let Ok(mut state) = self.inner.state.lock() {
             state.anchor = Some(PersistedPosition { x, y });
@@ -124,6 +131,30 @@ impl WindowStateStore {
                 WindowMode::Mini => {}
             }
         }
+        if changed {
+            self.mark_dirty();
+        }
+    }
+
+    pub(crate) fn update_vrm_size_from_window(&self, window: &tauri::WebviewWindow) {
+        let (w, h) = match get_current_logical_size(window) {
+            Some(size) => size,
+            None => return,
+        };
+
+        let next = PersistedSize {
+            w: w.max(1.0).round(),
+            h: h.max(1.0).round(),
+        };
+
+        let mut changed = false;
+        if let Ok(mut state) = self.inner.state.lock() {
+            if state.vrm_size != Some(next) {
+                state.vrm_size = Some(next);
+                changed = true;
+            }
+        }
+
         if changed {
             self.mark_dirty();
         }

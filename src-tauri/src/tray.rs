@@ -11,6 +11,7 @@ use tauri::{
 
 use crate::window_state::WindowStateStore;
 use crate::EVT_CLICK_THROUGH_STATE;
+use crate::services::window_manager::{InteractionMode, SkinMode, WindowManager};
 
 // TODO: Refactor tray state management into a dedicated TrayState struct
 // when tray logic grows more complex (e.g., more menu items, dynamic state).
@@ -49,6 +50,20 @@ pub(crate) fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
             }
 
             if id == "click_through" {
+                let window_manager = app.state::<WindowManager>();
+                if window_manager.skin() == SkinMode::Vrm {
+                    // In VRM mode, treat "click through" as an interaction preset toggle.
+                    // Checked: fully passive (always click-through).
+                    // Unchecked: hold-to-interact (Alt / right click gate).
+                    let next_mode = match window_manager.interaction_mode() {
+                        InteractionMode::Passive => InteractionMode::HoldToInteract,
+                        _ => InteractionMode::Passive,
+                    };
+                    window_manager.set_interaction_mode(next_mode);
+                    let _ = click_through_for_menu.set_checked(next_mode == InteractionMode::Passive);
+                    return;
+                }
+
                 let current = is_through_menu.load(Ordering::SeqCst);
                 let new_state = !current;
                 is_through_menu.store(new_state, Ordering::SeqCst);
@@ -78,13 +93,24 @@ pub(crate) fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
                             window.show()?;
                             window.set_focus()?;
 
+                            let window_manager = app.state::<WindowManager>();
                             let saved_state = is_through_tray.load(Ordering::SeqCst);
+                            let apply_state = if window_manager.skin() == SkinMode::Vrm {
+                                true
+                            } else {
+                                saved_state
+                            };
+                            let checked = if window_manager.skin() == SkinMode::Vrm {
+                                window_manager.interaction_mode() == InteractionMode::Passive
+                            } else {
+                                apply_state
+                            };
 
-                            let _ = click_through_for_tray.set_checked(saved_state);
-                            let _ = window.set_ignore_cursor_events(saved_state);
-                            let _ = window.set_focusable(!saved_state);
+                            let _ = click_through_for_tray.set_checked(checked);
+                            let _ = window.set_ignore_cursor_events(apply_state);
+                            let _ = window.set_focusable(!apply_state);
 
-                            let _ = window.emit(EVT_CLICK_THROUGH_STATE, saved_state);
+                            let _ = window.emit(EVT_CLICK_THROUGH_STATE, apply_state);
                         }
                         Ok(())
                     });

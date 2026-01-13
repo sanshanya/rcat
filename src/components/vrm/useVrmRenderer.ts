@@ -59,6 +59,7 @@ type VrmRendererOptions = {
   onContextLost?: () => void;
   onContextRestored?: () => void;
   fpsMode?: RenderFpsMode;
+  autoFitCamera?: boolean;
 };
 
 const SPRING_BONE_EXTENSION = "VRMC_springBone";
@@ -549,7 +550,7 @@ export const useVrmRenderer = (
 
     const updateToolMode = (nextMode: typeof toolMode) => {
       toolMode = nextMode;
-      controls.enabled = toolMode === "camera";
+      controls.enabled = options?.autoFitCamera ? false : toolMode === "camera";
       if (toolMode !== "avatar") {
         avatarDragging = false;
         avatarDraggingPointerId = null;
@@ -642,7 +643,7 @@ export const useVrmRenderer = (
       renderer.setSize(width, height, false);
       camera.aspect = width / height;
       camera.updateProjectionMatrix();
-      if (currentVrm && !userAdjustedView) {
+      if (currentVrm && (options?.autoFitCamera || !userAdjustedView)) {
         fitViewToVrm(currentVrm);
       } else {
         controls.update();
@@ -678,9 +679,9 @@ export const useVrmRenderer = (
       avatarDraggingPointerId = null;
     };
 
-    const loadVrm = async (url: string, options?: { signal?: AbortSignal }) => {
+    const loadVrm = async (url: string, loadOptions?: { signal?: AbortSignal }) => {
       clearVrm();
-      const response = await fetch(url, { signal: options?.signal });
+      const response = await fetch(url, { signal: loadOptions?.signal });
       if (!response.ok) {
         throw new Error(`Failed to load VRM (${response.status})`);
       }
@@ -697,7 +698,7 @@ export const useVrmRenderer = (
           )} extensionsRequired=${JSON.stringify(extensionsRequired)})`
         );
       }
-      if (options?.signal?.aborted) {
+      if (loadOptions?.signal?.aborted) {
         disposeVrm(vrm);
         throw new DOMException("Aborted", "AbortError");
       }
@@ -730,10 +731,15 @@ export const useVrmRenderer = (
       }
 
       const stored = await readPersistedViewState(url);
-      userAdjustedView = Boolean(stored);
-      resize();
-      if (stored) {
-        applyStoredViewState(stored);
+      if (options?.autoFitCamera) {
+        userAdjustedView = false;
+        resize();
+      } else {
+        userAdjustedView = Boolean(stored);
+        resize();
+        if (stored) {
+          applyStoredViewState(stored);
+        }
       }
       return vrm;
     };

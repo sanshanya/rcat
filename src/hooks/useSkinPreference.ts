@@ -22,6 +22,16 @@ export const useSkinPreference = () => {
   const [skinMode, setSkinMode] = useState<SkinMode>(readStoredSkinMode);
 
   useEffect(() => {
+    const onStorage = (event: StorageEvent) => {
+      if (event.key !== STORAGE_KEY) return;
+      if (!isSkinMode(event.newValue)) return;
+      setSkinMode(event.newValue);
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
+
+  useEffect(() => {
     try {
       window.localStorage.setItem(STORAGE_KEY, skinMode);
     } catch {

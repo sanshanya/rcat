@@ -9,3 +9,4 @@ export * from './window';
 export * from './history';
 export * from './voice';
 export * from './vrmSettings';
+export * from './windowManager';
