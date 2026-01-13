@@ -1,7 +1,7 @@
 use log::{debug, error, info, warn};
 use rcat_voice::audio::RmsPayload;
 use rcat_voice::generator::{TtsEngine, build_from_env_with_rms_sender};
-use rcat_voice::streaming::StreamCancelHandle;
+use rcat_voice::streaming::StreamHandle;
 use rcat_voice::turn::TurnManager;
 use serde::Serialize;
 #[cfg(target_os = "windows")]
@@ -35,7 +35,7 @@ pub struct VoiceState {
     engine: Mutex<VoiceEngineState>,
     build_lock: Mutex<()>,
     speak_lock: AsyncMutex<()>,
-    stream: AsyncMutex<Option<StreamCancelHandle>>,
+    stream: AsyncMutex<Option<StreamHandle>>,
     rms_tx: mpsc::UnboundedSender<RmsPayload>,
     rms_rx: Arc<AsyncMutex<Option<mpsc::UnboundedReceiver<RmsPayload>>>>,
     active_turn_id: Arc<AtomicU64>,
@@ -204,9 +204,18 @@ impl VoiceState {
             }
         };
 
-        let ctx = turn_manager.advance_turn_no_cancel();
-        let turn_id = ctx.turn_id();
-        self.active_turn_id.store(turn_id, Ordering::Release);
+        // Keep TurnManager context advancing (epoch snapshot etc).
+        // NOTE: Do NOT use TurnManager's internal turn_id as the external turn_id.
+        // The TTS engine may be rebuilt (non-persistent mode), which would recreate TurnManager
+        // and reset its internal sequence back to 1, causing metrics keyed by turn_id (e.g. TTFA)
+        // to only log once.
+        let _ = turn_manager.advance_turn_no_cancel();
+
+        // Use a process-lifetime monotonic sequence for turn_id (never resets while app is running).
+        let turn_id = self
+            .active_turn_id
+            .fetch_add(1, Ordering::AcqRel)
+            .wrapping_add(1);
         Ok(turn_id)
     }
 
@@ -214,7 +223,7 @@ impl VoiceState {
         self.active_turn_id.load(Ordering::Acquire)
     }
 
-    pub async fn set_stream_handle(&self, handle: Option<StreamCancelHandle>) {
+    pub async fn set_stream_handle(&self, handle: Option<StreamHandle>) {
         let mut guard = self.stream.lock().await;
         *guard = handle;
     }
@@ -510,14 +519,9 @@ pub async fn voice_play_text(
         let session = rcat_voice::streaming::StreamSessionBuilder::from_env(tts)
             .turn_id(turn_id)
             .build();
-        voice.set_stream_handle(Some(session.cancel_handle())).await;
-
         let control = session.control();
-        let tx = control.sender();
-        let send_failed = tx.send(text.to_string()).await.is_err();
-
-        drop(tx);
-        drop(control);
+        voice.set_stream_handle(Some(control.clone())).await;
+        let send_failed = control.push_delta(text.to_string()).await.is_err();
 
         let result = session
             .finish()

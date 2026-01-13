@@ -65,8 +65,7 @@ pub(super) async fn run_chat_generic(
     let request_id = request_id.to_string();
 
     let mut voice_session: Option<rcat_voice::streaming::StreamSession> = None;
-    let mut voice_control: Option<rcat_voice::streaming::StreamControl> = None;
-    let mut voice_delta_tx: Option<tokio::sync::mpsc::Sender<String>> = None;
+    let mut voice_handle: Option<rcat_voice::streaming::StreamHandle> = None;
     if voice_enabled {
         let voice_state = app.state::<crate::services::voice::VoiceState>();
         voice_state.cancel_active_stream().await;
@@ -84,13 +83,10 @@ pub(super) async fn run_chat_generic(
                 let session = rcat_voice::streaming::StreamSessionBuilder::from_env(engine)
                     .turn_id(turn_id)
                     .build();
-                voice_state
-                    .set_stream_handle(Some(session.cancel_handle()))
-                    .await;
                 let control = session.control();
                 control.mark_llm_start();
-                voice_delta_tx = Some(control.sender());
-                voice_control = Some(control);
+                voice_state.set_stream_handle(Some(control.clone())).await;
+                voice_handle = Some(control);
                 voice_session = Some(session);
             }
             Err(err) => {
@@ -264,8 +260,8 @@ pub(super) async fn run_chat_generic(
                             emitted_any = true;
                             accumulated_content.push_str(&content);
                             all_text.push_str(&content);
-                            if let Some(tx) = voice_delta_tx.as_mut() {
-                                let _ = tx.send(content.clone()).await;
+                            if let Some(handle) = voice_handle.as_ref() {
+                                let _ = handle.push_delta(content.clone()).await;
                             }
                             let _ = app.emit(
                                 EVT_CHAT_STREAM,
@@ -401,8 +397,7 @@ pub(super) async fn run_chat_generic(
             if voice_enabled {
                 clear_voice_stream_handle(app).await;
             }
-            drop(voice_delta_tx);
-            drop(voice_control);
+            drop(voice_handle);
             drop(voice_session);
             return Ok((all_text, all_reasoning));
         }
