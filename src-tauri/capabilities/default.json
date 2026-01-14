@@ -1,9 +1,10 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "main-capability",
-  "description": "Capability for the main window",
+  "description": "Capability for main + avatar windows",
   "windows": [
-    "main"
+    "main",
+    "avatar"
   ],
   "permissions": [
     "core:window:default",

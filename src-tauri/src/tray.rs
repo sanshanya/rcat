@@ -11,10 +11,13 @@ use tauri::{
 
 use crate::window_state::WindowStateStore;
 use crate::EVT_CLICK_THROUGH_STATE;
+use crate::windows::hittest_mask::HitTestMaskStore;
+use crate::windows::panel_window::{open_capsule, OpenCapsuleParams};
 
 // TODO: Refactor tray state management into a dedicated TrayState struct
 // when tray logic grows more complex (e.g., more menu items, dynamic state).
 pub(crate) fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
+    let open_capsule_i = MenuItem::with_id(app, "open_capsule", "打开胶囊", true, None::<&str>)?;
     let click_through = CheckMenuItem::with_id(
         app,
         "click_through",
@@ -25,7 +28,7 @@ pub(crate) fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
     )?;
     let quit_i = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
     let sep = PredefinedMenuItem::separator(app)?;
-    let menu = Menu::with_items(app, &[&click_through, &sep, &quit_i])?;
+    let menu = Menu::with_items(app, &[&open_capsule_i, &click_through, &sep, &quit_i])?;
     let icon = app.default_window_icon().cloned();
 
     let click_through_for_menu = click_through.clone();
@@ -48,6 +51,39 @@ pub(crate) fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
                 return;
             }
 
+            if id == "open_capsule" {
+                #[cfg(target_os = "windows")]
+                {
+                    use windows::Win32::Foundation::POINT;
+                    use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
+
+                    let mut pt = POINT::default();
+                    if unsafe { GetCursorPos(&mut pt) }.is_ok() {
+                        let _ = open_capsule(
+                            app,
+                            OpenCapsuleParams {
+                                tab: "chat".to_string(),
+                                anchor_x: pt.x,
+                                anchor_y: pt.y,
+                            },
+                        );
+                    }
+                }
+
+                #[cfg(not(target_os = "windows"))]
+                {
+                    let _ = open_capsule(
+                        app,
+                        OpenCapsuleParams {
+                            tab: "chat".to_string(),
+                            anchor_x: 0,
+                            anchor_y: 0,
+                        },
+                    );
+                }
+                return;
+            }
+
             if id == "click_through" {
                 let current = is_through_menu.load(Ordering::SeqCst);
                 let new_state = !current;
@@ -55,10 +91,10 @@ pub(crate) fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
 
                 let _ = click_through_for_menu.set_checked(new_state);
 
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.set_ignore_cursor_events(new_state);
-                    let _ = window.set_focusable(!new_state);
+                let mask_store = app.state::<HitTestMaskStore>();
+                mask_store.set_force_transparent(new_state);
 
+                if let Some(window) = app.get_webview_window("main") {
                     let _ = window.emit(EVT_CLICK_THROUGH_STATE, new_state);
                 }
             }
@@ -81,8 +117,6 @@ pub(crate) fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
                             let saved_state = is_through_tray.load(Ordering::SeqCst);
 
                             let _ = click_through_for_tray.set_checked(saved_state);
-                            let _ = window.set_ignore_cursor_events(saved_state);
-                            let _ = window.set_focusable(!saved_state);
 
                             let _ = window.emit(EVT_CLICK_THROUGH_STATE, saved_state);
                         }

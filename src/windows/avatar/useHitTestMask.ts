@@ -1,0 +1,168 @@
+import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { invoke } from "@tauri-apps/api/core";
+
+import type { VrmRendererFrameContext } from "@/components/vrm/useVrmRenderer";
+import { useVrmState } from "@/components/vrm/vrmStore";
+import { MaskGenerator } from "@/windows/avatar/MaskGenerator";
+
+const SLOW_INTERVAL_MS = 100;
+const FAST_INTERVAL_MS = 33;
+const CAMERA_ACTIVE_WINDOW_MS = 300;
+const RESIZE_ACTIVE_WINDOW_MS = 500;
+
+export type HitTestMaskDebugInfo = {
+  seq: number;
+  mode: "slow" | "fast";
+  intervalMs: number;
+  lastUpdateAtMs: number;
+  maskW: number;
+  maskH: number;
+  rect: { minX: number; minY: number; maxX: number; maxY: number };
+};
+
+export const useHitTestMask = (frameContextRef: RefObject<VrmRendererFrameContext | null>) => {
+  const { vrm, motionController } = useVrmState();
+  const seqRef = useRef(0);
+  const inFlightRef = useRef(false);
+  const pointerDownRef = useRef(false);
+  const cameraActiveUntilRef = useRef(0);
+  const lastViewportRef = useRef<{ w: number; h: number } | null>(null);
+  const controlsRef = useRef<VrmRendererFrameContext["controls"] | null>(null);
+  const controlsCleanupRef = useRef<(() => void) | null>(null);
+
+  const [debugInfo, setDebugInfo] = useState<HitTestMaskDebugInfo | null>(null);
+
+  const generator = useMemo(() => new MaskGenerator(), []);
+
+  useEffect(() => {
+    return () => generator.dispose();
+  }, [generator]);
+
+  useEffect(() => {
+    const onPointerDown = () => {
+      pointerDownRef.current = true;
+    };
+    const onPointerUp = () => {
+      pointerDownRef.current = false;
+    };
+    window.addEventListener("pointerdown", onPointerDown);
+    window.addEventListener("pointerup", onPointerUp);
+    window.addEventListener("pointercancel", onPointerUp);
+    return () => {
+      window.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener("pointerup", onPointerUp);
+      window.removeEventListener("pointercancel", onPointerUp);
+    };
+  }, []);
+
+  useEffect(() => {
+    const tick = () => {
+      if (document.visibilityState !== "visible") return;
+      if (inFlightRef.current) return;
+
+      const ctx = frameContextRef.current;
+      if (!ctx) return;
+      if (controlsRef.current !== ctx.controls) {
+        controlsCleanupRef.current?.();
+        controlsRef.current = ctx.controls;
+        const onChange = () => {
+          cameraActiveUntilRef.current = performance.now() + CAMERA_ACTIVE_WINDOW_MS;
+        };
+        ctx.controls.addEventListener("change", onChange);
+        controlsCleanupRef.current = () => ctx.controls.removeEventListener("change", onChange);
+      }
+      if (!vrm) return;
+
+      const snapshot = generator.generate(ctx, vrm);
+      if (!snapshot) return;
+
+      const now = performance.now();
+      const lastViewport = lastViewportRef.current;
+      if (!lastViewport || lastViewport.w !== snapshot.viewportW || lastViewport.h !== snapshot.viewportH) {
+        lastViewportRef.current = { w: snapshot.viewportW, h: snapshot.viewportH };
+        cameraActiveUntilRef.current = Math.max(
+          cameraActiveUntilRef.current,
+          now + RESIZE_ACTIVE_WINDOW_MS
+        );
+      }
+
+      inFlightRef.current = true;
+      seqRef.current += 1;
+      const seq = seqRef.current;
+
+      const dpr = window.devicePixelRatio || 1;
+      const clientW = Math.round(ctx.canvas.clientWidth * dpr);
+      const clientH = Math.round(ctx.canvas.clientHeight * dpr);
+
+      void invoke("avatar_update_hittest_mask", {
+        args: {
+          seq,
+          maskW: snapshot.maskW,
+          maskH: snapshot.maskH,
+          rect: snapshot.rect,
+          bitsetBase64: snapshot.bitsetBase64,
+          viewportW: snapshot.viewportW,
+          viewportH: snapshot.viewportH,
+          clientW,
+          clientH,
+          dpr,
+        },
+      })
+        .catch(() => {})
+        .finally(() => {
+          inFlightRef.current = false;
+        });
+
+      const motionActive = Boolean(motionController?.isPlaying());
+      const fast =
+        pointerDownRef.current ||
+        motionActive ||
+        now < cameraActiveUntilRef.current;
+      const intervalMs = fast ? FAST_INTERVAL_MS : SLOW_INTERVAL_MS;
+      setDebugInfo({
+        seq,
+        mode: fast ? "fast" : "slow",
+        intervalMs,
+        lastUpdateAtMs: now,
+        maskW: snapshot.maskW,
+        maskH: snapshot.maskH,
+        rect: snapshot.rect,
+      });
+    };
+
+    let cancelled = false;
+    let timer: number | null = null;
+
+    const loop = () => {
+      if (cancelled) return;
+      const now = performance.now();
+      const motionActive = Boolean(motionController?.isPlaying());
+      const fast =
+        pointerDownRef.current ||
+        motionActive ||
+        now < cameraActiveUntilRef.current;
+      const intervalMs = fast ? FAST_INTERVAL_MS : SLOW_INTERVAL_MS;
+
+      tick();
+      timer = window.setTimeout(loop, intervalMs);
+    };
+
+    loop();
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") tick();
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+
+    return () => {
+      cancelled = true;
+      if (timer !== null) window.clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      controlsCleanupRef.current?.();
+      controlsCleanupRef.current = null;
+      controlsRef.current = null;
+    };
+  }, [frameContextRef, generator, motionController, vrm]);
+
+  return debugInfo;
+};

@@ -4,9 +4,12 @@ use tauri::Manager;
 mod plugins;
 pub mod services;
 mod tray;
+mod windows;
+mod commands;
 mod window_state;
 
 use window_state::WindowStateStore;
+use windows::hittest_mask::HitTestMaskStore;
 
 #[cfg_attr(feature = "typegen", derive(specta::Type))]
 #[cfg_attr(feature = "typegen", specta(rename_all = "lowercase"))]
@@ -201,6 +204,9 @@ fn set_window_min_size(app: tauri::AppHandle, min_width: f64, min_height: f64) {
 }
 
 pub(crate) const EVT_CLICK_THROUGH_STATE: &str = "click-through-state";
+pub(crate) const EVT_VRM_COMMAND: &str = "vrm-command";
+pub(crate) const EVT_VRM_STATE_REQUEST: &str = "vrm-state-request";
+pub(crate) const EVT_VRM_STATE_SNAPSHOT: &str = "vrm-state-snapshot";
 
 fn parse_level_filter(raw: &str) -> Option<log::LevelFilter> {
     match raw.trim().to_ascii_lowercase().as_str() {
@@ -292,11 +298,16 @@ pub fn run() {
         .manage(services::voice::VoiceState::new())
         .manage(services::voice_conversation::VoiceConversationController::new())
         .manage(WindowStateStore::new())
+        .manage(HitTestMaskStore::default())
         .invoke_handler(tauri::generate_handler![
             set_window_mode,
             resize_input_height,
             resize_window,
             set_window_min_size,
+            commands::avatar_commands::avatar_update_hittest_mask,
+            commands::panel_commands::open_capsule,
+            commands::vrm_commands::vrm_command,
+            commands::vrm_commands::vrm_state_snapshot,
             services::ai::commands::chat_stream,
             services::ai::commands::chat_abort,
             services::ai::commands::chat_abort_conversation,
@@ -350,26 +361,33 @@ pub fn run() {
             services::vision::capture_smart
         ])
         .on_window_event(|window, event| {
-            if window.label() != "main" {
-                return;
+            let label = window.label();
+            let app = window.app_handle();
+
+            if label == "main" {
+                let window_state = app.state::<WindowStateStore>();
+                match event {
+                    tauri::WindowEvent::Moved(pos) => {
+                        window_state.update_anchor(pos.x, pos.y);
+                    }
+                    tauri::WindowEvent::Resized(_)
+                    | tauri::WindowEvent::ScaleFactorChanged { .. } => {
+                        if let Some(w) = app.get_webview_window("main") {
+                            window_state.update_size_from_window(&w);
+                        }
+                    }
+                    tauri::WindowEvent::CloseRequested { .. }
+                    | tauri::WindowEvent::Destroyed => {
+                        window_state.flush(&app);
+                    }
+                    _ => {}
+                }
             }
 
-            let app = window.app_handle();
-            let window_state = app.state::<WindowStateStore>();
-
-            match event {
-                tauri::WindowEvent::Moved(pos) => {
-                    window_state.update_anchor(pos.x, pos.y);
+            if label == "avatar" {
+                if matches!(event, tauri::WindowEvent::Destroyed) {
+                    windows::avatar_window::remove_avatar_subclass(window);
                 }
-                tauri::WindowEvent::Resized(_) | tauri::WindowEvent::ScaleFactorChanged { .. } => {
-                    if let Some(w) = app.get_webview_window("main") {
-                        window_state.update_size_from_window(&w);
-                    }
-                }
-                tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed => {
-                    window_state.flush(&app);
-                }
-                _ => {}
             }
         })
         .setup(|app| {
@@ -412,6 +430,13 @@ pub fn run() {
             let voice_state = app.state::<services::voice::VoiceState>();
             voice_state.spawn_rms_emitter(app_handle.clone());
             services::cursor::spawn_global_cursor_gaze_emitter(app_handle.clone());
+
+            #[cfg(target_os = "windows")]
+            {
+                let mask_store = app.state::<HitTestMaskStore>();
+                let avatar_window = windows::avatar_window::ensure_avatar_window(&app_handle)?;
+                windows::avatar_window::install_avatar_subclass(&avatar_window, &*mask_store)?;
+            }
 
             if let Some(window) = app.get_webview_window("main") {
                 window_state.restore_anchor_to_window(&window);

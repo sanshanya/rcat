@@ -1,9 +1,9 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import "./styles/index.css";
-import App from "./App";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { reportError } from "./utils";
+import WindowRouter from "./windows/WindowRouter";
 
 if (import.meta.env.DEV) {
   void import("./dev/visionTest")
@@ -14,7 +14,7 @@ if (import.meta.env.DEV) {
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
     <ErrorBoundary>
-      <App />
+      <WindowRouter />
     </ErrorBoundary>
   </React.StrictMode>,
 );

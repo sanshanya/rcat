@@ -28,6 +28,7 @@ async-openai = { version = "0.32.2", features = ["byot", "chat-completion"] }
 futures-util = "0.3"
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls-native-roots"] }
 smallvec = "1.15.1"
+arc-swap = "1.7.1"
 # libSQL (Turso) async client: supports remote (HTTP/WS) and local file fallback.
 libsql = { version = "0.9.29", default-features = false, features = ["core", "remote", "tls"] }
 uuid = { version = "1", features = ["v4"] }
@@ -42,22 +43,28 @@ specta-typescript = { version = "0.0.9", optional = true }
 # Vision module dependencies
 xcap = { version = "0.8.0", optional = true }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"], optional = true }
-base64 = { version = "0.22", optional = true }
+base64 = { version = "0.22" }
 
 # Windows OCR (Windows-only)
 [target.'cfg(target_os = "windows")'.dependencies]
-windows = { version = "0.62.2", features = [
+windows = { version = "0.61.3", features = [
     "Win32_Foundation",
     "Win32_System_LibraryLoader",
+    "Win32_Graphics_Gdi",
+    "Win32_UI_Controls",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
     "Graphics_Imaging",
     "Media_Ocr",
     "Storage",
     "Storage_Streams",
 ] }
+# `windows` depends on `windows-future` with `default-features = false`, so we enable `std` here to allow `.await` on WinRT async operations.
+windows-future = { version = "0.2.1", features = ["std"] }
 
 [features]
 # Enables dev-only Rust -> TS type export binary.
 typegen = ["dep:specta", "dep:specta-typescript"]
-vision = ["dep:xcap", "dep:image", "dep:base64"]
+vision = ["dep:xcap", "dep:image"]
 default = ["vision"]

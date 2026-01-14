@@ -49,6 +49,7 @@ export type VrmRendererHandle = {
 export type VrmRendererFrameContext = {
   canvas: HTMLCanvasElement;
   renderer: WebGLRenderer;
+  scene: Scene;
   camera: PerspectiveCamera;
   controls: OrbitControls;
 };
@@ -406,6 +407,7 @@ export const useVrmRenderer = (
     const frameContext: VrmRendererFrameContext = {
       canvas,
       renderer,
+      scene,
       camera,
       controls,
     };

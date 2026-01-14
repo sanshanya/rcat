@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { cn } from "@/lib/utils";
-import { useVrmRenderer } from "@/components/vrm/useVrmRenderer";
+import { useVrmRenderer, type VrmRendererFrameContext } from "@/components/vrm/useVrmRenderer";
 import { setVrmState } from "@/components/vrm/vrmStore";
 import { useVrmBehavior } from "@/components/vrm/useVrmBehavior";
 import { useRenderFpsState } from "@/components/vrm/renderFpsStore";
@@ -11,11 +11,17 @@ export type VrmCanvasProps = {
   url: string;
   className?: string;
   idleMotionUrl?: string;
+  onFrameContext?: (ctx: VrmRendererFrameContext) => void;
 };
 
 const LOAD_TIMEOUT_MS = 5000;
 
-export default function VrmCanvas({ url, className, idleMotionUrl }: VrmCanvasProps) {
+export default function VrmCanvas({
+  url,
+  className,
+  idleMotionUrl,
+  onFrameContext,
+}: VrmCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const { onFrame, afterVrmUpdate, setVrm, getMotionController } = useVrmBehavior({
     idleMotionUrl,
@@ -30,6 +36,7 @@ export default function VrmCanvas({ url, className, idleMotionUrl }: VrmCanvasPr
     fpsMode,
     onFrame: (vrm, delta, ctx) => {
       void vrm;
+      onFrameContext?.(ctx);
       onFrame(delta, ctx.camera);
     },
     onAfterFrame: (_vrm, delta) => {

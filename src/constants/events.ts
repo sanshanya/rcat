@@ -30,3 +30,15 @@ export const EVT_VOICE_SPEECH_END = 'voice-speech-end' as const;
 
 /** Global cursor gaze (backend-provided; works even in click-through mode) */
 export const EVT_GLOBAL_CURSOR_GAZE = 'global-cursor-gaze' as const;
+
+/** Context panel (capsule) opened event */
+export const EVT_CAPSULE_OPENED = 'capsule-opened' as const;
+
+/** Panel -> Rust -> Avatar command bus */
+export const EVT_VRM_COMMAND = 'vrm-command' as const;
+
+/** Rust -> Avatar: request a state snapshot */
+export const EVT_VRM_STATE_REQUEST = 'vrm-state-request' as const;
+
+/** Rust -> Panel: deliver a state snapshot */
+export const EVT_VRM_STATE_SNAPSHOT = 'vrm-state-snapshot' as const;

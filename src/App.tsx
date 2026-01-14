@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { MotionConfig } from "framer-motion";
 import type { ChatStatus } from "ai";
 import { useChat } from "@ai-sdk/react";
+import { invoke } from "@tauri-apps/api/core";
 
 import {
   InputView,
@@ -9,10 +10,12 @@ import {
   ResultView,
   SettingsView,
 } from "./components/views";
-import VrmStage from "@/components/vrm/VrmStage";
+import { Button } from "@/components/ui/button";
 import {
   EVT_CLICK_THROUGH_STATE,
+  EVT_CAPSULE_OPENED,
   EVT_CHAT_DONE,
+  EVT_VRM_STATE_SNAPSHOT,
   getRegisteredModelOptions,
 } from "./constants";
 import {
@@ -34,6 +37,9 @@ import { voicePrepare } from "./services";
 import { cn } from "@/lib/utils";
 import { conversationDetailToUiMessages, reportPromiseError } from "@/utils";
 import { ChatProvider } from "@/contexts/ChatContext";
+import type { PanelTabId, VrmCommand, VrmStateSnapshot } from "@/windows/vrmBridgeTypes";
+import VrmTab from "@/windows/panel/tabs/VrmTab";
+import DebugTab from "@/windows/panel/tabs/DebugTab";
 
 type ChatDonePayload = {
   requestId: string;
@@ -45,6 +51,8 @@ const isChatBusy = (status: ChatStatus) =>
 
 function App() {
   const [isClickThrough, setIsClickThrough] = useState(false);
+  const [panelTab, setPanelTab] = useState<PanelTabId>("chat");
+  const [vrmSnapshot, setVrmSnapshot] = useState<VrmStateSnapshot | null>(null);
 
   // Use custom hooks for cleaner separation of concerns
   const {
@@ -124,14 +132,8 @@ function App() {
     });
   }, [activeConversationId, conversations, windowMode]);
 
-  const showVrmStage =
-    activeRoute === "main" &&
-    !isSettingsOpen &&
-    windowMode !== "mini" &&
-    skinMode === "vrm";
   const shellRef = useRef<HTMLDivElement>(null);
-  // VRM skin is user-sized; auto-fit fights the "VRM is the stage" mental model.
-  useAutoWindowFit(shellRef, windowMode, { enabled: !showVrmStage });
+  useAutoWindowFit(shellRef, windowMode, { enabled: true });
 
   useSyncWindowModeWithConversation({
     windowMode,
@@ -222,6 +224,39 @@ function App() {
   );
 
   useTauriEvent<boolean>(EVT_CLICK_THROUGH_STATE, handleClickThroughChange);
+
+  const handleCapsuleOpened = useCallback(
+    (event: { payload: { tab?: string } }) => {
+      const tab = event.payload?.tab;
+      if (tab === "chat" || tab === "vrm" || tab === "debug") {
+        setPanelTab(tab);
+      }
+      if (windowMode === "mini") {
+        void changeMode("input").catch(
+          reportPromiseError("App.changeMode:capsuleOpened", {
+            onceKey: "App.changeMode:capsuleOpened",
+          })
+        );
+      }
+    },
+    [changeMode, windowMode]
+  );
+
+  useTauriEvent(EVT_CAPSULE_OPENED, handleCapsuleOpened);
+
+  const handleVrmStateSnapshot = useCallback((event: { payload: VrmStateSnapshot }) => {
+    setVrmSnapshot(event.payload ?? null);
+  }, []);
+
+  useTauriEvent<VrmStateSnapshot>(EVT_VRM_STATE_SNAPSHOT, handleVrmStateSnapshot);
+
+  const sendVrmCommand = useCallback((cmd: VrmCommand) => {
+    void invoke("vrm_command", { payload: cmd }).catch(
+      reportPromiseError("App.vrm_command", {
+        onceKey: "App.vrm_command",
+      })
+    );
+  }, []);
 
   const handleChatDone = useCallback(
     (event: { payload: ChatDonePayload }) => {
@@ -397,12 +432,11 @@ function App() {
         isClickThrough && "opacity-60 grayscale"
       )}
     >
-      <VrmStage enabled={showVrmStage} />
       <div
         ref={shellRef}
         className={cn(
           "relative z-10 flex flex-col items-stretch gap-2 p-0",
-          showVrmStage ? "absolute left-3 top-3" : "w-fit",
+          "w-fit",
           windowMode === "result" && "h-full min-h-0"
         )}
       >
@@ -430,21 +464,45 @@ function App() {
                 windowMode === "result" && "flex-1 min-h-0"
               )}
             >
-              <ChatProvider value={chatUiValue}>
-                {windowMode === "input" ? (
-                  <InputView
-                    className={
-                      showVrmStage ? "w-[min(420px,calc(100vw-24px))]" : undefined
-                    }
-                  />
+              <div className="flex min-w-0 flex-col items-stretch gap-2">
+                <div className="flex items-center gap-1 rounded-md bg-background/60 p-1 backdrop-blur">
+                  <Button
+                    size="sm"
+                    variant={panelTab === "chat" ? "default" : "secondary"}
+                    onClick={() => setPanelTab("chat")}
+                  >
+                    Chat
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant={panelTab === "vrm" ? "default" : "secondary"}
+                    onClick={() => setPanelTab("vrm")}
+                  >
+                    VRM
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant={panelTab === "debug" ? "default" : "secondary"}
+                    onClick={() => setPanelTab("debug")}
+                  >
+                    Debug
+                  </Button>
+                </div>
+
+                {panelTab === "chat" ? (
+                  <ChatProvider value={chatUiValue}>
+                    {windowMode === "input" ? (
+                      <InputView className={undefined} />
+                    ) : (
+                      <ResultView className={undefined} />
+                    )}
+                  </ChatProvider>
+                ) : panelTab === "vrm" ? (
+                  <VrmTab snapshot={vrmSnapshot} sendCommand={sendVrmCommand} />
                 ) : (
-                  <ResultView
-                    className={
-                      showVrmStage ? "w-[min(420px,calc(100vw-24px))]" : undefined
-                    }
-                  />
+                  <DebugTab snapshot={vrmSnapshot} sendCommand={sendVrmCommand} />
                 )}
-              </ChatProvider>
+              </div>
             </div>
           )}
         </MotionConfig>
