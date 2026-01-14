@@ -42,7 +42,7 @@ export function ResultView({ className }: ResultViewProps) {
   return (
     <div
       className={cn(
-        "flex min-h-0 w-[var(--chat-column-width)] flex-none flex-col gap-2",
+        "flex min-h-0 w-[var(--chat-column-width)] flex-1 flex-col gap-2",
         className
       )}
     >

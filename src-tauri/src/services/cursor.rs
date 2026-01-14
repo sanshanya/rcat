@@ -59,7 +59,12 @@ pub fn spawn_global_cursor_gaze_emitter(app: AppHandle) {
             }
             last_pos = Some((cursor_x, cursor_y));
 
-            let Some(window) = app.get_webview_window("main") else {
+            // Prefer AvatarWindow as the reference frame (desk-pet behavior).
+            // Fallback to main for legacy/non-avatar runs.
+            let Some(window) = app
+                .get_webview_window("avatar")
+                .or_else(|| app.get_webview_window("main"))
+            else {
                 continue;
             };
 

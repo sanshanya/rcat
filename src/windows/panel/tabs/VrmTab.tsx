@@ -1,6 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 
 import { Button } from "@/components/ui/button";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import { useMotionCatalog } from "@/components/vrm/motion/motionCatalog";
 import { EMOTION_OPTIONS, type EmotionId } from "@/components/vrm/emotionTypes";
@@ -65,22 +72,25 @@ export default function VrmTab({ snapshot, sendCommand }: VrmTabProps) {
       <div className="flex flex-col gap-2">
         <div className="flex items-center gap-2">
           <div className="w-16 text-xs text-foreground/60">Motion</div>
-          <select
-            className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
+          <Select
             value={motionId}
-            onChange={(e) => {
-              const next = e.target.value;
+            onValueChange={(next) => {
               setMotionId(next);
               const entry = motions.find((m) => m.id === next);
               if (entry) setLoop(entry.loop ?? true);
             }}
           >
-            {motions.map((motion) => (
-              <option key={motion.id} value={motion.id}>
-                {motion.name}
-              </option>
-            ))}
-          </select>
+            <SelectTrigger className="h-9 w-full px-2 text-sm">
+              <SelectValue placeholder="Select motion" />
+            </SelectTrigger>
+            <SelectContent>
+              {motions.map((motion) => (
+                <SelectItem key={motion.id} value={motion.id}>
+                  {motion.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
 
         <label className="flex items-center gap-2 text-xs text-foreground/70">
@@ -121,23 +131,27 @@ export default function VrmTab({ snapshot, sendCommand }: VrmTabProps) {
       <div className="flex flex-col gap-2">
         <div className="flex items-center gap-2">
           <div className="w-16 text-xs text-foreground/60">Emotion</div>
-          <select
-            className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
+          <Select
             value={currentEmotion}
-            onChange={(e) =>
+            onValueChange={(next) =>
               sendCommand({
                 type: "setEmotion",
-                emotion: e.target.value as EmotionId,
+                emotion: next as EmotionId,
                 intensity: currentIntensity,
               })
             }
           >
-            {emotionOptions.map((opt) => (
-              <option key={opt.id} value={opt.id}>
-                {opt.label}
-              </option>
-            ))}
-          </select>
+            <SelectTrigger className="h-9 w-full px-2 text-sm">
+              <SelectValue placeholder="Select emotion" />
+            </SelectTrigger>
+            <SelectContent>
+              {emotionOptions.map((opt) => (
+                <SelectItem key={opt.id} value={opt.id}>
+                  {opt.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
 
         <div className="flex items-center gap-2">
@@ -175,4 +189,3 @@ export default function VrmTab({ snapshot, sendCommand }: VrmTabProps) {
     </div>
   );
 }
-

@@ -79,6 +79,10 @@ impl WindowStateStore {
         WindowMode::from_u8(self.inner.current_mode.load(Ordering::SeqCst))
     }
 
+    pub(crate) fn get_current_mode(&self) -> WindowMode {
+        self.current_mode()
+    }
+
     pub(crate) fn get_input_width(&self) -> Option<f64> {
         self.inner.state.lock().ok()?.input_width
     }

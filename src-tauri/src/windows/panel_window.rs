@@ -1,6 +1,11 @@
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
+#[cfg(target_os = "windows")]
+use crate::window_state::WindowStateStore;
+#[cfg(target_os = "windows")]
+use crate::WindowMode;
+
 pub const EVT_CAPSULE_OPENED: &str = "capsule-opened";
 
 #[derive(Debug, Clone, Serialize)]
@@ -31,6 +36,9 @@ pub fn open_capsule(app: &AppHandle, params: OpenCapsuleParams) -> tauri::Result
         use windows::Win32::Foundation::POINT;
         use windows::Win32::Graphics::Gdi::{
             GetMonitorInfoW, MonitorFromPoint, MONITOR_DEFAULTTONEAREST, MONITORINFO,
+        };
+        use windows::Win32::UI::WindowsAndMessaging::{
+            BringWindowToTop, GetAncestor, SetForegroundWindow, GA_ROOT,
         };
 
         let size = window
@@ -72,6 +80,15 @@ pub fn open_capsule(app: &AppHandle, params: OpenCapsuleParams) -> tauri::Result
         y = y.clamp(min_y, max_y);
 
         let _ = window.set_position(tauri::Position::Physical(tauri::PhysicalPosition { x, y }));
+
+        // Make the panel reliably receive wheel input even when the OS blocks focus stealing
+        // (common when opening from a non-activating AvatarWindow).
+        if let Ok(hwnd) = window.hwnd() {
+            let root = unsafe { GetAncestor(hwnd, GA_ROOT) };
+            let root = if !root.0.is_null() { root } else { hwnd };
+            let _ = unsafe { BringWindowToTop(root) };
+            let _ = unsafe { SetForegroundWindow(root) };
+        }
     }
 
     // Best effort: focus for input.
@@ -88,4 +105,125 @@ pub fn open_capsule(app: &AppHandle, params: OpenCapsuleParams) -> tauri::Result
         let _ = avatar.emit(crate::EVT_VRM_STATE_REQUEST, ());
     }
     Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn spawn_panel_auto_dismiss(_app: &tauri::AppHandle) {
+    // no-op
+}
+
+/// Windows-only: hide the panel when the user clicks outside it.
+///
+/// We cannot rely solely on focus/blur events because the AvatarWindow is non-activating
+/// (MA_NOACTIVATE), so the panel may fail to become foreground due to focus-stealing rules.
+/// Instead, we watch global left-clicks and dismiss when the click lands outside the panel.
+#[cfg(target_os = "windows")]
+pub fn spawn_panel_auto_dismiss(app: &tauri::AppHandle) {
+    use std::time::Duration;
+
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        use windows::Win32::Foundation::POINT;
+        use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON};
+        use windows::Win32::UI::WindowsAndMessaging::{
+            GetAncestor, GetCursorPos, WindowFromPoint, GA_ROOT, GA_ROOTOWNER,
+        };
+
+        let mut ticker = tokio::time::interval(Duration::from_millis(33));
+        let mut last_down = false;
+
+        log::info!("Panel auto-dismiss started (outside left-click)");
+
+        loop {
+            ticker.tick().await;
+
+            let Some(panel) = app
+                .get_webview_window("main")
+                .or_else(|| app.get_webview_window("panel"))
+            else {
+                continue;
+            };
+
+            let mode = app.state::<WindowStateStore>().get_current_mode();
+            if matches!(mode, WindowMode::Mini) {
+                last_down = false;
+                continue;
+            }
+
+            let Ok(visible) = panel.is_visible() else {
+                continue;
+            };
+            if !visible {
+                last_down = false;
+                continue;
+            }
+
+            let down = unsafe { GetAsyncKeyState(VK_LBUTTON.0 as i32) } < 0;
+            if down && !last_down {
+                let mut pt = POINT::default();
+                if unsafe { GetCursorPos(&mut pt) }.is_ok() {
+                    let clicked = unsafe { WindowFromPoint(pt) };
+                    if let Ok(panel_hwnd) = panel.hwnd() {
+                        let panel_root = unsafe { GetAncestor(panel_hwnd, GA_ROOT) };
+                        let panel_root = if !panel_root.0.is_null() {
+                            panel_root
+                        } else {
+                            panel_hwnd
+                        };
+
+                        // Many WebView2/UI popups (e.g. <select> dropdowns, file dialogs) are
+                        // separate top-level windows owned by the panel. GA_ROOT would treat them
+                        // as "outside", so use GA_ROOTOWNER to keep them associated with the panel.
+                        let panel_root_owner = unsafe { GetAncestor(panel_root, GA_ROOTOWNER) };
+                        let panel_root_owner = if !panel_root_owner.0.is_null() {
+                            panel_root_owner
+                        } else {
+                            panel_root
+                        };
+
+                        let click_root = if !clicked.0.is_null() {
+                            unsafe { GetAncestor(clicked, GA_ROOT) }
+                        } else {
+                            clicked
+                        };
+                        let click_root = if !click_root.0.is_null() {
+                            click_root
+                        } else {
+                            clicked
+                        };
+
+                        let click_root_owner = if !clicked.0.is_null() {
+                            unsafe { GetAncestor(clicked, GA_ROOTOWNER) }
+                        } else {
+                            clicked
+                        };
+                        let click_root_owner = if !click_root_owner.0.is_null() {
+                            click_root_owner
+                        } else {
+                            clicked
+                        };
+
+                        let is_inside_panel = !clicked.0.is_null()
+                            && (click_root == panel_root
+                                || click_root_owner == panel_root
+                                || click_root_owner == panel_root_owner);
+
+                        if !is_inside_panel {
+                            let _ = panel.hide();
+                            log::debug!(
+                                "Panel auto-dismiss: hide on outside click (mode={:?}, clicked={:?}, click_root={:?}, click_root_owner={:?}, panel_root={:?}, panel_root_owner={:?})",
+                                mode,
+                                clicked,
+                                click_root,
+                                click_root_owner,
+                                panel_root,
+                                panel_root_owner
+                            );
+                        }
+                    }
+                }
+            }
+            last_down = down;
+        }
+    });
 }

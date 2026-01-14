@@ -306,6 +306,8 @@ pub fn run() {
             set_window_min_size,
             commands::avatar_commands::avatar_update_hittest_mask,
             commands::panel_commands::open_capsule,
+            commands::panel_commands::dismiss_capsule,
+            commands::panel_commands::debug_update_panel_title,
             commands::vrm_commands::vrm_command,
             commands::vrm_commands::vrm_state_snapshot,
             services::ai::commands::chat_stream,
@@ -376,8 +378,13 @@ pub fn run() {
                             window_state.update_size_from_window(&w);
                         }
                     }
-                    tauri::WindowEvent::CloseRequested { .. }
-                    | tauri::WindowEvent::Destroyed => {
+                    tauri::WindowEvent::CloseRequested { api, .. } => {
+                        // Treat the panel as a dock/popover: closing hides it (app keeps running via tray).
+                        window_state.flush(&app);
+                        api.prevent_close();
+                        let _ = window.hide();
+                    }
+                    tauri::WindowEvent::Destroyed => {
                         window_state.flush(&app);
                     }
                     _ => {}
@@ -436,9 +443,15 @@ pub fn run() {
                 let mask_store = app.state::<HitTestMaskStore>();
                 let avatar_window = windows::avatar_window::ensure_avatar_window(&app_handle)?;
                 windows::avatar_window::install_avatar_subclass(&avatar_window, &*mask_store)?;
+                windows::avatar_window::spawn_avatar_cursor_gate(&app_handle);
             }
 
+            windows::panel_window::spawn_panel_auto_dismiss(&app_handle);
+
             if let Some(window) = app.get_webview_window("main") {
+                if cfg!(debug_assertions) {
+                    let _ = window.set_decorations(true);
+                }
                 window_state.restore_anchor_to_window(&window);
             }
 

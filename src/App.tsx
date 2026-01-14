@@ -14,6 +14,7 @@ import { Button } from "@/components/ui/button";
 import {
   EVT_CLICK_THROUGH_STATE,
   EVT_CAPSULE_OPENED,
+  EVT_CAPSULE_DISMISS,
   EVT_CHAT_DONE,
   EVT_VRM_STATE_SNAPSHOT,
   getRegisteredModelOptions,
@@ -35,7 +36,7 @@ import {
 } from "./hooks";
 import { voicePrepare } from "./services";
 import { cn } from "@/lib/utils";
-import { conversationDetailToUiMessages, reportPromiseError } from "@/utils";
+import { conversationDetailToUiMessages, isTauriContext, reportPromiseError } from "@/utils";
 import { ChatProvider } from "@/contexts/ChatContext";
 import type { PanelTabId, VrmCommand, VrmStateSnapshot } from "@/windows/vrmBridgeTypes";
 import VrmTab from "@/windows/panel/tabs/VrmTab";
@@ -53,6 +54,8 @@ function App() {
   const [isClickThrough, setIsClickThrough] = useState(false);
   const [panelTab, setPanelTab] = useState<PanelTabId>("chat");
   const [vrmSnapshot, setVrmSnapshot] = useState<VrmStateSnapshot | null>(null);
+  const ignoreBlurUntilRef = useRef(0);
+  const focusedSinceOpenRef = useRef(false);
 
   // Use custom hooks for cleaner separation of concerns
   const {
@@ -76,6 +79,20 @@ function App() {
   const [toolMode, setToolMode] = useState(false);
   const [voiceMode, setVoiceMode] = useState(false);
   const { skinMode, setSkinMode } = useSkinPreference();
+
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    if (!isTauriContext()) return;
+
+    void invoke("debug_update_panel_title", {
+      args: { tab: panelTab, windowMode },
+    }).catch(
+      reportPromiseError("App.debug_update_panel_title", {
+        devOnly: true,
+        onceKey: "App.debug_update_panel_title",
+      })
+    );
+  }, [panelTab, windowMode]);
 
   useEffect(() => {
     if (!voiceMode) return;
@@ -194,6 +211,21 @@ function App() {
     inputRef,
   });
 
+  const dismissPanel = useCallback((reason: string) => {
+    if (!isTauriContext()) {
+      if (windowMode !== "mini") {
+        collapse();
+      }
+      return;
+    }
+
+    void invoke("dismiss_capsule", { reason }).catch(
+      reportPromiseError("App.dismiss_capsule", {
+        onceKey: "App.dismiss_capsule",
+      })
+    );
+  }, [collapse, windowMode]);
+
   const handleNewConversation = useCallback(() => {
     void newConversation()
       .then(() => {
@@ -217,16 +249,22 @@ function App() {
     (event: { payload: boolean }) => {
       setIsClickThrough(event.payload);
       if (event.payload) {
-        collapse();
+        dismissPanel("clickThrough");
       }
     },
-    [collapse]
+    [dismissPanel]
   );
 
   useTauriEvent<boolean>(EVT_CLICK_THROUGH_STATE, handleClickThroughChange);
 
   const handleCapsuleOpened = useCallback(
     (event: { payload: { tab?: string } }) => {
+      const now = typeof performance !== "undefined" ? performance.now() : Date.now();
+      // Windows can briefly focus the panel and then immediately blur it again (focus steal rules).
+      // Give the panel a grace period so it doesn't auto-hide right after opening.
+      ignoreBlurUntilRef.current = now + 800;
+      focusedSinceOpenRef.current = false;
+
       const tab = event.payload?.tab;
       if (tab === "chat" || tab === "vrm" || tab === "debug") {
         setPanelTab(tab);
@@ -243,6 +281,15 @@ function App() {
   );
 
   useTauriEvent(EVT_CAPSULE_OPENED, handleCapsuleOpened);
+
+  // Track focus to avoid immediately hiding on "blur" during show/open.
+  useTauriEvent("tauri://focus", () => {
+    const now = typeof performance !== "undefined" ? performance.now() : Date.now();
+    // Focus can "bounce" during the open/show sequence on Windows.
+    // Guard against an immediate blur auto-dismissing the panel.
+    ignoreBlurUntilRef.current = Math.max(ignoreBlurUntilRef.current, now + 250);
+    focusedSinceOpenRef.current = true;
+  });
 
   const handleVrmStateSnapshot = useCallback((event: { payload: VrmStateSnapshot }) => {
     setVrmSnapshot(event.payload ?? null);
@@ -315,6 +362,19 @@ function App() {
   );
 
   useTauriEvent<ChatDonePayload>(EVT_CHAT_DONE, handleChatDone);
+
+  // UX: treat the panel as a capsule/popover — hide when it loses focus.
+  useTauriEvent("tauri://blur", () => {
+    const now = typeof performance !== "undefined" ? performance.now() : Date.now();
+    if (now < ignoreBlurUntilRef.current) return;
+    if (!focusedSinceOpenRef.current) return;
+    dismissPanel("blur");
+  });
+
+  // UX: when the user clicks the avatar (which is non-focusable), explicitly dismiss the panel.
+  useTauriEvent(EVT_CAPSULE_DISMISS, () => {
+    dismissPanel("avatarDismiss");
+  });
 
   const errorText =
     status === "error" && error ? error.message || String(error) : null;
