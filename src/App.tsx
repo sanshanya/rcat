@@ -269,8 +269,8 @@ function App() {
       if (tab === "chat" || tab === "vrm" || tab === "debug") {
         setPanelTab(tab);
       }
-      if (windowMode === "mini") {
-        void changeMode("input").catch(
+      if (windowMode !== "mini") {
+        void changeMode("mini").catch(
           reportPromiseError("App.changeMode:capsuleOpened", {
             onceKey: "App.changeMode:capsuleOpened",
           })
@@ -365,6 +365,7 @@ function App() {
 
   // UX: treat the panel as a capsule/popover — hide when it loses focus.
   useTauriEvent("tauri://blur", () => {
+    if (windowMode !== "mini") return;
     const now = typeof performance !== "undefined" ? performance.now() : Date.now();
     if (now < ignoreBlurUntilRef.current) return;
     if (!focusedSinceOpenRef.current) return;
@@ -373,6 +374,7 @@ function App() {
 
   // UX: when the user clicks the avatar (which is non-focusable), explicitly dismiss the panel.
   useTauriEvent(EVT_CAPSULE_DISMISS, () => {
+    if (windowMode !== "mini") return;
     dismissPanel("avatarDismiss");
   });
 

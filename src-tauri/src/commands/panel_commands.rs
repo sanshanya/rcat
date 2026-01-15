@@ -1,7 +1,9 @@
 use serde::Deserialize;
 use tauri::Manager;
 
-use crate::windows::panel_window::{open_capsule as open_capsule_window, OpenCapsuleParams};
+use crate::windows::panel_window::{
+    open_capsule as open_capsule_window, toggle_capsule as toggle_capsule_window, OpenCapsuleParams,
+};
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -18,6 +20,23 @@ pub fn open_capsule(
 ) -> Result<(), String> {
     let tab = args.tab.unwrap_or_else(|| "chat".to_string());
     open_capsule_window(
+        &app,
+        OpenCapsuleParams {
+            tab,
+            anchor_x: args.anchor_x,
+            anchor_y: args.anchor_y,
+        },
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn toggle_capsule(
+    app: tauri::AppHandle,
+    args: OpenCapsuleArgs,
+) -> Result<(), String> {
+    let tab = args.tab.unwrap_or_else(|| "chat".to_string());
+    toggle_capsule_window(
         &app,
         OpenCapsuleParams {
             tab,

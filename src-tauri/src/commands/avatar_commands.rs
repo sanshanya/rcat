@@ -45,10 +45,20 @@ pub fn avatar_update_hittest_mask(
 
     let stored = mask_store.update(snapshot);
 
+    if !stored {
+        // Quiet: out-of-order updates are expected when JS is under load or during frontend reload.
+        return Ok(());
+    }
+
     #[cfg(target_os = "windows")]
     {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        use std::time::{SystemTime, UNIX_EPOCH};
         use windows::Win32::Foundation::RECT;
         use windows::Win32::UI::WindowsAndMessaging::GetClientRect;
+
+        static LAST_MISMATCH_KEY: AtomicU64 = AtomicU64::new(0);
+        static LAST_MISMATCH_AT_MS: AtomicU64 = AtomicU64::new(0);
 
         if let Ok(hwnd) = window.hwnd() {
             let mut rect = RECT::default();
@@ -62,25 +72,63 @@ pub fn avatar_update_hittest_mask(
                 let dw = cw.abs_diff(vw);
                 let dh = ch.abs_diff(vh);
                 if dw > 32 || dh > 32 {
-                    log::warn!(
-                        "HitTest viewport/client mismatch (label={}, client={}x{}, viewport={}x{}, dpr={:?}, providedClient={:?}x{:?})",
-                        window.label(),
-                        cw,
-                        ch,
-                        vw,
-                        vh,
-                        args.dpr,
-                        args.client_w,
-                        args.client_h
-                    );
+                    let sx = (vw as f64) / (cw as f64);
+                    let sy = (vh as f64) / (ch as f64);
+                    let uniform = (sx - sy).abs() <= 0.05 && sx.is_finite() && sy.is_finite();
+                    let reasonable = sx >= 0.5 && sx <= 4.0 && sy >= 0.5 && sy <= 4.0;
+                    let expected = uniform && reasonable;
+
+                    let mut key = 0xCBF29CE484222325u64;
+                    for v in [cw as u64, ch as u64, vw as u64, vh as u64] {
+                        key ^= v;
+                        key = key.wrapping_mul(0x100000001B3);
+                    }
+
+                    let now_ms = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .map(|d| d.as_millis() as u64)
+                        .unwrap_or(0);
+                    let last_key = LAST_MISMATCH_KEY.load(Ordering::Relaxed);
+                    let last_at = LAST_MISMATCH_AT_MS.load(Ordering::Relaxed);
+                    let should_log = key != last_key || now_ms.saturating_sub(last_at) > 5_000;
+                    if should_log {
+                        LAST_MISMATCH_KEY.store(key, Ordering::Relaxed);
+                        LAST_MISMATCH_AT_MS.store(now_ms, Ordering::Relaxed);
+
+                        if expected {
+                            log::debug!(
+                                "HitTest viewport/client scale differs (expected on DPI scaling): label={}, client={}x{}, viewport={}x{}, impliedScale≈{:.3}x/{:.3}x, dpr={:?}, providedClient={:?}x{:?}",
+                                window.label(),
+                                cw,
+                                ch,
+                                vw,
+                                vh,
+                                sx,
+                                sy,
+                                args.dpr,
+                                args.client_w,
+                                args.client_h
+                            );
+                        } else {
+                            log::warn!(
+                                "HitTest viewport/client mismatch (suspicious): label={}, client={}x{}, viewport={}x{}, impliedScale≈{:.3}x/{:.3}x, dpr={:?}, providedClient={:?}x{:?}",
+                                window.label(),
+                                cw,
+                                ch,
+                                vw,
+                                vh,
+                                sx,
+                                sy,
+                                args.dpr,
+                                args.client_w,
+                                args.client_h
+                            );
+                        }
+                    }
                 }
             }
         }
     }
 
-    if !stored {
-        // Quiet: out-of-order updates are expected when JS is under load.
-        return Ok(());
-    }
     Ok(())
 }

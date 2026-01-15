@@ -306,6 +306,7 @@ pub fn run() {
             set_window_min_size,
             commands::avatar_commands::avatar_update_hittest_mask,
             commands::panel_commands::open_capsule,
+            commands::panel_commands::toggle_capsule,
             commands::panel_commands::dismiss_capsule,
             commands::panel_commands::debug_update_panel_title,
             commands::vrm_commands::vrm_command,

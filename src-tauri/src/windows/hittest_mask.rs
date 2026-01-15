@@ -99,7 +99,10 @@ impl HitTestMaskStore {
     pub fn update(&self, snapshot: MaskSnapshot) -> bool {
         let seq = snapshot.seq;
         let current = self.latest_seq.load(Ordering::SeqCst);
-        if seq <= current {
+        // Frontend hot-reload can restart the JS sequence counter while the Rust process stays
+        // alive. Treat a large backwards jump as a reset and accept the new stream.
+        let reset = current.saturating_sub(seq) > 1024;
+        if seq <= current && !reset {
             return false;
         }
         self.latest_seq.store(seq, Ordering::SeqCst);
@@ -111,4 +114,3 @@ impl HitTestMaskStore {
         self.snapshot.load_full()
     }
 }
-

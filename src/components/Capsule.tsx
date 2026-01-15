@@ -1,5 +1,6 @@
 import { useRef, type PointerEvent } from "react";
 import { motion } from "framer-motion";
+import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import type { AiProvider, WindowMode } from "@/types";
@@ -155,6 +156,18 @@ const Capsule = ({
           return;
         }
         onClick();
+      }}
+      onContextMenu={(e) => {
+        if (disabled) return;
+        if (!isTauriContext()) return;
+        e.preventDefault();
+        e.stopPropagation();
+        void invoke("dismiss_capsule", { reason: "contextmenu" }).catch(
+          reportPromiseError("Capsule.dismiss_capsule", {
+            onceKey: "Capsule.dismiss_capsule",
+            devOnly: true,
+          })
+        );
       }}
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}

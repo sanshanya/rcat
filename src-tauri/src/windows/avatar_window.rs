@@ -21,19 +21,34 @@ mod windows_impl {
     use crate::windows::hittest_mask::HitTestMaskStore;
     use crate::window_state::WindowStateStore;
     use crate::WindowMode;
+    use std::sync::atomic::{AtomicIsize, Ordering};
     use tauri::Manager;
     use windows::core::BOOL;
     use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
     use windows::Win32::Graphics::Gdi::ScreenToClient;
-    use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_MENU};
     use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
     use windows::Win32::UI::WindowsAndMessaging::{
-        EnumChildWindows, GetAncestor, GetClassNameW, GetClientRect, GetWindowThreadProcessId,
-        GA_ROOT, HTCAPTION, HTCLIENT, HTTRANSPARENT, MA_NOACTIVATE, WM_CREATE, WM_MOUSEACTIVATE,
-        WM_NCHITTEST, WM_PARENTNOTIFY,
+        EnumChildWindows, GetAncestor, GetClassNameW, GetClientRect, GetWindowRect,
+        GetWindowThreadProcessId, GA_ROOT, HTCLIENT, HTTRANSPARENT, MA_NOACTIVATE, WM_CREATE,
+        WM_MOUSEACTIVATE, WM_NCHITTEST, WM_PARENTNOTIFY,
     };
 
     const AVATAR_SUBCLASS_ID: usize = 0x5243_4154_5641_5441; // "RCATVATA" (unique-ish)
+
+    static AVATAR_GATE_HWND: AtomicIsize = AtomicIsize::new(0);
+
+    fn load_avatar_gate_hwnd() -> Option<HWND> {
+        let raw = AVATAR_GATE_HWND.load(Ordering::Relaxed);
+        if raw == 0 {
+            None
+        } else {
+            Some(HWND(raw as *mut core::ffi::c_void))
+        }
+    }
+
+    fn store_avatar_gate_hwnd(hwnd: HWND) {
+        AVATAR_GATE_HWND.store(hwnd.0 as isize, Ordering::Relaxed);
+    }
 
     fn hwnd_class_name(hwnd: HWND) -> String {
         let mut buf = [0u16; 256];
@@ -63,6 +78,36 @@ mod windows_impl {
         hwnds.sort_by_key(|hwnd| hwnd.0 as usize);
         hwnds.dedup_by_key(|hwnd| hwnd.0 as usize);
         hwnds
+    }
+
+    fn select_avatar_gate_hwnd(root: HWND, targets: &[HWND]) -> HWND {
+        let mut best: Option<(HWND, i64)> = None;
+        for hwnd in targets.iter().copied() {
+            if hwnd.0 == root.0 {
+                continue;
+            }
+            let mut rect = RECT::default();
+            if unsafe { GetClientRect(hwnd, &mut rect) }.is_err() {
+                continue;
+            }
+            let w = (rect.right - rect.left) as i64;
+            let h = (rect.bottom - rect.top) as i64;
+            if w <= 0 || h <= 0 {
+                continue;
+            }
+            let area = w.saturating_mul(h);
+            if best.map(|(_, best_area)| area > best_area).unwrap_or(true) {
+                best = Some((hwnd, area));
+            }
+        }
+        best.map(|(hwnd, _)| hwnd).unwrap_or(root)
+    }
+
+    fn refresh_avatar_gate_hwnd(root: HWND) -> HWND {
+        let targets = collect_descendant_hwnds(root);
+        let gate = select_avatar_gate_hwnd(root, &targets);
+        store_avatar_gate_hwnd(gate);
+        gate
     }
 
     fn lparam_to_screen_point(l_param: LPARAM) -> POINT {
@@ -126,12 +171,7 @@ mod windows_impl {
         };
         let bit = (byte >> (mx_usize % 8)) & 1;
         if bit == 1 {
-            let alt_down = unsafe { GetKeyState(VK_MENU.0 as i32) } < 0;
-            if alt_down {
-                LRESULT(HTCAPTION as isize)
-            } else {
-                LRESULT(HTCLIENT as isize)
-            }
+            LRESULT(HTCLIENT as isize)
         } else {
             LRESULT(HTTRANSPARENT as isize)
         }
@@ -186,6 +226,15 @@ mod windows_impl {
 
         let ref_data = (mask_store as *const HitTestMaskStore) as usize;
         let targets = collect_descendant_hwnds(root);
+        let gate = select_avatar_gate_hwnd(root, &targets);
+        store_avatar_gate_hwnd(gate);
+        log::info!(
+            "Avatar cursor gate target (hwnd={:?} class={}, root={:?} class={})",
+            gate,
+            hwnd_class_name(gate),
+            root,
+            hwnd_class_name(root)
+        );
 
         let mut installed = 0usize;
         for target in targets.iter().copied() {
@@ -202,7 +251,7 @@ mod windows_impl {
             if ok.as_bool() {
                 installed += 1;
             }
-            log::info!(
+            log::debug!(
                 "AvatarWindow subclass target (hwnd={:?} class={} pid={} tid={} ok={})",
                 target,
                 hwnd_class_name(target),
@@ -244,111 +293,164 @@ mod windows_impl {
             use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_LBUTTON, VK_RBUTTON};
             use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
 
-            let mut ticker = tokio::time::interval(Duration::from_millis(33));
+            let fast_interval = Duration::from_millis(33);
+            let slow_interval = Duration::from_millis(300);
             let mut last_ignore: Option<bool> = None;
 
             log::info!("Avatar cursor gate started (rate≈30Hz)");
 
             loop {
-                ticker.tick().await;
+                let sleep_dur = 'tick: {
+                    let Some(window) = app.get_webview_window("avatar") else {
+                        last_ignore = None;
+                        break 'tick slow_interval;
+                    };
+                    let Ok(hwnd) = window.hwnd() else {
+                        break 'tick slow_interval;
+                    };
+                    let root = unsafe { GetAncestor(hwnd, GA_ROOT) };
+                    let root = if !root.0.is_null() { root } else { hwnd };
 
-                let Some(window) = app.get_webview_window("avatar") else {
-                    last_ignore = None;
-                    continue;
-                };
-                let Ok(hwnd) = window.hwnd() else {
-                    continue;
-                };
-
-                // While the panel is open, make the avatar fully click-through so it never
-                // steals wheel/click input from the panel (e.g. when the panel overlaps the model).
-                let panel_visible = app
-                    .get_webview_window("main")
-                    .and_then(|w| w.is_visible().ok())
-                    .unwrap_or(false);
-                if panel_visible {
-                    let mode = app.state::<WindowStateStore>().get_current_mode();
-                    if !matches!(mode, WindowMode::Mini) {
-                        let ignore = true;
-                        if last_ignore != Some(ignore) {
-                            let _ = window.set_ignore_cursor_events(ignore);
-                            last_ignore = Some(ignore);
-                            log::debug!(
-                                "Avatar cursor gate forced click-through (panel visible; mode={:?})",
-                                mode
-                            );
-                        }
-                        continue;
+                    let mut gate_hwnd =
+                        load_avatar_gate_hwnd().unwrap_or_else(|| refresh_avatar_gate_hwnd(root));
+                    if gate_hwnd.0.is_null() || unsafe { GetAncestor(gate_hwnd, GA_ROOT) }.0 != root.0 {
+                        gate_hwnd = refresh_avatar_gate_hwnd(root);
                     }
-                }
 
-                // Avoid toggling mid-drag to prevent losing capture / breaking controls.
-                let left_down = unsafe { GetKeyState(VK_LBUTTON.0 as i32) } < 0;
-                let right_down = unsafe { GetKeyState(VK_RBUTTON.0 as i32) } < 0;
-                if left_down || right_down {
-                    continue;
-                }
+                    let mut fail_open_to_hittest = |reason: &str| {
+                        if last_ignore != Some(false) {
+                            let _ = window.set_ignore_cursor_events(false);
+                            last_ignore = Some(false);
+                            log::debug!("Avatar cursor gate fail-open: {}", reason);
+                        }
+                    };
 
-                let mut screen = POINT::default();
-                if unsafe { GetCursorPos(&mut screen) }.is_err() {
-                    continue;
-                }
+                    // While the panel is open, make the avatar fully click-through so it never
+                    // steals wheel/click input from the panel (e.g. when the panel overlaps the model).
+                    let panel_visible = app
+                        .get_webview_window("main")
+                        .and_then(|w| w.is_visible().ok())
+                        .unwrap_or(false);
+                    if panel_visible {
+                        let mode = app.state::<WindowStateStore>().get_current_mode();
+                        if !matches!(mode, WindowMode::Mini) {
+                            let ignore = true;
+                            if last_ignore != Some(ignore) {
+                                let _ = window.set_ignore_cursor_events(ignore);
+                                last_ignore = Some(ignore);
+                                log::debug!(
+                                    "Avatar cursor gate forced click-through (panel visible; mode={:?})",
+                                    mode
+                                );
+                            }
+                            break 'tick fast_interval;
+                        }
+                    }
 
-                let mut pt = screen;
-                if !unsafe { ScreenToClient(hwnd, &mut pt) }.as_bool() {
-                    continue;
-                }
+                    // Avoid toggling mid-drag to prevent losing capture / breaking controls.
+                    let left_down = unsafe { GetKeyState(VK_LBUTTON.0 as i32) } < 0;
+                    let right_down = unsafe { GetKeyState(VK_RBUTTON.0 as i32) } < 0;
+                    if left_down || right_down {
+                        break 'tick fast_interval;
+                    }
 
-                let mut client = RECT::default();
-                if unsafe { GetClientRect(hwnd, &mut client) }.is_err() {
-                    continue;
-                }
+                    let mut screen = POINT::default();
+                    if unsafe { GetCursorPos(&mut screen) }.is_err() {
+                        fail_open_to_hittest("GetCursorPos failed");
+                        break 'tick fast_interval;
+                    }
 
-                let cw = (client.right - client.left).max(1);
-                let ch = (client.bottom - client.top).max(1);
-                let in_client = pt.x >= 0 && pt.y >= 0 && pt.x < cw && pt.y < ch;
+                    // Hybrid polling: only do the expensive mask query while the cursor is
+                    // within the avatar window bounds. When outside, force ignore=false so
+                    // `WM_NCHITTEST` remains available immediately on re-entry.
+                    let mut window_rect = RECT::default();
+                    if unsafe { GetWindowRect(root, &mut window_rect) }.is_err() {
+                        fail_open_to_hittest("GetWindowRect failed");
+                        break 'tick slow_interval;
+                    }
+                    let in_window = screen.x >= window_rect.left
+                        && screen.y >= window_rect.top
+                        && screen.x < window_rect.right
+                        && screen.y < window_rect.bottom;
+                    if !in_window {
+                        if last_ignore != Some(false) {
+                            let _ = window.set_ignore_cursor_events(false);
+                            last_ignore = Some(false);
+                        }
+                        break 'tick slow_interval;
+                    }
 
-                let mask_store = app.state::<HitTestMaskStore>();
+                    let mut pt = screen;
+                    if !unsafe { ScreenToClient(gate_hwnd, &mut pt) }.as_bool() {
+                        gate_hwnd = refresh_avatar_gate_hwnd(root);
+                        if !unsafe { ScreenToClient(gate_hwnd, &mut pt) }.as_bool() {
+                            fail_open_to_hittest("ScreenToClient failed");
+                            break 'tick fast_interval;
+                        }
+                    }
 
-                // Keep non-client (title bar) interactive for debugging convenience.
-                let mut interactive = !in_client;
-                if mask_store.force_transparent() {
-                    interactive = false;
-                } else if in_client {
-                    if let Some(snapshot) = mask_store.load() {
-                        let mx = ((pt.x as i64) * (snapshot.mask_w as i64) / (cw as i64)) as i64;
-                        let my = ((pt.y as i64) * (snapshot.mask_h as i64) / (ch as i64)) as i64;
+                    let mut client = RECT::default();
+                    if unsafe { GetClientRect(gate_hwnd, &mut client) }.is_err() {
+                        gate_hwnd = refresh_avatar_gate_hwnd(root);
+                        if unsafe { GetClientRect(gate_hwnd, &mut client) }.is_err() {
+                            fail_open_to_hittest("GetClientRect failed");
+                            break 'tick fast_interval;
+                        }
+                    }
 
-                        if mx >= 0 && my >= 0 {
-                            let mx = mx as u32;
-                            let my = my as u32;
-                            if mx < snapshot.mask_w && my < snapshot.mask_h && snapshot.rect.contains(mx, my) {
-                                let mx_usize = mx as usize;
-                                let my_usize = my as usize;
-                                let idx = my_usize * snapshot.stride + (mx_usize / 8);
-                                if let Some(byte) = snapshot.bitset.get(idx) {
-                                    let bit = (byte >> (mx_usize % 8)) & 1;
-                                    interactive = bit == 1;
+                    let cw = (client.right - client.left).max(1);
+                    let ch = (client.bottom - client.top).max(1);
+                    let in_client = pt.x >= 0 && pt.y >= 0 && pt.x < cw && pt.y < ch;
+
+                    let mask_store = app.state::<HitTestMaskStore>();
+
+                    // Keep non-client (title bar) interactive for debugging convenience.
+                    let mut interactive = !in_client;
+                    if mask_store.force_transparent() {
+                        interactive = false;
+                    } else if in_client {
+                        if let Some(snapshot) = mask_store.load() {
+                            let mx = ((pt.x as i64) * (snapshot.mask_w as i64) / (cw as i64)) as i64;
+                            let my = ((pt.y as i64) * (snapshot.mask_h as i64) / (ch as i64)) as i64;
+
+                            if mx >= 0 && my >= 0 {
+                                let mx = mx as u32;
+                                let my = my as u32;
+                                if mx < snapshot.mask_w
+                                    && my < snapshot.mask_h
+                                    && snapshot.rect.contains(mx, my)
+                                {
+                                    let mx_usize = mx as usize;
+                                    let my_usize = my as usize;
+                                    let idx = my_usize * snapshot.stride + (mx_usize / 8);
+                                    if let Some(byte) = snapshot.bitset.get(idx) {
+                                        let bit = (byte >> (mx_usize % 8)) & 1;
+                                        interactive = bit == 1;
+                                    }
                                 }
                             }
+                        } else {
+                            // No mask yet: keep the client click-through.
+                            interactive = false;
                         }
-                    } else {
-                        // No mask yet: keep the client click-through.
-                        interactive = false;
                     }
-                }
 
-                let ignore = !interactive;
-                if last_ignore != Some(ignore) {
-                    let _ = window.set_ignore_cursor_events(ignore);
-                    last_ignore = Some(ignore);
-                    log::debug!(
-                        "Avatar cursor gate updated (ignore_cursor_events={}, in_client={}, interactive={})",
-                        ignore,
-                        in_client,
-                        interactive
-                    );
-                }
+                    let ignore = !interactive;
+                    if last_ignore != Some(ignore) {
+                        let _ = window.set_ignore_cursor_events(ignore);
+                        last_ignore = Some(ignore);
+                        log::debug!(
+                            "Avatar cursor gate updated (ignore_cursor_events={}, in_client={}, interactive={})",
+                            ignore,
+                            in_client,
+                            interactive
+                        );
+                    }
+
+                    fast_interval
+                };
+
+                tokio::time::sleep(sleep_dur).await;
             }
         });
     }
@@ -372,6 +474,7 @@ mod windows_impl {
             root,
             targets.len()
         );
+        store_avatar_gate_hwnd(HWND(core::ptr::null_mut()));
     }
 
     pub fn ensure_avatar_window(app: &tauri::AppHandle) -> tauri::Result<tauri::WebviewWindow> {
