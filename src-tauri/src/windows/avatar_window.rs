@@ -16,26 +16,57 @@ pub fn spawn_avatar_cursor_gate(_app: &tauri::AppHandle) {
     // no-op
 }
 
+#[cfg(not(target_os = "windows"))]
+pub fn set_avatar_tool_mode_enabled(_enabled: bool) {
+    // no-op
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn spawn_avatar_wheel_router(_app: &tauri::AppHandle) {
+    // no-op
+}
+
 #[cfg(target_os = "windows")]
 mod windows_impl {
     use crate::windows::hittest_mask::HitTestMaskStore;
     use crate::window_state::WindowStateStore;
     use crate::WindowMode;
-    use std::sync::atomic::{AtomicIsize, Ordering};
-    use tauri::Manager;
+    use serde::Serialize;
+    use std::sync::atomic::{AtomicBool, AtomicI32, AtomicIsize, AtomicU64, Ordering};
+    use tauri::{Emitter, Manager};
     use windows::core::BOOL;
-    use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+    use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
     use windows::Win32::Graphics::Gdi::ScreenToClient;
+    use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_MENU};
     use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
     use windows::Win32::UI::WindowsAndMessaging::{
-        EnumChildWindows, GetAncestor, GetClassNameW, GetClientRect, GetWindowRect,
-        GetWindowThreadProcessId, GA_ROOT, HTCLIENT, HTTRANSPARENT, MA_NOACTIVATE, WM_CREATE,
-        WM_MOUSEACTIVATE, WM_NCHITTEST, WM_PARENTNOTIFY,
+        CallNextHookEx, EnumChildWindows, GetAncestor, GetClassNameW, GetClientRect, GetWindowRect,
+        GetWindowThreadProcessId, SetWindowsHookExW, UnhookWindowsHookEx, WindowFromPoint, GA_ROOT,
+        HC_ACTION, HHOOK, HTCLIENT, HTTRANSPARENT, MA_NOACTIVATE, MSLLHOOKSTRUCT, WH_MOUSE_LL,
+        WM_CREATE, WM_LBUTTONDOWN, WM_MOUSEACTIVATE, WM_MOUSEWHEEL, WM_NCHITTEST, WM_NCLBUTTONDOWN,
+        WM_PARENTNOTIFY,
     };
 
     const AVATAR_SUBCLASS_ID: usize = 0x5243_4154_5641_5441; // "RCATVATA" (unique-ish)
 
     static AVATAR_GATE_HWND: AtomicIsize = AtomicIsize::new(0);
+    static AVATAR_ROOT_HWND: AtomicIsize = AtomicIsize::new(0);
+
+    static AVATAR_TOOL_MODE_AVATAR: AtomicBool = AtomicBool::new(false);
+    static WHEEL_PENDING_NOALT: AtomicI32 = AtomicI32::new(0);
+    static WHEEL_PENDING_ALT: AtomicI32 = AtomicI32::new(0);
+    static WHEEL_HOOK: AtomicIsize = AtomicIsize::new(0);
+    static PANEL_CLICK_SEQ: AtomicU64 = AtomicU64::new(0);
+    static PANEL_CLICK_X: AtomicI32 = AtomicI32::new(0);
+    static PANEL_CLICK_Y: AtomicI32 = AtomicI32::new(0);
+
+    #[derive(Debug, Clone, Copy, Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct AvatarWheelPayload {
+        delta_y: i32,
+        alt_key: bool,
+    }
 
     fn load_avatar_gate_hwnd() -> Option<HWND> {
         let raw = AVATAR_GATE_HWND.load(Ordering::Relaxed);
@@ -117,6 +148,49 @@ mod windows_impl {
         POINT { x, y }
     }
 
+    fn mask_hit_at(
+        snapshot: &crate::windows::hittest_mask::MaskSnapshot,
+        client_x: i32,
+        client_y: i32,
+        client_w: i32,
+        client_h: i32,
+    ) -> bool {
+        if snapshot.rect.is_empty() {
+            return false;
+        }
+
+        if client_x < 0 || client_y < 0 || client_x >= client_w || client_y >= client_h {
+            return false;
+        }
+
+        let client_w = (client_w as i64).max(1);
+        let client_h = (client_h as i64).max(1);
+
+        let mx = ((client_x as i64) * (snapshot.mask_w as i64) / client_w) as i64;
+        let my = ((client_y as i64) * (snapshot.mask_h as i64) / client_h) as i64;
+
+        if mx < 0 || my < 0 {
+            return false;
+        }
+        let mx = mx as u32;
+        let my = my as u32;
+        if mx >= snapshot.mask_w || my >= snapshot.mask_h {
+            return false;
+        }
+        if !snapshot.rect.contains(mx, my) {
+            return false;
+        }
+
+        let mx_usize = mx as usize;
+        let my_usize = my as usize;
+        let idx = my_usize * snapshot.stride + (mx_usize / 8);
+        let Some(byte) = snapshot.bitset.get(idx) else {
+            return false;
+        };
+        let bit = (byte >> (mx_usize % 8)) & 1;
+        bit == 1
+    }
+
     fn handle_nchittest(hwnd: HWND, l_param: LPARAM, mask_store: &HitTestMaskStore) -> LRESULT {
         if mask_store.force_transparent() {
             return LRESULT(HTTRANSPARENT as isize);
@@ -141,40 +215,242 @@ mod windows_impl {
 
         let client_w = (client.right - client.left).max(1);
         let client_h = (client.bottom - client.top).max(1);
-        if pt.x < 0 || pt.y < 0 || pt.x >= client_w || pt.y >= client_h {
-            return LRESULT(HTTRANSPARENT as isize);
-        }
-
-        let vx = ((pt.x as i64) * (snapshot.viewport_w as i64) / (client_w as i64)) as i64;
-        let vy = ((pt.y as i64) * (snapshot.viewport_h as i64) / (client_h as i64)) as i64;
-
-        let mx = (vx * snapshot.mask_w as i64 / snapshot.viewport_w as i64) as i64;
-        let my = (vy * snapshot.mask_h as i64 / snapshot.viewport_h as i64) as i64;
-
-        if mx < 0 || my < 0 {
-            return LRESULT(HTTRANSPARENT as isize);
-        }
-        let mx = mx as u32;
-        let my = my as u32;
-        if mx >= snapshot.mask_w || my >= snapshot.mask_h {
-            return LRESULT(HTTRANSPARENT as isize);
-        }
-        if !snapshot.rect.contains(mx, my) {
-            return LRESULT(HTTRANSPARENT as isize);
-        }
-
-        let mx_usize = mx as usize;
-        let my_usize = my as usize;
-        let idx = my_usize * snapshot.stride + (mx_usize / 8);
-        let Some(byte) = snapshot.bitset.get(idx) else {
-            return LRESULT(HTTRANSPARENT as isize);
-        };
-        let bit = (byte >> (mx_usize % 8)) & 1;
-        if bit == 1 {
+        if mask_hit_at(&snapshot, pt.x, pt.y, client_w, client_h) {
             LRESULT(HTCLIENT as isize)
         } else {
             LRESULT(HTTRANSPARENT as isize)
         }
+    }
+
+    unsafe extern "system" fn wheel_hook_proc(code: i32, w_param: WPARAM, l_param: LPARAM) -> LRESULT {
+        if code != HC_ACTION as i32 {
+            return unsafe { CallNextHookEx(None, code, w_param, l_param) };
+        }
+
+        let msg = w_param.0 as u32;
+
+        if msg == WM_LBUTTONDOWN || msg == WM_NCLBUTTONDOWN {
+            let hook = unsafe { &*(l_param.0 as *const MSLLHOOKSTRUCT) };
+            PANEL_CLICK_X.store(hook.pt.x, Ordering::Relaxed);
+            PANEL_CLICK_Y.store(hook.pt.y, Ordering::Relaxed);
+            let _ = PANEL_CLICK_SEQ.fetch_add(1, Ordering::Release);
+            return unsafe { CallNextHookEx(None, code, w_param, l_param) };
+        }
+
+        if msg != WM_MOUSEWHEEL {
+            return unsafe { CallNextHookEx(None, code, w_param, l_param) };
+        }
+
+        if !AVATAR_TOOL_MODE_AVATAR.load(Ordering::Relaxed) {
+            return unsafe { CallNextHookEx(None, code, w_param, l_param) };
+        }
+
+        let root_raw = AVATAR_ROOT_HWND.load(Ordering::Relaxed);
+        if root_raw == 0 {
+            return unsafe { CallNextHookEx(None, code, w_param, l_param) };
+        }
+        let avatar_root = HWND(root_raw as *mut core::ffi::c_void);
+
+        let hook = unsafe { &*(l_param.0 as *const MSLLHOOKSTRUCT) };
+        let hovered = unsafe { WindowFromPoint(hook.pt) };
+        if hovered.0.is_null() {
+            return unsafe { CallNextHookEx(None, code, w_param, l_param) };
+        }
+
+        let hovered_root = unsafe { GetAncestor(hovered, GA_ROOT) };
+        let hovered_root = if !hovered_root.0.is_null() {
+            hovered_root
+        } else {
+            hovered
+        };
+        if hovered_root != avatar_root {
+            return unsafe { CallNextHookEx(None, code, w_param, l_param) };
+        }
+
+        // High word: signed wheel delta (WHEEL_DELTA=120). Convert to DOM-style deltaY:
+        // wheel-up => negative deltaY (zoom in), wheel-down => positive deltaY (zoom out).
+        let wheel_delta = ((hook.mouseData >> 16) as i16) as i32;
+        let delta_y = -wheel_delta;
+        if delta_y == 0 {
+            return LRESULT(1);
+        }
+
+        let alt_down = unsafe { GetKeyState(VK_MENU.0 as i32) } < 0;
+        if alt_down {
+            let _ = WHEEL_PENDING_ALT.fetch_add(delta_y, Ordering::Relaxed);
+        } else {
+            let _ = WHEEL_PENDING_NOALT.fetch_add(delta_y, Ordering::Relaxed);
+        }
+
+        // Swallow the wheel so the underlying focused app won't scroll while hovering the avatar.
+        LRESULT(1)
+    }
+
+    fn ensure_wheel_hook_installed() {
+        if WHEEL_HOOK.load(Ordering::Relaxed) != 0 {
+            return;
+        }
+
+        let hinst = unsafe { GetModuleHandleW(windows::core::PCWSTR::null()) }
+            .ok()
+            .map(|m| HINSTANCE(m.0));
+        let hook = unsafe { SetWindowsHookExW(WH_MOUSE_LL, Some(wheel_hook_proc), hinst, 0) };
+        let hook = match hook {
+            Ok(hook) => hook,
+            Err(err) => {
+                log::warn!("Avatar wheel hook: SetWindowsHookExW failed: {}", err);
+                return;
+            }
+        };
+        let raw = hook.0 as isize;
+        match WHEEL_HOOK.compare_exchange(0, raw, Ordering::SeqCst, Ordering::SeqCst) {
+            Ok(_) => {
+                log::info!("Avatar wheel hook installed");
+            }
+            Err(_) => {
+                // Another thread won the race: remove our hook to avoid leaking it.
+                let _ = unsafe { UnhookWindowsHookEx(hook) };
+            }
+        }
+    }
+
+    pub fn set_avatar_tool_mode_enabled(enabled: bool) {
+        AVATAR_TOOL_MODE_AVATAR.store(enabled, Ordering::Relaxed);
+    }
+
+    pub fn spawn_avatar_wheel_router(app: &tauri::AppHandle) {
+        use std::time::Duration;
+
+        ensure_wheel_hook_installed();
+
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            let mut ticker = tokio::time::interval(Duration::from_millis(16));
+            let mut last_panel_click_seq = 0u64;
+
+            loop {
+                ticker.tick().await;
+
+                let click_seq = PANEL_CLICK_SEQ.load(Ordering::Acquire);
+                if click_seq != last_panel_click_seq {
+                    last_panel_click_seq = click_seq;
+                    let x = PANEL_CLICK_X.load(Ordering::Relaxed);
+                    let y = PANEL_CLICK_Y.load(Ordering::Relaxed);
+                    handle_panel_outside_click(&app, x, y);
+                }
+
+                let delta_alt = WHEEL_PENDING_ALT.swap(0, Ordering::Relaxed);
+                let delta_noalt = WHEEL_PENDING_NOALT.swap(0, Ordering::Relaxed);
+                if delta_alt == 0 && delta_noalt == 0 {
+                    continue;
+                }
+
+                let Some(avatar) = app.get_webview_window("avatar") else {
+                    continue;
+                };
+
+                if delta_alt != 0 {
+                    let _ = avatar.emit(
+                        crate::EVT_AVATAR_INPUT_WHEEL,
+                        AvatarWheelPayload {
+                            delta_y: delta_alt,
+                            alt_key: true,
+                        },
+                    );
+                }
+
+                if delta_noalt != 0 {
+                    let _ = avatar.emit(
+                        crate::EVT_AVATAR_INPUT_WHEEL,
+                        AvatarWheelPayload {
+                            delta_y: delta_noalt,
+                            alt_key: false,
+                        },
+                    );
+                }
+            }
+        });
+    }
+
+    fn handle_panel_outside_click(app: &tauri::AppHandle, x: i32, y: i32) {
+        use windows::Win32::UI::WindowsAndMessaging::GA_ROOTOWNER;
+
+        let Some(panel) = app
+            .get_webview_window("main")
+            .or_else(|| app.get_webview_window("panel"))
+        else {
+            return;
+        };
+
+        let mode = app.state::<WindowStateStore>().get_current_mode();
+        if !matches!(mode, WindowMode::Mini) {
+            return;
+        }
+
+        let Ok(visible) = panel.is_visible() else {
+            return;
+        };
+        if !visible {
+            return;
+        }
+
+        let clicked = unsafe { WindowFromPoint(POINT { x, y }) };
+
+        let Ok(panel_hwnd) = panel.hwnd() else {
+            return;
+        };
+        let panel_root = unsafe { GetAncestor(panel_hwnd, GA_ROOT) };
+        let panel_root = if !panel_root.0.is_null() {
+            panel_root
+        } else {
+            panel_hwnd
+        };
+
+        // Many WebView2/UI popups (e.g. <select> dropdowns) are separate top-level windows
+        // owned by the panel. GA_ROOT would treat them as "outside", so use GA_ROOTOWNER.
+        let panel_root_owner = unsafe { GetAncestor(panel_root, GA_ROOTOWNER) };
+        let panel_root_owner = if !panel_root_owner.0.is_null() {
+            panel_root_owner
+        } else {
+            panel_root
+        };
+
+        let click_root = if !clicked.0.is_null() {
+            unsafe { GetAncestor(clicked, GA_ROOT) }
+        } else {
+            clicked
+        };
+        let click_root = if !click_root.0.is_null() { click_root } else { clicked };
+
+        let click_root_owner = if !clicked.0.is_null() {
+            unsafe { GetAncestor(clicked, GA_ROOTOWNER) }
+        } else {
+            clicked
+        };
+        let click_root_owner = if !click_root_owner.0.is_null() {
+            click_root_owner
+        } else {
+            clicked
+        };
+
+        let is_inside_panel = !clicked.0.is_null()
+            && (click_root == panel_root
+                || click_root_owner == panel_root
+                || click_root_owner == panel_root_owner);
+        if is_inside_panel {
+            return;
+        }
+
+        let _ = panel.hide();
+        log::debug!(
+            "Panel auto-dismiss: hide on outside click (mode={:?}, clicked={:?}, click_root={:?}, click_root_owner={:?}, panel_root={:?}, panel_root_owner={:?})",
+            mode,
+            clicked,
+            click_root,
+            click_root_owner,
+            panel_root,
+            panel_root_owner
+        );
     }
 
     unsafe extern "system" fn avatar_subclass_proc(
@@ -223,6 +499,7 @@ mod windows_impl {
         let hwnd = window.hwnd()?;
         let root = unsafe { GetAncestor(hwnd, GA_ROOT) };
         let root = if !root.0.is_null() { root } else { hwnd };
+        AVATAR_ROOT_HWND.store(root.0 as isize, Ordering::Relaxed);
 
         let ref_data = (mask_store as *const HitTestMaskStore) as usize;
         let targets = collect_descendant_hwnds(root);
@@ -410,25 +687,7 @@ mod windows_impl {
                         interactive = false;
                     } else if in_client {
                         if let Some(snapshot) = mask_store.load() {
-                            let mx = ((pt.x as i64) * (snapshot.mask_w as i64) / (cw as i64)) as i64;
-                            let my = ((pt.y as i64) * (snapshot.mask_h as i64) / (ch as i64)) as i64;
-
-                            if mx >= 0 && my >= 0 {
-                                let mx = mx as u32;
-                                let my = my as u32;
-                                if mx < snapshot.mask_w
-                                    && my < snapshot.mask_h
-                                    && snapshot.rect.contains(mx, my)
-                                {
-                                    let mx_usize = mx as usize;
-                                    let my_usize = my as usize;
-                                    let idx = my_usize * snapshot.stride + (mx_usize / 8);
-                                    if let Some(byte) = snapshot.bitset.get(idx) {
-                                        let bit = (byte >> (mx_usize % 8)) & 1;
-                                        interactive = bit == 1;
-                                    }
-                                }
-                            }
+                            interactive = mask_hit_at(&snapshot, pt.x, pt.y, cw, ch);
                         } else {
                             // No mask yet: keep the client click-through.
                             interactive = false;
@@ -475,6 +734,14 @@ mod windows_impl {
             targets.len()
         );
         store_avatar_gate_hwnd(HWND(core::ptr::null_mut()));
+
+        let raw = WHEEL_HOOK.swap(0, Ordering::SeqCst);
+        if raw != 0 {
+            let hook = HHOOK(raw as *mut core::ffi::c_void);
+            if !hook.0.is_null() {
+                let _ = unsafe { UnhookWindowsHookEx(hook) };
+            }
+        }
     }
 
     pub fn ensure_avatar_window(app: &tauri::AppHandle) -> tauri::Result<tauri::WebviewWindow> {
@@ -507,5 +774,6 @@ mod windows_impl {
 
 #[cfg(target_os = "windows")]
 pub use windows_impl::{
-    ensure_avatar_window, install_avatar_subclass, remove_avatar_subclass, spawn_avatar_cursor_gate,
+    ensure_avatar_window, install_avatar_subclass, remove_avatar_subclass, set_avatar_tool_mode_enabled,
+    spawn_avatar_cursor_gate, spawn_avatar_wheel_router,
 };

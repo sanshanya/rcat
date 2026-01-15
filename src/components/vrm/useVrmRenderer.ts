@@ -30,6 +30,8 @@ import {
   VRMSpringBoneLoaderPlugin,
   VRMUtils,
 } from "@pixiv/three-vrm";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { getCurrentWindow, PhysicalPosition, PhysicalSize } from "@tauri-apps/api/window";
 
 import type { RenderFps, RenderFpsMode } from "@/components/vrm/renderFpsStore";
 import { setRenderFpsStats } from "@/components/vrm/renderFpsStore";
@@ -40,6 +42,7 @@ import {
   setVrmViewState,
 } from "@/services/vrmSettings";
 import { getVrmToolMode, subscribeVrmToolMode } from "@/components/vrm/vrmToolModeStore";
+import { isTauriContext, reportError } from "@/utils";
 
 export type VrmRendererHandle = {
   loadVrm: (url: string, options?: { signal?: AbortSignal }) => Promise<VRM>;
@@ -67,6 +70,10 @@ const MAX_DELTA_SECONDS = 1 / 30;
 const FPS_EPSILON_MS = 0.5;
 const VIEW_STATE_STORAGE_PREFIX = "rcat.vrm.viewState";
 const AVATAR_STATE_STORAGE_PREFIX = "rcat.vrm.avatarState";
+const AVATAR_WINDOW_SCALE_MIN_W = 240;
+const AVATAR_WINDOW_SCALE_MIN_H = 360;
+const AVATAR_WINDOW_SCALE_MAX_W = 1400;
+const AVATAR_WINDOW_SCALE_MAX_H = 2100;
 
 type StoredViewState = {
   cameraPosition: [number, number, number];
@@ -434,6 +441,37 @@ export const useVrmRenderer = (
     let hasAttachedResetListener = false;
     let toolModeUnsubscribe: (() => void) | null = null;
     let toolMode = getVrmToolMode();
+    const isAvatarWebview = (() => {
+      if (!isTauriContext()) return false;
+      try {
+        return getCurrentWebviewWindow().label === "avatar";
+      } catch (err) {
+        reportError(err, "useVrmRenderer.resolveWindowLabel", { devOnly: true });
+        return false;
+      }
+    })();
+
+    let windowScalePending = 0;
+    let windowScaleInFlight = false;
+    let windowMetricsCache: {
+      outerX: number;
+      outerY: number;
+      outerW: number;
+      outerH: number;
+      borderW: number;
+      borderH: number;
+    } | null = null;
+    let windowDragState: {
+      pointerId: number;
+      startX: number;
+      startY: number;
+      startOuterX: number;
+      startOuterY: number;
+      dpr: number;
+      ready: boolean;
+    } | null = null;
+    let windowDragPending: { x: number; y: number } | null = null;
+    let windowDragInFlight = false;
 
     const avatarRaycaster = new Raycaster();
     const avatarNdc = new Vector2();
@@ -563,6 +601,118 @@ export const useVrmRenderer = (
       updateToolMode(getVrmToolMode());
     });
 
+    const applyAvatarWindowScale = async (deltaY: number) => {
+      if (!isAvatarWebview) return;
+      if (!Number.isFinite(deltaY) || deltaY === 0) return;
+
+      const win = getCurrentWindow();
+      let metrics = windowMetricsCache;
+      if (!metrics) {
+        const [outerPos, outerSize, innerSize] = await Promise.all([
+          win.outerPosition(),
+          win.outerSize(),
+          win.innerSize(),
+        ]);
+        const borderW = Math.max(0, outerSize.width - innerSize.width);
+        const borderH = Math.max(0, outerSize.height - innerSize.height);
+        metrics = {
+          outerX: outerPos.x,
+          outerY: outerPos.y,
+          outerW: outerSize.width,
+          outerH: outerSize.height,
+          borderW,
+          borderH,
+        };
+      }
+
+      const factor = Math.exp(-deltaY * 0.001);
+      if (!Number.isFinite(factor) || factor <= 0) return;
+
+      const minFactor = Math.max(
+        AVATAR_WINDOW_SCALE_MIN_W / metrics.outerW,
+        AVATAR_WINDOW_SCALE_MIN_H / metrics.outerH
+      );
+      const maxFactor = Math.min(
+        AVATAR_WINDOW_SCALE_MAX_W / metrics.outerW,
+        AVATAR_WINDOW_SCALE_MAX_H / metrics.outerH
+      );
+      const nextFactor = Math.min(maxFactor, Math.max(minFactor, factor));
+
+      const desiredOuterW = Math.round(metrics.outerW * nextFactor);
+      const desiredOuterH = Math.round(metrics.outerH * nextFactor);
+      const desiredInnerW = Math.max(1, desiredOuterW - metrics.borderW);
+      const desiredInnerH = Math.max(1, desiredOuterH - metrics.borderH);
+      const nextOuterW = desiredInnerW + metrics.borderW;
+      const nextOuterH = desiredInnerH + metrics.borderH;
+
+      if (nextOuterW === metrics.outerW && nextOuterH === metrics.outerH) return;
+
+      const centerX = metrics.outerX + metrics.outerW / 2;
+      const centerY = metrics.outerY + metrics.outerH / 2;
+      const nextOuterX = Math.round(centerX - nextOuterW / 2);
+      const nextOuterY = Math.round(centerY - nextOuterH / 2);
+
+      await win.setSize(new PhysicalSize(desiredInnerW, desiredInnerH));
+      await win.setPosition(new PhysicalPosition(nextOuterX, nextOuterY));
+
+      windowMetricsCache = {
+        outerX: nextOuterX,
+        outerY: nextOuterY,
+        outerW: nextOuterW,
+        outerH: nextOuterH,
+        borderW: metrics.borderW,
+        borderH: metrics.borderH,
+      };
+    };
+
+    const queueAvatarWindowScale = (deltaY: number) => {
+      if (!isAvatarWebview) return;
+      if (!Number.isFinite(deltaY) || deltaY === 0) return;
+
+      windowScalePending += deltaY;
+      if (windowScaleInFlight) return;
+      windowScaleInFlight = true;
+
+      void (async () => {
+        try {
+          while (windowScalePending !== 0) {
+            const pending = windowScalePending;
+            windowScalePending = 0;
+            await applyAvatarWindowScale(pending);
+          }
+        } catch (err) {
+          windowMetricsCache = null;
+          reportError(err, "useVrmRenderer.avatarWindowScale", { devOnly: true });
+        } finally {
+          windowScaleInFlight = false;
+        }
+      })();
+    };
+
+    const queueAvatarWindowMove = (x: number, y: number) => {
+      if (!isAvatarWebview) return;
+
+      windowDragPending = { x, y };
+      if (windowDragInFlight) return;
+      windowDragInFlight = true;
+
+      void (async () => {
+        const win = getCurrentWindow();
+        while (windowDragPending) {
+          const next = windowDragPending;
+          windowDragPending = null;
+          if (!next) break;
+          await win.setPosition(new PhysicalPosition(next.x, next.y));
+        }
+      })()
+        .catch((err) => {
+          reportError(err, "useVrmRenderer.avatarWindowMove", { devOnly: true });
+        })
+        .finally(() => {
+          windowDragInFlight = false;
+        });
+    };
+
     const pointerToNdc = (event: PointerEvent | WheelEvent) => {
       const rect = canvas.getBoundingClientRect();
       const width = Math.max(1, rect.width);
@@ -576,6 +726,51 @@ export const useVrmRenderer = (
     const onPointerDown = (event: PointerEvent) => {
       if (toolMode !== "avatar") return;
       if (event.button !== 0) return;
+
+      // Desktop pet interactions:
+      // - Left-drag: move the avatar window (Alt+Left-drag moves the model).
+      if (!event.altKey) {
+        if (!isAvatarWebview) return;
+        event.preventDefault();
+        windowMetricsCache = null;
+        windowDragState = null;
+        windowDragPending = null;
+        windowDragInFlight = false;
+
+        const pointerId = event.pointerId;
+        const dpr = window.devicePixelRatio || 1;
+        windowDragState = {
+          pointerId,
+          startX: Math.round(event.screenX * dpr),
+          startY: Math.round(event.screenY * dpr),
+          startOuterX: 0,
+          startOuterY: 0,
+          dpr,
+          ready: false,
+        };
+
+        try {
+          canvas.setPointerCapture(pointerId);
+        } catch {
+          // Ignore pointer capture failures.
+        }
+
+        void getCurrentWindow()
+          .outerPosition()
+          .then((pos) => {
+            const state = windowDragState;
+            if (!state || state.pointerId !== pointerId) return;
+            state.startOuterX = pos.x;
+            state.startOuterY = pos.y;
+            state.ready = true;
+          })
+          .catch((err) => {
+            windowDragState = null;
+            reportError(err, "useVrmRenderer.avatarWindowDrag.outerPosition", { devOnly: true });
+          });
+        return;
+      }
+
       if (!currentVrm) return;
 
       const ndc = pointerToNdc(event);
@@ -594,6 +789,17 @@ export const useVrmRenderer = (
     };
 
     const onPointerMove = (event: PointerEvent) => {
+      const windowState = windowDragState;
+      if (windowState && windowState.pointerId === event.pointerId) {
+        if (!windowState.ready) return;
+        const x = Math.round(event.screenX * windowState.dpr);
+        const y = Math.round(event.screenY * windowState.dpr);
+        const nextX = windowState.startOuterX + (x - windowState.startX);
+        const nextY = windowState.startOuterY + (y - windowState.startY);
+        queueAvatarWindowMove(nextX, nextY);
+        return;
+      }
+
       if (!avatarDragging) return;
       if (avatarDraggingPointerId !== event.pointerId) return;
       if (!currentVrm) return;
@@ -606,7 +812,21 @@ export const useVrmRenderer = (
       currentVrm.scene.updateMatrixWorld(true);
     };
 
-    const endAvatarDrag = (event: PointerEvent) => {
+    const endPointerDrag = (event: PointerEvent) => {
+      const windowState = windowDragState;
+      if (windowState && windowState.pointerId === event.pointerId) {
+        windowDragState = null;
+        windowDragPending = null;
+        windowDragInFlight = false;
+        windowMetricsCache = null;
+        try {
+          canvas.releasePointerCapture(event.pointerId);
+        } catch {
+          // Ignore capture release failures.
+        }
+        return;
+      }
+
       if (!avatarDragging) return;
       if (avatarDraggingPointerId !== event.pointerId) return;
       avatarDragging = false;
@@ -621,6 +841,17 @@ export const useVrmRenderer = (
 
     const onWheel = (event: WheelEvent) => {
       if (toolMode !== "avatar") return;
+
+      // Desktop pet interactions:
+      // - Wheel: scale the avatar window around its center (Alt+Wheel scales the model).
+      if (!event.altKey) {
+        if (isAvatarWebview) {
+          event.preventDefault();
+          queueAvatarWindowScale(event.deltaY);
+          return;
+        }
+      }
+
       if (!currentVrm) return;
       event.preventDefault();
       const current = currentVrm.scene.scale.x;
@@ -633,8 +864,8 @@ export const useVrmRenderer = (
 
     canvas.addEventListener("pointerdown", onPointerDown);
     canvas.addEventListener("pointermove", onPointerMove);
-    canvas.addEventListener("pointerup", endAvatarDrag);
-    canvas.addEventListener("pointercancel", endAvatarDrag);
+    canvas.addEventListener("pointerup", endPointerDrag);
+    canvas.addEventListener("pointercancel", endPointerDrag);
     canvas.addEventListener("wheel", onWheel, { passive: false });
 
     const resize = () => {
@@ -878,8 +1109,8 @@ export const useVrmRenderer = (
       }
       canvas.removeEventListener("pointerdown", onPointerDown);
       canvas.removeEventListener("pointermove", onPointerMove);
-      canvas.removeEventListener("pointerup", endAvatarDrag);
-      canvas.removeEventListener("pointercancel", endAvatarDrag);
+      canvas.removeEventListener("pointerup", endPointerDrag);
+      canvas.removeEventListener("pointercancel", endPointerDrag);
       canvas.removeEventListener("wheel", onWheel);
       if (toolModeUnsubscribe) {
         toolModeUnsubscribe();

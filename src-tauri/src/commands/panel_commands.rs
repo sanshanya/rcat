@@ -65,40 +65,13 @@ pub fn dismiss_capsule(
         }
     }
 
-    // On Windows, interacting with the window chrome (drag/resize) can temporarily emit a blur
-    // event even though the window is still the foreground window. Only dismiss on blur when
-    // the panel is truly no longer foreground.
     #[cfg(target_os = "windows")]
     {
         if reason == "blur" {
-            use windows::Win32::UI::WindowsAndMessaging::{
-                GetAncestor, GetForegroundWindow, GA_ROOT, GA_ROOTOWNER,
-            };
-            if let Ok(hwnd) = window.hwnd() {
-                let root = unsafe { GetAncestor(hwnd, GA_ROOT) };
-                let root = if !root.0.is_null() { root } else { hwnd };
-                let root_owner = unsafe { GetAncestor(root, GA_ROOTOWNER) };
-                let root_owner = if !root_owner.0.is_null() { root_owner } else { root };
-                let fg = unsafe { GetForegroundWindow() };
-                if !fg.0.is_null() {
-                    let fg_root_owner = unsafe { GetAncestor(fg, GA_ROOTOWNER) };
-                    let fg_root_owner = if !fg_root_owner.0.is_null() {
-                        fg_root_owner
-                    } else {
-                        fg
-                    };
-
-                    // If the foreground window is the panel itself OR a panel-owned popup
-                    // (dropdowns, dialogs), ignore the blur.
-                    if fg == root || fg_root_owner == root_owner {
-                        log::debug!(
-                            "dismiss_capsule: ignored blur (still foreground; label={})",
-                            window.label()
-                        );
-                        return Ok(());
-                    }
-                }
-            }
+            // Blur/focus events can "bounce" on Windows due to focus-stealing rules and window
+            // chrome interactions. Mini-mode dismissal is handled by the global mouse hook
+            // (outside-click), so treat blur as a no-op to avoid flaky auto-hide.
+            return Ok(());
         }
     }
 

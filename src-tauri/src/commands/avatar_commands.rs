@@ -132,3 +132,16 @@ pub fn avatar_update_hittest_mask(
 
     Ok(())
 }
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AvatarSetToolModeArgs {
+    pub mode: String,
+}
+
+#[tauri::command]
+pub fn avatar_set_tool_mode(args: AvatarSetToolModeArgs) -> Result<(), String> {
+    let mode = args.mode.trim().to_ascii_lowercase();
+    crate::windows::avatar_window::set_avatar_tool_mode_enabled(mode == "avatar");
+    Ok(())
+}
