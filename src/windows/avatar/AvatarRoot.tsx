@@ -12,15 +12,27 @@ import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import VrmCanvas from "@/components/vrm/VrmCanvas";
 import type { VrmRendererFrameContext } from "@/components/vrm/useVrmRenderer";
 import { useVrmToolMode } from "@/components/vrm/vrmToolModeStore";
-import { EVT_AVATAR_INPUT_WHEEL, EVT_CAPSULE_DISMISS, EVT_DEBUG_HITTEST_SETTINGS } from "@/constants";
+import {
+  EVT_AVATAR_HITTEST_STATS,
+  EVT_AVATAR_INPUT_WHEEL,
+  EVT_CAPSULE_DISMISS,
+  EVT_DEBUG_HITTEST_SETTINGS,
+} from "@/constants";
 import { useTauriEvent } from "@/hooks";
 import { useHitTestMask } from "@/windows/avatar/useHitTestMask";
 import HitTestDebugOverlay from "@/windows/avatar/HitTestDebugOverlay";
 import { useAvatarVrmBridge } from "@/windows/avatar/useAvatarVrmBridge";
-import { isTauriContext, reportPromiseError } from "@/utils";
+import { getTauriScaleFactor, isTauriContext, reportPromiseError } from "@/utils";
 
 const DEFAULT_VRM_URL = "/vrm/default.vrm";
 const HITTEST_DOT_STORAGE_KEY = "rcat.debug.hittestMouseDot";
+
+type AvatarHitTestStats = {
+  gateIgnoreTrue: number;
+  gateIgnoreFalse: number;
+  gateFailOpen: number;
+  gateLastIgnore: boolean | null;
+};
 
 const readStorageFlag = (key: string): boolean => {
   try {
@@ -39,6 +51,7 @@ export default function AvatarRoot() {
   const [showHitTestDot, setShowHitTestDot] = useState(() =>
     readStorageFlag(HITTEST_DOT_STORAGE_KEY)
   );
+  const [backendStats, setBackendStats] = useState<AvatarHitTestStats | null>(null);
 
   const debugEnabled = useMemo(() => {
     if (import.meta.env.DEV) return true;
@@ -55,10 +68,17 @@ export default function AvatarRoot() {
 
   const handleContextMenu = useCallback((event: MouseEvent) => {
     event.preventDefault();
-    const dpr = window.devicePixelRatio || 1;
-    const anchorX = Math.round(event.screenX * dpr);
-    const anchorY = Math.round(event.screenY * dpr);
-    void invoke("toggle_capsule", { args: { tab: "chat", anchorX, anchorY } });
+    if (!isTauriContext()) return;
+
+    const screenX = event.screenX;
+    const screenY = event.screenY;
+    void getTauriScaleFactor()
+      .then((scaleFactor) => {
+        const anchorX = Math.round(screenX * scaleFactor);
+        const anchorY = Math.round(screenY * scaleFactor);
+        return invoke("toggle_capsule", { args: { tab: "chat", anchorX, anchorY } });
+      })
+      .catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -124,6 +144,11 @@ export default function AvatarRoot() {
     }
   );
 
+  useTauriEvent<AvatarHitTestStats>(EVT_AVATAR_HITTEST_STATS, (event) => {
+    if (!event.payload) return;
+    setBackendStats(event.payload);
+  });
+
   return (
     <div
       className="absolute inset-0 bg-transparent"
@@ -133,7 +158,7 @@ export default function AvatarRoot() {
     >
       <VrmCanvas url={DEFAULT_VRM_URL} onFrameContext={handleFrameContext} />
       {debugEnabled && debugInfo ? (
-        <HitTestDebugOverlay debug={debugInfo} mouse={mouse} />
+        <HitTestDebugOverlay debug={debugInfo} mouse={mouse} backend={backendStats} />
       ) : null}
     </div>
   );

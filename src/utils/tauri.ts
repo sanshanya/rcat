@@ -15,3 +15,18 @@ export const isTauriContext = (): boolean => {
 
   return false;
 };
+
+export const getTauriScaleFactor = async (): Promise<number> => {
+  if (typeof window === "undefined") return 1;
+  if (!isTauriContext()) return window.devicePixelRatio || 1;
+
+  try {
+    const { getCurrentWindow } = await import("@tauri-apps/api/window");
+    const scale = await getCurrentWindow().scaleFactor();
+    if (Number.isFinite(scale) && scale > 0) return scale;
+  } catch {
+    // Ignore and fall back.
+  }
+
+  return window.devicePixelRatio || 1;
+};

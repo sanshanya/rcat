@@ -5,7 +5,7 @@
 P0 之所以“代码看起来很多”，主要不是“补丁堆叠”造成的偶然复杂度，而是 **Windows + WebView2 + 透明顶层非激活窗口** 这个组合带来的必然工程成本：  
 要同时满足 **像素级穿透**、**不抢焦点**、**右键唤出胶囊**、以及 **非激活窗口仍能可靠接收 Wheel/Drag**，必然需要一些 Win32 侧的 glue（subclass/全局 hook/轮询兜底）。
 
-但当前实现确实有可收敛点：**把“桌宠交互”收口到 VRM renderer（已做）** 是正确方向；下一步应把“输入兜底（wheel + outside-click）”收口到单一 Win32 hook 模块，并明确 **命中/穿透的主策略**（`WM_NCHITTEST` vs `ignore_cursor_events` gate），避免双轨逻辑未来发散。
+但当前实现确实有可收敛点：**把“桌宠交互”收口到 VRM renderer（已做）** 是正确方向；“命中/穿透”也已经收敛为 **cursor gate（`set_ignore_cursor_events` 动态切换）**，并移除 `WM_NCHITTEST` 路径，减少未来发散点。后续重点应放在 **DPI/坐标源统一** 与 **hook/轮询的生命周期与节流**。
 
 ---
 
@@ -14,7 +14,7 @@ P0 之所以“代码看起来很多”，主要不是“补丁堆叠”造成�
 | `VRM_V1.md` 关键点 | 现状 | 代码位置（入口） |
 |---|---|---|
 | 两窗口职责：Avatar 渲染 / Panel 承载 UI | ✅ 符合 | `src/windows/WindowRouter.tsx` |
-| 像素级穿透：模型像素 HTCLIENT，外部 HTTRANSPARENT | ✅（但存在“兜底 gate”双轨） | `src-tauri/src/windows/avatar_window.rs` + `src/windows/avatar/MaskGenerator.ts` |
+| 像素级穿透：模型像素可交互，透明区域穿透（cursor gate） | ✅（V1 仅保留 gate） | `src-tauri/src/windows/avatar_window.rs` + `src/windows/avatar/MaskGenerator.ts` |
 | `WM_MOUSEACTIVATE = MA_NOACTIVATE` 不抢焦点 | ✅ | `src-tauri/src/windows/avatar_window.rs` |
 | mask snapshot：低分辨率 bitset + rect + viewportW/H + seq 丢弃 | ✅ | `src/windows/avatar/useHitTestMask.ts` + `src-tauri/src/commands/avatar_commands.rs` + `src-tauri/src/windows/hittest_mask.rs` |
 | 动态提频：交互/相机动/动作时 ~30Hz | ✅ | `src/windows/avatar/useHitTestMask.ts` |
@@ -31,14 +31,8 @@ P0 之所以“代码看起来很多”，主要不是“补丁堆叠”造成�
 
 你的日志里已经出现了典型现象：`EnumChildWindows` 枚举到的子窗口，有些属于 **其他 pid**（WebView2/Chromium 进程）。这些 HWND 无法在我们进程里 `SetWindowSubclass` 成功。
 
-这意味着：单靠“对子窗口逐个 subclass + WM_NCHITTEST”在某些机器上 **不一定覆盖实际参与输入命中的那个窗口**。因此才会出现：
-
-- 明明 mask/红框正确，但红框外仍然“偶发不穿透”
-
-对应的工程手段只能二选一（或混合）：
-
-1) **`WM_NCHITTEST` 路径尽量覆盖**（对能 hook 的窗口）  
-2) **`ignore_cursor_events` gate**：在顶层窗口上切换 `WS_EX_TRANSPARENT`，用“整窗透明”绕过无法 subclass 的子窗口（当前实现即此）。
+这意味着：单靠 `WM_NCHITTEST` 在“可 hook 的窗口”里做命中，在某些机器上 **不一定覆盖实际参与输入命中的那个窗口**，会导致“mask/红框正确但 OS 层不穿透/不可点”。  
+因此 V1 已经选择收敛为 **cursor gate**：在 AvatarWindow 上动态切换 `ignore_cursor_events`，用“整窗 click-through”绕过不可控的子窗口结构差异。
 
 ### B. AvatarWindow 是非激活窗口：Wheel/Focus 事件天然不可靠
 
@@ -63,14 +57,14 @@ P0 之所以“代码看起来很多”，主要不是“补丁堆叠”造成�
 
 ## 3) 当前实现的“会成为阻碍”的点（风险清单）
 
-### 3.1 双轨命中策略：`WM_NCHITTEST` + cursor gate
+### 3.1 gate 目标 HWND/坐标源不一致（仍需重点验证）
 
-这会带来长期风险：
+cursor gate 的正确性依赖两个前提：
 
-- 两套坐标映射/窗口选择逻辑容易漂移（尤其是 DPI/多显示器、WebView 结构变化时）。
-- Debug 时不容易定位“到底是 WM_NCHITTEST 在生效还是 gate 在生效”。
+- `ScreenToClient/GetClientRect` 必须基于“与 WebView 输入坐标一致”的那个 HWND（常见是 WebView2 子窗口，而不是顶层 HWND）。
+- 高 DPI/有标题栏/多显示器下，window/client/viewport 的比例变化要可观测且不会刷屏。
 
-建议：把它变成“**一个主策略 + 一个可显式开启的 fallback**”，而不是默认两套都跑。
+当前实现已通过“选择最大子 HWND 作为 gate 目标 + 不一致时刷新”的方式收敛风险，但仍建议在 150%/200% DPI 与多显示器环境下做回归验证。
 
 ### 3.2 多个全局轮询/定时器（33ms/16ms）
 
@@ -112,16 +106,7 @@ P0 之所以“代码看起来很多”，主要不是“补丁堆叠”造成�
 
 ### Step 2：命中策略只保留一个“主路径”
 
-两个可行方向：
-
-- **方向 A（更精确）**：主用 `WM_NCHITTEST`，gate 只在检测到“当前 HWND 结构无法 hook”时启用（或通过 debug 开关启用）。  
-- **方向 B（更简单）**：主用 gate（`ignore_cursor_events`），只在 titlebar/debug 时保留最小的 subclass（`MA_NOACTIVATE`）。  
-
-建议先做“可切换”：
-
-- `RCAT_AVATAR_HITTEST_MODE=nchittest|gate|hybrid`
-
-先用真实用户机器跑一周，确认哪个在你们目标环境下更稳，再删掉另一条路径。
+V1 已选择 **方向 B**：主用 gate（`ignore_cursor_events`），只保留最小 subclass（`MA_NOACTIVATE`）与输入兜底 hook。`WM_NCHITTEST` 路径已移除，避免双轨长期发散。
 
 ### Step 3：把常量/阈值集中到一个地方
 
@@ -150,5 +135,5 @@ P0 之所以“代码看起来很多”，主要不是“补丁堆叠”造成�
 ## 6) 明日建议 TODO（最小成本收敛）
 
 1. ✅ 把 panel outside-dismiss 从轮询改为 hook（复用 `WH_MOUSE_LL`）。  
-2. 为命中策略加运行时开关（`gate/nchittest/hybrid`），并加一条 debug 日志显示当前模式。  
-3. 做一个“WM_NCHITTEST 是否实际命中”的计数器/节流日志（避免刷屏），用于判断能否删掉 gate。  
+2. 回归验证 gate：150%/200% DPI、多显示器（不同 DPI）、以及“有标题栏 debug 模式”。  
+3. 继续完善日志节流：只在“异常/变化”时输出，避免 hot-reload 后刷屏。  

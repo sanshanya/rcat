@@ -90,9 +90,18 @@ export const useHitTestMask = (frameContextRef: RefObject<VrmRendererFrameContex
       seqRef.current += 1;
       const seq = seqRef.current;
 
-      const dpr = window.devicePixelRatio || 1;
-      const clientW = Math.round(ctx.canvas.clientWidth * dpr);
-      const clientH = Math.round(ctx.canvas.clientHeight * dpr);
+      // WebView2 sometimes reports `window.devicePixelRatio = 1` even under DPI scaling.
+      // Prefer the actual WebGL drawing buffer scale.
+      const cssW = Math.max(1, ctx.canvas.clientWidth);
+      const cssH = Math.max(1, ctx.canvas.clientHeight);
+      const dprX = snapshot.viewportW / cssW;
+      const dprY = snapshot.viewportH / cssH;
+      const dpr =
+        Number.isFinite(dprX) && Number.isFinite(dprY) && dprX > 0 && dprY > 0
+          ? (dprX + dprY) / 2
+          : window.devicePixelRatio || 1;
+      const clientW = Math.round(cssW * dpr);
+      const clientH = Math.round(cssH * dpr);
 
       void invoke("avatar_update_hittest_mask", {
         args: {

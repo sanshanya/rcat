@@ -4,8 +4,10 @@
 
 核心思路：
 
-- **AvatarWindow**：只负责渲染 VRM（全透明顶层窗口），默认命中走 `HTTRANSPARENT`（事件透传），通过 `WM_NCHITTEST` 在**仅模型像素**处返回 `HTCLIENT` 恢复交互。
+- **AvatarWindow**：只负责渲染 VRM（全透明顶层窗口），默认 click-through（事件透传），通过 **cursor gate（`set_ignore_cursor_events` 动态切换）** 让“仅模型像素”恢复交互。
 - **ContextPanelWindow（胶囊）**：复用现有 Chat UI，并新增 VRM/Debug 面板；由模型右键唤出、可输入可点击，不参与穿透判定。
+
+> 更新（2026-01）：在 WebView2 多进程/子窗口结构下，`WM_NCHITTEST` 路径在部分机器上无法稳定覆盖“实际参与命中的 HWND”。因此 V1 主策略改为 **cursor gate（`set_ignore_cursor_events` 动态切换）**，并移除 `WM_NCHITTEST` 相关实现。
 
 术语约定（避免混用）：
 
@@ -27,7 +29,7 @@
 
 - **桌面穿透手感正确**：AvatarWindow 在“模型像素外”从 OS 视角等同不存在（鼠标事件透传到底层窗口）。
 - **模型可交互**：模型像素处可收鼠标事件，Three.js raycast 正常工作；右键能稳定唤出胶囊。
-- **工程可控**：不引入复杂几何命中（BVH/逐三角）到 Rust 侧；`WM_NCHITTEST` 仅做 O(1) 内存判断。
+- **工程可控**：不引入复杂几何命中（BVH/逐三角）到 Rust 侧；Rust 侧仅做 O(1) 内存查询 + `ignore_cursor_events` 切换。
 - **对“跳舞/移动”成立**：模型轮廓随动画变化时，命中区域同步更新，不出现大量误吃点击或漏点。
 
 ### 非目标（V1 不做/不保证）
@@ -42,7 +44,7 @@ P0（不做很容易翻车）：
 
 - **命中坐标系对齐**：后端命中映射必须对齐到前端 WebGL 的“绘制缓冲区像素”（`drawingBufferWidth/Height`），并在 IPC 里传递必要元数据做 sanity check。
 - **AvatarWindow 不抢焦点**：必须处理 `WM_MOUSEACTIVATE`（建议 `MA_NOACTIVATE`），避免用户点角色时 IDE/浏览器失去键盘焦点。
-- **Hook 到正确 HWND**：确认 `WM_NCHITTEST` 发生在实际参与命中的那个 HWND（可能是外层窗口或 WebView 子窗口）；优先 `SetWindowSubclass`，并在销毁时移除。
+- **命中用的 HWND 必须正确**：cursor gate 的 `ScreenToClient/GetClientRect` 要对准实际接收输入的子 HWND（可能不是顶层 HWND）；优先 `SetWindowSubclass`，并在销毁时移除。
 - **mask 未就绪的兜底入口**：坚持“缺数据就透明”没问题，但 V1 必须提供至少一个可操作入口（托盘/快捷键/启动期粗命中）。
 
 P1（增强稳定性与观感）：
@@ -61,7 +63,7 @@ P1（增强稳定性与观感）：
 
 - 仅渲染 VRM：`<canvas>` + 运行时渲染/行为系统（Three.js + three-vrm）。
 - 窗口层面：透明、置顶、跳过任务栏；不承载输入框/列表等 UI。
-- 命中策略：在 `WM_NCHITTEST` 里做 **(粗) bounding rect + (细) mask bitset** 两级判定。
+- 命中策略：Rust cursor gate 做 **(粗) bounding rect + (细) mask bitset** 两级判定，并动态切换 `set_ignore_cursor_events(true/false)`。
 
 #### ContextPanelWindow（交互层/胶囊）
 
@@ -87,25 +89,24 @@ P1（增强稳定性与观感）：
 
 ## 2. 交互链路（端到端）
 
-### 2.1 `WM_NCHITTEST` 返回值策略
+### 2.1 AvatarWindow 命中/穿透策略（cursor gate）
 
-在 AvatarWindow 的 WndProc 中处理 `WM_NCHITTEST`：
+AvatarWindow 使用 `set_ignore_cursor_events(true/false)` 做“整窗是否吃鼠标”的开关：
 
-- 鼠标点落在“模型像素”：返回 `HTCLIENT`
-  - WebView 接收事件，Three.js raycast 做交互
-  - `contextmenu` 可被捕获并 `preventDefault()`
-- 鼠标点落在“模型像素外”：返回 `HTTRANSPARENT`
-  - 事件透传到桌面下层窗口（如浏览器/IDE/桌面）
+- 默认保持 `ignore_cursor_events=true`（整窗 click-through，事件透传到底层窗口）。
+- 后端 cursor gate 后台轮询鼠标位置：
+  - 鼠标位于“模型像素”（mask 命中）时：切为 `ignore_cursor_events=false`（让 WebView/Three.js 收到事件，右键可 `preventDefault()`）。
+  - 鼠标位于“模型像素外”时：切回 `ignore_cursor_events=true`（不再出现“透明矩形挡点击”）。
 
 同时（P0 推荐 V1 就做）：
 
-- **禁止激活抢焦点**：处理 `WM_MOUSEACTIVATE` 返回 `MA_NOACTIVATE`（或视需求 `MA_NOACTIVATEANDEAT`），让 AvatarWindow 在可交互时也不打断用户输入。
+- **禁止激活抢焦点**：在 subclass 里处理 `WM_MOUSEACTIVATE` 返回 `MA_NOACTIVATE`，避免用户点角色时打断 IDE/浏览器输入。
 
 可选（V1.1 以后再评估）：
 
-- “拖拽移动角色”但不影响点击：在“模型像素 + 按住修饰键（如 Alt）”时返回 `HTCAPTION`；否则仍 `HTCLIENT`。
+- “拖拽移动角色”建议走前端拖拽 + 后端移动窗口（避免引入 `HTCAPTION` 依赖）。
 
-> 注意：不要再用 `set_ignore_cursor_events(true)` / `WS_EX_TRANSPARENT` 做“全穿透”。那会让窗口根本拿不到你需要的命中判定入口（你无法在透明时恢复模型区域的交互）。
+> 注意：不要让 `ignore_cursor_events=false` 常驻，否则窗口会变成一个“透明矩形挡点击”。它必须严格由 mask 决定、随光标动态切换。
 
 ### 2.2 右键唤出胶囊（ContextPanelWindow）
 
@@ -189,7 +190,7 @@ V1 推荐方案：**GPU 轮廓 Mask + 二级判定**（准 + 快 + 工程可控�
 
 - AvatarWindow 隐藏/最小化/`document.visibilityState !== "visible"` 时暂停 mask 更新，恢复可见后再 resume。
 
-关键点：`WM_NCHITTEST` 只读最近一次 mask，因此刷新频率只影响“命中边界的时延”，不会阻塞系统消息处理。
+关键点：cursor gate 只读最近一次 mask，因此刷新频率只影响“命中边界的时延”，不会阻塞系统消息处理。
 
 ---
 
@@ -198,17 +199,17 @@ V1 推荐方案：**GPU 轮廓 Mask + 二级判定**（准 + 快 + 工程可控�
 ### 4.1 需要做什么（核心）
 
 1. 获取 AvatarWindow 的 `HWND`。
-2. 安装 Windows subclass（优先 `SetWindowSubclass`），拦截 `WM_NCHITTEST` / `WM_MOUSEACTIVATE`。
-3. 在 `WM_NCHITTEST` 中执行纯内存判断（O(1)）并返回 `HTCLIENT/HTTRANSPARENT`。
+2. 安装 Windows subclass（优先 `SetWindowSubclass`），拦截 `WM_MOUSEACTIVATE`（不抢焦点）。
+3. 启动 cursor gate（后台轮询）：执行纯内存判断（O(1)）并切换 `ignore_cursor_events`。
 4. 提供 Tauri command，用于前端推送 mask snapshot 到后端缓存（只保留最新 seq）。
 5. 在窗口销毁时移除 subclass（避免残留回调/崩溃）。
 
-### 4.2 `WM_NCHITTEST` 必须满足的约束
+### 4.2 cursor gate 必须满足的约束
 
 - **绝不等待前端**：不能 `invoke` 回 JS，更不能同步 IPC。
 - **绝不阻塞**：避免锁竞争；推荐 `ArcSwap` 或 `RwLock::try_read()`。
 - **常数时间**：少量整数运算 + 一次 bitset 访问。
-- **缺数据就透明**：mask 还没到/读取失败时返回 `HTTRANSPARENT`（宁可暂时点不到模型，也不要“整窗挡鼠标”）。
+- **缺数据就 click-through**：mask 还没到/读取失败时保持 `ignore_cursor_events=true`（宁可暂时点不到模型，也不要“整窗挡鼠标”）。
 
 缺数据就透明的同时（P0）必须给“可操作兜底入口”：
 
@@ -223,7 +224,7 @@ Tauri/winit + WebView2 在 Windows 上可能存在“外层顶级 HWND + WebView
 
 - 获取 `HWND`：通过 `raw_window_handle`（winit）或 Tauri 提供的窗口句柄接口。
 - 安装方式：优先 `SetWindowSubclass`（比 `SetWindowLongPtr(GWLP_WNDPROC)` 更安全，且便于链式调用）。
-- DoD：输出日志（HWND、window class、是否收到 `WM_NCHITTEST`），必要时对子窗口也安装 subclass，确保最终能返回 `HTTRANSPARENT` 让系统继续对下层窗口命中。
+- DoD：输出日志（HWND、window class、cursor gate 目标 HWND），必要时对子窗口也安装 subclass，确保 `WM_MOUSEACTIVATE` 一致生效。
 - 移除时机：在 `Destroyed`（或等价生命周期事件）中 `RemoveWindowSubclass`。
 
 ### 4.4 建议的数据结构（示意）
@@ -236,15 +237,15 @@ Tauri/winit + WebView2 在 Windows 上可能存在“外层顶级 HWND + WebView
 - `viewport_w, viewport_h`（前端 WebGL drawing buffer 尺寸；用于 DPI/缩放 sanity check）
 - `seq`（前端递增，用于丢弃过期更新）
 
-在 `WM_NCHITTEST` 中：
+在 cursor gate 中（示意）：
 
 - `ScreenToClient` 得到 `x/y`（client px）
 - `GetClientRect` 得到 `clientW/H`（同一坐标系；可能受 DPI 虚拟化影响）
 - （可选）映射到 WebGL viewport px：`vx = x * viewport_w / clientW`，`vy = y * viewport_h / clientH`
 - `mx = vx * mask_w / viewport_w`，`my = vy * mask_h / viewport_h`
-- `if !rect.contains(mx,my) => HTTRANSPARENT`
+- `if !rect.contains(mx,my) => ignore_cursor_events=true`
 - `bit = bitset[my * stride + mx/8] >> (mx%8) & 1`
-- `bit==1 ? HTCLIENT : HTTRANSPARENT`
+- `bit==1 ? ignore_cursor_events=false : ignore_cursor_events=true`
 
 > 坐标系建议：mask 以“左上角为原点”；注意 WebGL `readPixels` 是左下角原点，前端打包 bitset 前需要翻转 y。
 >
@@ -319,7 +320,7 @@ V1 最小建议：先做方案 A（只在 Panel 打开时拉一次），避免 U
 ### v0.1（最小可跑通）
 
 - 新增 AvatarWindow + `ContextPanelWindow`
-- AvatarWindow 接入 `WM_NCHITTEST` + mask 快照缓存
+- AvatarWindow 接入 cursor gate + mask 快照缓存
 - 模型右键 → 打开胶囊（Panel）
 - Panel 先只放 Chat（复用现有），VRM/Debug 先保留在 AvatarWindow 或只放少量开关
 
@@ -350,7 +351,7 @@ Rust（`src-tauri/src/`）建议拆分：
 ```
 windows/
   mod.rs
-  avatar_window.rs     # HWND subclass + WM_NCHITTEST/WM_MOUSEACTIVATE
+  avatar_window.rs     # HWND subclass + cursor gate + WM_MOUSEACTIVATE
   panel_window.rs      # 胶囊创建/定位/翻转/多显示器
   hittest_mask.rs      # MaskSnapshot + ArcSwap/seq 丢弃策略
 commands/
@@ -384,7 +385,7 @@ windows/
 | 模型静止 | 点模型像素 → 事件到达 Three.js；点透明区域 → 透传到底层 |
 | 模型跳舞 | 手臂挥动/大幅运动时仍可点；透明区域仍透传 |
 | 窗口 resize | mask 重新生成；坐标映射无系统性偏移 |
-| 高 DPI（150%/200%） | `WM_NCHITTEST` 命中与视觉一致；不会“点空白挡点击/点模型没反应” |
+| 高 DPI（150%/200%） | cursor gate 命中与视觉一致；不会“点空白挡点击/点模型没反应” |
 | 多显示器（不同 DPI） | 角色跨屏移动/贴边时胶囊定位与翻转正确 |
 | 快速点击/刚启动 | mask 尚未更新时不 panic，降级策略生效且仍有入口 |
 

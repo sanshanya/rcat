@@ -209,6 +209,8 @@ pub(crate) const EVT_VRM_STATE_REQUEST: &str = "vrm-state-request";
 pub(crate) const EVT_VRM_STATE_SNAPSHOT: &str = "vrm-state-snapshot";
 #[cfg(target_os = "windows")]
 pub(crate) const EVT_AVATAR_INPUT_WHEEL: &str = "avatar-input-wheel";
+#[cfg(target_os = "windows")]
+pub(crate) const EVT_AVATAR_HITTEST_STATS: &str = "avatar-hittest-stats";
 
 fn parse_level_filter(raw: &str) -> Option<log::LevelFilter> {
     match raw.trim().to_ascii_lowercase().as_str() {
@@ -444,9 +446,8 @@ pub fn run() {
 
             #[cfg(target_os = "windows")]
             {
-                let mask_store = app.state::<HitTestMaskStore>();
                 let avatar_window = windows::avatar_window::ensure_avatar_window(&app_handle)?;
-                windows::avatar_window::install_avatar_subclass(&avatar_window, &*mask_store)?;
+                windows::avatar_window::install_avatar_subclass(&avatar_window)?;
                 windows::avatar_window::spawn_avatar_cursor_gate(&app_handle);
                 windows::avatar_window::spawn_avatar_wheel_router(&app_handle);
             }

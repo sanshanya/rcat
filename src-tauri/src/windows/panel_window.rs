@@ -64,6 +64,31 @@ fn position_capsule_near_anchor(window: &tauri::WebviewWindow, anchor_x: i32, an
     let _ = window.set_position(tauri::Position::Physical(tauri::PhysicalPosition { x, y }));
 }
 
+#[cfg(target_os = "windows")]
+fn bring_panel_to_top_no_activate(window: &tauri::WebviewWindow) {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetAncestor, SetWindowPos, GA_ROOT, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+        SWP_SHOWWINDOW,
+    };
+
+    let Ok(hwnd) = window.hwnd() else {
+        return;
+    };
+    let root = unsafe { GetAncestor(hwnd, GA_ROOT) };
+    let root = if !root.0.is_null() { root } else { hwnd };
+    let _ = unsafe {
+        SetWindowPos(
+            root,
+            Some(HWND_TOPMOST),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+        )
+    };
+}
+
 fn show_capsule(app: &AppHandle, window: &tauri::WebviewWindow, params: &OpenCapsuleParams) {
     // Always open as the capsule (mini) first. The user can click to expand and take focus.
     crate::set_window_mode(
@@ -78,6 +103,10 @@ fn show_capsule(app: &AppHandle, window: &tauri::WebviewWindow, params: &OpenCap
 
     #[cfg(target_os = "windows")]
     {
+        if let Ok(hwnd) = window.hwnd() {
+            crate::windows::avatar_window::set_panel_root_hwnd(hwnd);
+        }
+        bring_panel_to_top_no_activate(window);
         position_capsule_near_anchor(window, params.anchor_x, params.anchor_y);
     }
 
@@ -132,6 +161,6 @@ pub fn spawn_panel_auto_dismiss(_app: &tauri::AppHandle) {
 /// It is now handled by the global `WH_MOUSE_LL` hook in `windows::avatar_window`, so we don't need
 /// a separate ticker here.
 #[cfg(target_os = "windows")]
-pub fn spawn_panel_auto_dismiss(app: &tauri::AppHandle) {
+pub fn spawn_panel_auto_dismiss(_app: &tauri::AppHandle) {
     log::info!("Panel auto-dismiss: handled by global mouse hook");
 }

@@ -5,9 +5,15 @@ import type { HitTestMaskDebugInfo } from "@/windows/avatar/useHitTestMask";
 type HitTestDebugOverlayProps = {
   debug: HitTestMaskDebugInfo;
   mouse: { x: number; y: number } | null;
+  backend: {
+    gateIgnoreTrue: number;
+    gateIgnoreFalse: number;
+    gateFailOpen: number;
+    gateLastIgnore: boolean | null;
+  } | null;
 };
 
-function HitTestDebugOverlay({ debug, mouse }: HitTestDebugOverlayProps) {
+function HitTestDebugOverlay({ debug, mouse, backend }: HitTestDebugOverlayProps) {
   const rectStyle = useMemo(() => {
     const { rect, maskW, maskH } = debug;
     const left = (rect.minX / maskW) * 100;
@@ -29,6 +35,13 @@ function HitTestDebugOverlay({ debug, mouse }: HitTestDebugOverlayProps) {
     )}ms mask=${debug.maskW}x${debug.maskH}`;
   }, [debug]);
 
+  const backendText = useMemo(() => {
+    if (!backend) return null;
+    const ignore = backend.gateLastIgnore;
+    const ignoreText = ignore === null ? "?" : ignore ? "1" : "0";
+    return `backend: ignore=${ignoreText} gate(set0/1)=${backend.gateIgnoreFalse}/${backend.gateIgnoreTrue} failOpen=${backend.gateFailOpen}`;
+  }, [backend]);
+
   return (
     <div className="pointer-events-none absolute inset-0 z-50">
       <div
@@ -42,11 +55,11 @@ function HitTestDebugOverlay({ debug, mouse }: HitTestDebugOverlayProps) {
         />
       ) : null}
       <div className="absolute left-2 top-2 rounded bg-black/60 px-2 py-1 text-[10px] text-white/80">
-        {infoText}
+        <div>{infoText}</div>
+        {backendText ? <div className="text-white/70">{backendText}</div> : null}
       </div>
     </div>
   );
 }
 
 export default memo(HitTestDebugOverlay);
-

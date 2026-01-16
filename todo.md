@@ -7,6 +7,12 @@
 
 ## P0（近期：Demo 风险项 / 影响观感）
 
+- Avatar 命中/穿透：gate 目标 HWND 选择需更稳
+  - 现状是“选最大子 HWND 作为 gate target”，但 WebView2 结构变化/有标题栏 debug 模式/多显示器 DPI 下可能选错导致命中漂移
+  - TODO：完善选取策略与可观测性（例如输出/overlay 显示 gate hwnd 的 class/pid/client 尺寸；选错时可快速定位与回滚策略）
+- Avatar 滚轮：避免“刚进入模型就滚轮”首个 tick 泄漏到底层窗口
+  - 原因：cursor gate 轮询最多有 ~33ms 延迟，`ignore_cursor_events` 尚未切回 false 时 `WindowFromPoint` 会落到桌面/底层 app，wheel hook 不会吞掉
+  - TODO：考虑在 wheel hook 中基于“avatar window rect + mask query”来决定吞/转发（不依赖 `WindowFromPoint`），或在 cursor 靠近/进入窗口边界时临时提频
 - 追踪权限系统（Tracking Permissions）
   - 按 “动作/状态/是否说话/是否交互” 决定 head/spine/eyes 是否启用，避免某些动作被扭坏
   - 实现方式建议：在 MotionEntry 或 runtime state 上提供 allowHead/allowSpine/allowEyes，传给追踪更新入口（类 Mate-Engine 的 state/parameter gating）

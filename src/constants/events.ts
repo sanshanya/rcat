@@ -51,3 +51,6 @@ export const EVT_DEBUG_HITTEST_SETTINGS = 'debug-hittest-settings' as const;
 
 /** Windows-only: global wheel captured while hovering avatar (supports non-focusable window). */
 export const EVT_AVATAR_INPUT_WHEEL = 'avatar-input-wheel' as const;
+
+/** Windows-only: backend hit-test counters, emitted ~1Hz for debugging. */
+export const EVT_AVATAR_HITTEST_STATS = 'avatar-hittest-stats' as const;

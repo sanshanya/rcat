@@ -463,11 +463,11 @@ export const useVrmRenderer = (
     } | null = null;
     let windowDragState: {
       pointerId: number;
-      startX: number;
-      startY: number;
+      startScreenX: number;
+      startScreenY: number;
       startOuterX: number;
       startOuterY: number;
-      dpr: number;
+      scaleFactor: number;
       ready: boolean;
     } | null = null;
     let windowDragPending: { x: number; y: number } | null = null;
@@ -738,14 +738,13 @@ export const useVrmRenderer = (
         windowDragInFlight = false;
 
         const pointerId = event.pointerId;
-        const dpr = window.devicePixelRatio || 1;
         windowDragState = {
           pointerId,
-          startX: Math.round(event.screenX * dpr),
-          startY: Math.round(event.screenY * dpr),
+          startScreenX: event.screenX,
+          startScreenY: event.screenY,
           startOuterX: 0,
           startOuterY: 0,
-          dpr,
+          scaleFactor: 1,
           ready: false,
         };
 
@@ -755,18 +754,20 @@ export const useVrmRenderer = (
           // Ignore pointer capture failures.
         }
 
-        void getCurrentWindow()
-          .outerPosition()
-          .then((pos) => {
+        void Promise.all([getCurrentWindow().outerPosition(), getCurrentWindow().scaleFactor()])
+          .then(([pos, scaleFactor]) => {
             const state = windowDragState;
             if (!state || state.pointerId !== pointerId) return;
             state.startOuterX = pos.x;
             state.startOuterY = pos.y;
+            if (Number.isFinite(scaleFactor) && scaleFactor > 0) {
+              state.scaleFactor = scaleFactor;
+            }
             state.ready = true;
           })
           .catch((err) => {
             windowDragState = null;
-            reportError(err, "useVrmRenderer.avatarWindowDrag.outerPosition", { devOnly: true });
+            reportError(err, "useVrmRenderer.avatarWindowDrag.init", { devOnly: true });
           });
         return;
       }
@@ -792,10 +793,13 @@ export const useVrmRenderer = (
       const windowState = windowDragState;
       if (windowState && windowState.pointerId === event.pointerId) {
         if (!windowState.ready) return;
-        const x = Math.round(event.screenX * windowState.dpr);
-        const y = Math.round(event.screenY * windowState.dpr);
-        const nextX = windowState.startOuterX + (x - windowState.startX);
-        const nextY = windowState.startOuterY + (y - windowState.startY);
+        const scaleFactor = windowState.scaleFactor;
+        const startX = Math.round(windowState.startScreenX * scaleFactor);
+        const startY = Math.round(windowState.startScreenY * scaleFactor);
+        const x = Math.round(event.screenX * scaleFactor);
+        const y = Math.round(event.screenY * scaleFactor);
+        const nextX = windowState.startOuterX + (x - startX);
+        const nextY = windowState.startOuterY + (y - startY);
         queueAvatarWindowMove(nextX, nextY);
         return;
       }

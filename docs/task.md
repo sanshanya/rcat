@@ -15,10 +15,10 @@
   - [x] `hittest_mask.rs`：`MaskSnapshot` + `ArcSwap`
 - [x] Windows 依赖对齐：`windows` crate = `0.61.3`（与 `tauri-runtime` 一致）+ 启用 `Win32_UI_Shell` / `Win32_UI_Input_KeyboardAndMouse` + `windows-future(std)`（允许 WinRT `.await`）
 - [x] Tauri Capabilities：`src-tauri/capabilities/default.json` 覆盖 `avatar`（允许事件 listen/emit 等）
-- [x] `WM_NCHITTEST` 处理
+- [x] cursor gate 命中/穿透（`set_ignore_cursor_events`）
   - [x] 两级判定：粗 rect → 细 bitset
-  - [x] 缺数据时返回 `HTTRANSPARENT`
-  - [x] 坐标映射：`ScreenToClient` → viewport → mask
+  - [x] 缺数据时保持 click-through（`ignore_cursor_events=true`）
+  - [x] 坐标映射：`ScreenToClient` → clientRect → mask
 - [x] `WM_MOUSEACTIVATE` 返回 `MA_NOACTIVATE`（P0：不抢焦点）
 - [x] 窗口销毁时 `RemoveWindowSubclass`
 - [x] 兜底入口（三选一）
@@ -75,8 +75,8 @@
 ### 拖拽移动角色
 
 - [x] 方案选择（二选一）
-  - [x] Alt/Shift + 左键 → `HTCAPTION`（Windows 原生拖拽）
-  - [ ] 前端拖拽 → invoke 移动窗口
+  - [x] 左键拖拽 → 前端 `setPosition` 移动窗口（Alt+左键拖拽移动模型）
+  - [ ] Win32 `HTCAPTION`（已弃用，不走该方案）
 
 ### 动态 Mask 刷新
 
