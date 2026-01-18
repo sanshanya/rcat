@@ -1,30 +1,36 @@
 # VRM Skin / VRM 皮肤（rcat）
 
-rcat 支持一个 `skinMode=vrm` 的“VRM 皮肤”：**VRM 是舞台（全窗口透明层）**，Chat 与 Debug 是浮动 HUD。
+rcat 支持一个 `skinMode=vrm` 的“VRM 皮肤”：Windows 上用 **AvatarWindow（全透明置顶）**渲染 VRM，Chat/VRM/Debug 在 **ContextPanelWindow（胶囊）**里完成。
 
 > 目标：VRM 模式下以“角色/舞台”为核心；非 VRM 模式下以“聊天”为核心。
 
 ## 交互（当前实现）
 
-- **平移**：在 VRM 画布上按住左键拖动（OrbitControls pan）。
-- **缩放**：鼠标滚轮缩放（OrbitControls dolly）。
-- **重置视角**：双击 VRM 画布，重新 fit 视角并写入持久化。
+- **Tool=Camera**：左键拖动平移（OrbitControls pan）；滚轮缩放（OrbitControls dolly）。
+- **Tool=Model**：左键拖动移动模型；滚轮缩放模型。
+- **重置**：在胶囊 Panel → VRM Tab 中点击 `Reset View` / `Reset Avatar`。
 - **视角记忆**：按 VRM URL 存储相机位置 + target（Tauri 主存储为 `savedata/settings.json`，Web/兜底为 `localStorage`），下次加载恢复。
-- **角色放置**：在 VRM Debug → Tool 切换到 `Avatar` 后，可拖动角色并滚轮缩放，按 VRM URL 持久化位置/缩放。
-- **鼠标追踪（分层）**：Eyes / Head / Spine 三路叠加（权重/上限/平滑可调），在 VRM Debug → Mouse Tracking 调参。
+- **角色放置**：在 Panel → VRM Tab 切换到 `Model` 后，可拖动角色并滚轮缩放，按 VRM URL 持久化位置/缩放。
+- **鼠标追踪（分层）**：Eyes / Head / Spine 三路叠加（权重/上限/平滑可调），在 Panel → Debug Tab 调参。
   - 参考：`docs/MATE_ENGINE.md`（Mate-Engine 的实现思路与 rcat 映射）
   - 参考：`docs/LOBE_VIDOL.md`（Lobe Vidol 的 Viewer/交互/LookAt 平滑实现）
-- **表情 / 情感（8 类情感）**：在 VRM Debug → Emotion 选择并调强度；支持按 VRM URL 绑定到模型的实际表情通道，并可选“情感 → 动作”映射（见 `docs/VRM_EXPRESSIONS.md`）。
+- **表情 / 情感（8 类情感）**：在 Panel → VRM Tab 选择并调强度；支持按 VRM URL 绑定到模型的实际表情通道，并可选“情感 → 动作”映射（见 `docs/VRM_EXPRESSIONS.md`）。
 
 ## 代码结构（关键文件）
 
 ### UI / 入口
 
-- `src/components/vrm/VrmStage.tsx`
-  - VRM 皮肤入口：渲染全窗口 `VrmCanvas` + 悬浮 `VrmDebugPanel`。
+- `src/windows/avatar/AvatarRoot.tsx`
+  - AvatarWindow 入口：渲染全窗口 `VrmCanvas`，并驱动 hit-test mask 的生成/上报与 debug overlay。
+- `src/windows/panel/PanelRoot.tsx`
+  - ContextPanelWindow 入口：Chat + Tabs（VRM/Debug）。
+- `src/windows/panel/tabs/VrmTab.tsx`
+  - Tool/Reset/Motion/Emotion 控制（走 `vrm-command` 总线）。
+- `src/windows/panel/tabs/DebugTab.tsx`
+  - FPS/Mouse Tracking/HUD + HitTest 调参（dev-only）。
 - `src/components/vrm/VrmCanvas.tsx`
   - 负责 VRM 加载/卸载、错误展示、WebGL context restore 触发 reload。
-  - 把 VRM 实例写入 `vrmStore`，供 Debug 面板/动作系统访问。
+  - 把 VRM 实例写入 `vrmStore`，供行为系统与胶囊侧状态快照使用。
 
 ### 渲染器（Three.js）
 

@@ -30,7 +30,7 @@ export default function VrmTab({ snapshot, sendCommand }: VrmTabProps) {
     setLoop(motions[0].loop ?? true);
   }, [motionId, motions]);
 
-  const toolMode = snapshot?.toolMode ?? "camera";
+  const toolMode = snapshot?.toolMode ?? "avatar";
   const currentEmotion = snapshot?.emotion.id ?? "neutral";
   const currentIntensity = snapshot?.emotion.intensity ?? 1;
 
@@ -55,15 +55,39 @@ export default function VrmTab({ snapshot, sendCommand }: VrmTabProps) {
         <div className="w-16 text-xs text-foreground/60">Tool</div>
         <Button
           size="sm"
+          variant={toolMode === "avatar" ? "default" : "secondary"}
+          onClick={() => sendCommand({ type: "setToolMode", mode: "avatar" })}
+        >
+          Pet
+        </Button>
+        <Button
+          size="sm"
+          variant={toolMode === "model" ? "default" : "secondary"}
+          onClick={() => sendCommand({ type: "setToolMode", mode: "model" })}
+        >
+          Model
+        </Button>
+        <Button
+          size="sm"
           variant={toolMode === "camera" ? "default" : "secondary"}
           onClick={() => sendCommand({ type: "setToolMode", mode: "camera" })}
         >
           Camera
         </Button>
+      </div>
+      <div className="text-xs text-foreground/50">
+        Pet：拖拽/滚轮=窗口；Model：拖拽/滚轮=模型；Camera：拖拽/滚轮=视角
+      </div>
+
+      <div className="flex items-center gap-2">
+        <div className="w-16 text-xs text-foreground/60">Reset</div>
+        <Button size="sm" variant="secondary" onClick={() => sendCommand({ type: "resetView" })}>
+          View
+        </Button>
         <Button
           size="sm"
-          variant={toolMode === "avatar" ? "default" : "secondary"}
-          onClick={() => sendCommand({ type: "setToolMode", mode: "avatar" })}
+          variant="secondary"
+          onClick={() => sendCommand({ type: "resetAvatarTransform" })}
         >
           Avatar
         </Button>

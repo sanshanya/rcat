@@ -1,9 +1,10 @@
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::{EVT_VRM_COMMAND, EVT_VRM_STATE_SNAPSHOT};
+use crate::commands::vrm_types::{VrmCommandPayload, VrmStateSnapshot};
 
 #[tauri::command]
-pub fn vrm_command(app: AppHandle, payload: serde_json::Value) -> Result<(), String> {
+pub fn vrm_command(app: AppHandle, payload: VrmCommandPayload) -> Result<(), String> {
     let Some(window) = app.get_webview_window("avatar") else {
         return Ok(());
     };
@@ -14,8 +15,11 @@ pub fn vrm_command(app: AppHandle, payload: serde_json::Value) -> Result<(), Str
 }
 
 #[tauri::command]
-pub fn vrm_state_snapshot(app: AppHandle, snapshot: serde_json::Value) -> Result<(), String> {
-    let Some(window) = app.get_webview_window("main") else {
+pub fn vrm_state_snapshot(app: AppHandle, snapshot: VrmStateSnapshot) -> Result<(), String> {
+    let Some(window) = app
+        .get_webview_window("main")
+        .or_else(|| app.get_webview_window("panel"))
+    else {
         return Ok(());
     };
     window
@@ -23,4 +27,3 @@ pub fn vrm_state_snapshot(app: AppHandle, snapshot: serde_json::Value) -> Result
         .map_err(|e| e.to_string())?;
     Ok(())
 }
-

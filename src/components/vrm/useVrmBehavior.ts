@@ -23,7 +23,7 @@ import {
 } from "@/components/vrm/idleMotion";
 import { useLipSync } from "@/components/vrm/useLipSync";
 import { getMouseTrackingSettings } from "@/components/vrm/mouseTrackingStore";
-import { getVrmToolMode } from "@/components/vrm/vrmToolModeStore";
+import { getVrmToolMode, type VrmToolMode } from "@/components/vrm/vrmToolModeStore";
 import { getExpressionOverrides } from "@/components/vrm/expressionOverrideStore";
 import {
   getCachedExpressionBindings,
@@ -42,9 +42,10 @@ import {
   computeTrackingPermissionsTarget,
   TrackingPermissionController,
 } from "@/components/vrm/trackingPermissions";
-import { AvatarZoneHitTester } from "@/components/vrm/avatarInteractionZones";
-import { AvatarHoverReactionController } from "@/components/vrm/avatarHoverReactions";
+import { AvatarInteractionEngine } from "@/components/vrm/avatarInteractionEngine";
+import { SpeechGestureController } from "@/components/vrm/speechGestures";
 import { setAvatarInteractionRuntime } from "@/components/vrm/avatarInteractionStore";
+import { pushAvatarBehaviorEvent } from "@/components/vrm/avatarBehaviorEventRuntime";
 import {
   getGazeRuntimeDebug,
   setGazeRuntimeDebug,
@@ -94,12 +95,11 @@ export const useVrmBehavior = ({
     source: "drift",
   });
   const voiceSpeakingRef = useRef(false);
-  const hoverDebugAtRef = useRef(0);
   const trackingPermissionsRef = useRef<TrackingPermissionController | null>(null);
   const expressionDriverRef = useRef<ReturnType<typeof createExpressionDriver> | null>(null);
   const expressionMixerRef = useRef<ExpressionMixer | null>(null);
-  const zoneHitTesterRef = useRef<AvatarZoneHitTester | null>(null);
-  const hoverReactionsRef = useRef<AvatarHoverReactionController | null>(null);
+  const interactionEngineRef = useRef<AvatarInteractionEngine | null>(null);
+  const speechGesturesRef = useRef<SpeechGestureController | null>(null);
   const motionControllerRef = useRef<MotionController | null>(null);
   const idleMixerRef = useRef<AnimationMixer | null>(null);
   const idleRootRef = useRef<Object3D | null>(null);
@@ -142,11 +142,21 @@ export const useVrmBehavior = ({
     lookAtGlobalRef.current = { x, y };
   });
 
-  useTauriEvent<{ turnId: number }>(EVT_VOICE_SPEECH_START, () => {
+  useTauriEvent<{ turnId: number }>(EVT_VOICE_SPEECH_START, (event) => {
     voiceSpeakingRef.current = true;
+    pushAvatarBehaviorEvent({
+      type: "speechStart",
+      turnId: Number(event.payload.turnId) || 0,
+      timeMs: performance.now(),
+    });
   });
-  useTauriEvent<{ turnId: number }>(EVT_VOICE_SPEECH_END, () => {
+  useTauriEvent<{ turnId: number }>(EVT_VOICE_SPEECH_END, (event) => {
     voiceSpeakingRef.current = false;
+    pushAvatarBehaviorEvent({
+      type: "speechEnd",
+      turnId: Number(event.payload.turnId) || 0,
+      timeMs: performance.now(),
+    });
   });
 
   const stopIdleMotion = useCallback(() => {
@@ -262,14 +272,13 @@ export const useVrmBehavior = ({
     lookAtGlobalRef.current = null;
     expressionDriverRef.current = null;
     expressionMixerRef.current = null;
-    zoneHitTesterRef.current = null;
-    hoverReactionsRef.current = null;
+    interactionEngineRef.current = null;
+    speechGesturesRef.current = null;
     motionControllerRef.current?.dispose();
     motionControllerRef.current = null;
     restPoseRef.current = null;
     gazeDebugAtRef.current = 0;
     gazeDebugRef.current = { x: 0, y: 0, source: "drift" };
-    hoverDebugAtRef.current = 0;
     emotionMotionIdRef.current = null;
     emotionMotionPendingRef.current = null;
     emotionMotionLastFailureRef.current = null;
@@ -293,13 +302,12 @@ export const useVrmBehavior = ({
     mouseTrackingRef.current = new AvatarMouseTracking(vrm, restPoseRef.current);
     trackingPermissionsRef.current = new TrackingPermissionController();
     try {
-      zoneHitTesterRef.current = new AvatarZoneHitTester(vrm);
-      hoverReactionsRef.current = new AvatarHoverReactionController();
+      interactionEngineRef.current = new AvatarInteractionEngine(vrm);
     } catch (err) {
       console.warn("Avatar interaction zones disabled:", err);
-      zoneHitTesterRef.current = null;
-      hoverReactionsRef.current = null;
+      interactionEngineRef.current = null;
     }
+    speechGesturesRef.current = new SpeechGestureController(vrm);
 
     blinkRef.current = {
       nextBlinkAt: performance.now() + randomRange(BLINK_MIN_MS, BLINK_MAX_MS),
@@ -463,7 +471,7 @@ export const useVrmBehavior = ({
   );
 
   const updateMouseTracking = useCallback(
-    (delta: number, time: number, camera: PerspectiveCamera | null) => {
+    (delta: number, time: number, camera: PerspectiveCamera | null, toolMode: VrmToolMode) => {
       const tracker = mouseTrackingRef.current;
       if (!tracker) return;
 
@@ -484,7 +492,6 @@ export const useVrmBehavior = ({
       }
 
       const motionActive = motionControllerRef.current?.isPlaying() ?? false;
-      const toolMode = getVrmToolMode();
       const permissionsTarget = computeTrackingPermissionsTarget({
         motionActive,
         speaking: voiceSpeakingRef.current,
@@ -520,6 +527,7 @@ export const useVrmBehavior = ({
       mixer.clearChannel("mouth");
       mixer.clearChannel("hover");
       mixer.clearChannel("click");
+      mixer.clearChannel("speech");
     }
     const driver = expressionDriverRef.current;
     if (mixer && driver) {
@@ -613,35 +621,53 @@ export const useVrmBehavior = ({
       emotionMotionPendingRef.current = null;
     }
 
+    const toolMode: VrmToolMode = getVrmToolMode();
     const motionActive = motionControllerRef.current?.isPlaying() ?? false;
     if (!motionActive) {
       updateBlink(now);
     }
-    updateMouseTracking(delta, timeRef.current, camera);
+    updateMouseTracking(delta, timeRef.current, camera, toolMode);
+    let mouthValue: number | null = null;
     if (mixer && driver?.supports("aa")) {
-      const mouth = lipSyncOnFrame(delta);
-      if (mouth !== null) {
-        mixer.setValue("mouth", "aa", mouth);
+      mouthValue = lipSyncOnFrame(delta);
+      if (mouthValue !== null) {
+        const emotion = emotionRef.current;
+        const intensity = emotionIntensityRef.current;
+        const base = emotion === "neutral" ? 0.6 : 0.35;
+        const intensityFactor =
+          Number.isFinite(intensity) && intensity > 1 ? intensity : 1;
+        mixer.setValue("mouth", "aa", mouthValue * (base / intensityFactor));
+      }
+    }
+
+    const vrm = vrmRef.current;
+    const speechGestures = speechGesturesRef.current;
+    if (vrm && speechGestures) {
+      const applied = speechGestures.update({
+        delta,
+        speaking: voiceSpeakingRef.current,
+        mouth: mouthValue ?? 0,
+        toolMode,
+        motionActive,
+      });
+      if (applied) {
+        vrm.scene.updateMatrixWorld(true);
       }
     }
 
     if (mixer && camera) {
-      const toolMode = getVrmToolMode();
-      const tester = zoneHitTesterRef.current;
-      const reactions = hoverReactionsRef.current;
-      const pointer = toolMode === "avatar" ? null : lookAtLocalRef.current;
-      if (tester && reactions) {
-        const hit = tester.hitTest({ pointer, camera });
-        const weights = reactions.update({ delta, zone: hit.zone });
-        mixer.setChannel("hover", weights);
-        if (hit.changed || now - hoverDebugAtRef.current > 200) {
-          hoverDebugAtRef.current = now;
-          setAvatarInteractionRuntime({
-            zone: hit.zone,
-            distance: hit.hit?.distance ?? null,
-            updatedAt: now,
-          });
-        }
+      const engine = interactionEngineRef.current;
+      if (engine) {
+        const { pointer } = pickGazePointer();
+        engine.update({
+          delta,
+          nowMs: now,
+          pointer,
+          camera,
+          mixer,
+          motionController: motionControllerRef.current,
+          applySpringWind: toolMode === "avatar",
+        });
       }
     }
 
@@ -654,7 +680,7 @@ export const useVrmBehavior = ({
       }
       mixer.apply(driver);
     }
-  }, [lipSyncOnFrame, requestEmotionMotion, updateBlink, updateMouseTracking]);
+  }, [lipSyncOnFrame, pickGazePointer, requestEmotionMotion, updateBlink, updateMouseTracking]);
 
   return {
     setVrm,

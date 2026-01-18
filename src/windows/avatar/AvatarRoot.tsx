@@ -11,7 +11,6 @@ import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 
 import VrmCanvas from "@/components/vrm/VrmCanvas";
 import type { VrmRendererFrameContext } from "@/components/vrm/useVrmRenderer";
-import { useVrmToolMode } from "@/components/vrm/vrmToolModeStore";
 import {
   EVT_AVATAR_HITTEST_STATS,
   EVT_AVATAR_INPUT_WHEEL,
@@ -19,38 +18,42 @@ import {
   EVT_DEBUG_HITTEST_SETTINGS,
 } from "@/constants";
 import { useTauriEvent } from "@/hooks";
-import { useHitTestMask } from "@/windows/avatar/useHitTestMask";
+import { useHitTestMask, type HitTestMaskTuning } from "@/windows/avatar/useHitTestMask";
 import HitTestDebugOverlay from "@/windows/avatar/HitTestDebugOverlay";
 import { useAvatarVrmBridge } from "@/windows/avatar/useAvatarVrmBridge";
-import { getTauriScaleFactor, isTauriContext, reportPromiseError } from "@/utils";
+import { isTauriContext } from "@/utils";
+import {
+  type DebugHitTestSettingsPayload,
+  applyHitTestMaskTuningPatch,
+  readHitTestDotFromStorage,
+  readHitTestMaskTuningFromStorage,
+} from "@/windows/avatar/hittestDebugSettings";
 
 const DEFAULT_VRM_URL = "/vrm/default.vrm";
-const HITTEST_DOT_STORAGE_KEY = "rcat.debug.hittestMouseDot";
 
 type AvatarHitTestStats = {
   gateIgnoreTrue: number;
   gateIgnoreFalse: number;
   gateFailOpen: number;
   gateLastIgnore: boolean | null;
-};
-
-const readStorageFlag = (key: string): boolean => {
-  try {
-    return window.localStorage.getItem(key) === "1";
-  } catch {
-    return false;
-  }
+  viewportClientMismatch?: number;
+  viewportClientLast?: {
+    clientW: number;
+    clientH: number;
+    viewportW: number;
+    viewportH: number;
+  } | null;
 };
 
 export default function AvatarRoot() {
   const frameContextRef = useRef<VrmRendererFrameContext | null>(null);
-  const debugInfo = useHitTestMask(frameContextRef);
-  useAvatarVrmBridge();
-  const toolMode = useVrmToolMode();
-  const [mouse, setMouse] = useState<{ x: number; y: number } | null>(null);
-  const [showHitTestDot, setShowHitTestDot] = useState(() =>
-    readStorageFlag(HITTEST_DOT_STORAGE_KEY)
+  const [hitTestTuning, setHitTestTuning] = useState<HitTestMaskTuning>(() =>
+    readHitTestMaskTuningFromStorage()
   );
+  const debugInfo = useHitTestMask(frameContextRef, hitTestTuning);
+  useAvatarVrmBridge();
+  const [mouse, setMouse] = useState<{ x: number; y: number } | null>(null);
+  const [showHitTestDot, setShowHitTestDot] = useState(() => readHitTestDotFromStorage());
   const [backendStats, setBackendStats] = useState<AvatarHitTestStats | null>(null);
 
   const debugEnabled = useMemo(() => {
@@ -70,32 +73,15 @@ export default function AvatarRoot() {
     event.preventDefault();
     if (!isTauriContext()) return;
 
-    const screenX = event.screenX;
-    const screenY = event.screenY;
-    void getTauriScaleFactor()
-      .then((scaleFactor) => {
-        const anchorX = Math.round(screenX * scaleFactor);
-        const anchorY = Math.round(screenY * scaleFactor);
-        return invoke("toggle_capsule", { args: { tab: "chat", anchorX, anchorY } });
-      })
-      .catch(() => {});
+    // Use Win32 `GetCursorPos` in Rust to avoid DPI/multi-monitor coordinate pitfalls.
+    void invoke("toggle_capsule", { args: { tab: "chat", anchorX: -1, anchorY: -1 } }).catch(
+      () => {}
+    );
   }, []);
 
-  useEffect(() => {
-    if (!isTauriContext()) return;
-
-    void invoke("avatar_set_tool_mode", { args: { mode: toolMode } }).catch(
-      reportPromiseError("AvatarRoot.avatar_set_tool_mode", {
-        onceKey: "AvatarRoot.avatar_set_tool_mode",
-        devOnly: true,
-      })
-    );
-  }, [toolMode]);
-
-  useTauriEvent<{ deltaY: number; altKey: boolean }>(
+  useTauriEvent<{ deltaY: number }>(
     EVT_AVATAR_INPUT_WHEEL,
     (event) => {
-      if (toolMode !== "avatar") return;
       const payload = event.payload;
       if (!payload || !Number.isFinite(payload.deltaY)) return;
 
@@ -103,7 +89,6 @@ export default function AvatarRoot() {
       if (!canvas) return;
       const synthetic = new WheelEvent("wheel", {
         deltaY: payload.deltaY,
-        altKey: Boolean(payload.altKey),
         bubbles: true,
         cancelable: true,
       });
@@ -130,17 +115,18 @@ export default function AvatarRoot() {
     }
   }, [debugEnabled, showHitTestDot]);
 
-  useTauriEvent<{ showMouseDot?: boolean }>(
+  useTauriEvent<DebugHitTestSettingsPayload>(
     EVT_DEBUG_HITTEST_SETTINGS,
     (event) => {
-      const next = event.payload?.showMouseDot;
-      if (typeof next !== "boolean") return;
-      setShowHitTestDot(next);
-      try {
-        window.localStorage.setItem(HITTEST_DOT_STORAGE_KEY, next ? "1" : "0");
-      } catch {
-        // Ignore storage failures.
+      const payload = event.payload;
+      if (!payload) return;
+
+      if (typeof payload.showMouseDot === "boolean") {
+        const next = payload.showMouseDot;
+        setShowHitTestDot(next);
       }
+
+      setHitTestTuning((prev) => applyHitTestMaskTuningPatch(prev, payload));
     }
   );
 
@@ -158,7 +144,12 @@ export default function AvatarRoot() {
     >
       <VrmCanvas url={DEFAULT_VRM_URL} onFrameContext={handleFrameContext} />
       {debugEnabled && debugInfo ? (
-        <HitTestDebugOverlay debug={debugInfo} mouse={mouse} backend={backendStats} />
+        <HitTestDebugOverlay
+          debug={debugInfo}
+          mouse={mouse}
+          backend={backendStats}
+          settings={hitTestTuning}
+        />
       ) : null}
     </div>
   );

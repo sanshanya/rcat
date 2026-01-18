@@ -1,6 +1,7 @@
 import { memo, useMemo } from "react";
 
 import type { HitTestMaskDebugInfo } from "@/windows/avatar/useHitTestMask";
+import type { HitTestMaskTuning } from "@/windows/avatar/useHitTestMask";
 
 type HitTestDebugOverlayProps = {
   debug: HitTestMaskDebugInfo;
@@ -10,10 +11,18 @@ type HitTestDebugOverlayProps = {
     gateIgnoreFalse: number;
     gateFailOpen: number;
     gateLastIgnore: boolean | null;
+    viewportClientMismatch?: number;
+    viewportClientLast?: {
+      clientW: number;
+      clientH: number;
+      viewportW: number;
+      viewportH: number;
+    } | null;
   } | null;
+  settings: HitTestMaskTuning;
 };
 
-function HitTestDebugOverlay({ debug, mouse, backend }: HitTestDebugOverlayProps) {
+function HitTestDebugOverlay({ debug, mouse, backend, settings }: HitTestDebugOverlayProps) {
   const rectStyle = useMemo(() => {
     const { rect, maskW, maskH } = debug;
     const left = (rect.minX / maskW) * 100;
@@ -32,15 +41,26 @@ function HitTestDebugOverlay({ debug, mouse, backend }: HitTestDebugOverlayProps
     const ageMs = Math.max(0, performance.now() - debug.lastUpdateAtMs);
     return `hitTest: ${debug.mode} (${debug.intervalMs}ms) seq=${debug.seq} age≈${ageMs.toFixed(
       0
-    )}ms mask=${debug.maskW}x${debug.maskH}`;
+    )}ms gen≈${debug.genMs.toFixed(1)}ms readback=${debug.readback} mask=${debug.maskW}x${debug.maskH}`;
   }, [debug]);
 
   const backendText = useMemo(() => {
     if (!backend) return null;
     const ignore = backend.gateLastIgnore;
     const ignoreText = ignore === null ? "?" : ignore ? "1" : "0";
-    return `backend: ignore=${ignoreText} gate(set0/1)=${backend.gateIgnoreFalse}/${backend.gateIgnoreTrue} failOpen=${backend.gateFailOpen}`;
+    const mismatchCount = backend.viewportClientMismatch ?? 0;
+    const mismatchLast = backend.viewportClientLast;
+    const mismatchText = mismatchLast
+      ? ` dpiMismatch=${mismatchCount} last=${mismatchLast.clientW}x${mismatchLast.clientH}->${mismatchLast.viewportW}x${mismatchLast.viewportH}`
+      : ` dpiMismatch=${mismatchCount}`;
+    return `backend: ignore=${ignoreText} gate(set0/1)=${backend.gateIgnoreFalse}/${backend.gateIgnoreTrue} failOpen=${backend.gateFailOpen}${mismatchText}`;
   }, [backend]);
+
+  const settingsText = useMemo(() => {
+    return `mask: edge=${settings.maxEdge} thr=${settings.alphaThreshold} dil=${settings.dilation} rectSmooth=${settings.rectSmoothingAlpha.toFixed(
+      2
+    )}`;
+  }, [settings]);
 
   return (
     <div className="pointer-events-none absolute inset-0 z-50">
@@ -56,6 +76,7 @@ function HitTestDebugOverlay({ debug, mouse, backend }: HitTestDebugOverlayProps
       ) : null}
       <div className="absolute left-2 top-2 rounded bg-black/60 px-2 py-1 text-[10px] text-white/80">
         <div>{infoText}</div>
+        <div className="text-white/70">{settingsText}</div>
         {backendText ? <div className="text-white/70">{backendText}</div> : null}
       </div>
     </div>

@@ -4,6 +4,7 @@ export type ExpressionMixerChannel =
   | "base"
   | "hover"
   | "click"
+  | "speech"
   | "blink"
   | "mouth"
   | "manual";
@@ -39,6 +40,7 @@ export class ExpressionMixer {
       base: {},
       hover: {},
       click: {},
+      speech: {},
       blink: {},
       mouth: {},
     };

@@ -138,9 +138,9 @@ export default function VrmCanvas({
         ref={canvasRef}
         className={cn(
           "block h-full w-full touch-none",
-          toolMode === "avatar"
-            ? "cursor-move active:cursor-grabbing"
-            : "cursor-grab active:cursor-grabbing"
+          toolMode === "camera"
+            ? "cursor-grab active:cursor-grabbing"
+            : "cursor-default"
         )}
       />
       {error ? (

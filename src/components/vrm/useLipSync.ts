@@ -24,6 +24,7 @@ export type LipSyncRuntimeDebug = {
   queueLen: number;
   nextApplyInMs: number | null;
   value: number;
+  speechGate: number;
   target: number;
   rmsRecent: boolean;
   lastEventAgeMs: number;
@@ -35,6 +36,7 @@ let lipSyncRuntimeDebug: LipSyncRuntimeDebug = {
   queueLen: 0,
   nextApplyInMs: null,
   value: 0,
+  speechGate: 0,
   target: 0,
   rmsRecent: false,
   lastEventAgeMs: 0,
@@ -62,6 +64,8 @@ const GATE = 0.02;
 const SCALE = 6.0;
 const ATTACK_SEC = 0.05;
 const RELEASE_SEC = 0.14;
+const SPEECH_ATTACK_SEC = 0.08;
+const SPEECH_RELEASE_SEC = 0.18;
 const SILENCE_TIMEOUT_MS = 200;
 const FALLBACK_BASE = 0.2;
 const FALLBACK_AMP = 0.2;
@@ -78,6 +82,7 @@ export const useLipSync = () => {
   const queueRef = useRef<QueueItem[]>([]);
   const targetRef = useRef(0);
   const valueRef = useRef(0);
+  const speechGateRef = useRef(0);
   const lastRmsEventRef = useRef(0);
   const lastDebugEmitRef = useRef(0);
   const fallbackActiveRef = useRef(false);
@@ -121,12 +126,10 @@ export const useLipSync = () => {
 
     if (queue.length > 0) {
       let next = targetRef.current;
-      let hadSpeakingFalse = false;
       let idx = 0;
       while (idx < queue.length && queue[idx].applyAt <= now) {
         const item = queue[idx];
         next = item.value;
-        hadSpeakingFalse = hadSpeakingFalse || !item.speaking;
         idx += 1;
       }
       if (idx > 0) {
@@ -135,13 +138,6 @@ export const useLipSync = () => {
         appliedAny = true;
         // Update the "last event time" to NOW (when applied), not when received
         lastRmsEventRef.current = now;
-        if (hadSpeakingFalse && queue.length === 0) {
-          targetRef.current = 0;
-        }
-        // Debug log for applied events
-        if (import.meta.env.DEV) {
-          console.log(`LipSync: applied ${idx} events, target=${next.toFixed(3)}, queue=${queue.length}`);
-        }
       }
     }
 
@@ -160,12 +156,19 @@ export const useLipSync = () => {
       targetRef.current = clamp01(FALLBACK_BASE + FALLBACK_AMP * wave);
     }
 
+    const speechTarget = fallbackActiveRef.current ? 1 : 0;
+    const speechCurrent = speechGateRef.current;
+    const speechTau = speechTarget > speechCurrent ? SPEECH_ATTACK_SEC : SPEECH_RELEASE_SEC;
+    const speechStep = speechTau <= 0 ? 1 : 1 - Math.exp(-delta / speechTau);
+    speechGateRef.current = clamp01(speechCurrent + (speechTarget - speechCurrent) * speechStep);
+
     const current = valueRef.current;
     const target = targetRef.current;
     const tau = target > current ? ATTACK_SEC : RELEASE_SEC;
     const step = tau <= 0 ? 1 : 1 - Math.exp(-delta / tau);
     valueRef.current = current + (target - current) * step;
     valueRef.current = clamp01(valueRef.current);
+    const output = valueRef.current * speechGateRef.current;
 
     if (import.meta.env.DEV && lipSyncRuntimeListeners.size > 0) {
       const intervalMs = 100;
@@ -183,6 +186,7 @@ export const useLipSync = () => {
           queueLen: queue.length,
           nextApplyInMs,
           value: valueRef.current,
+          speechGate: speechGateRef.current,
           target: targetRef.current,
           rmsRecent: !noRecentActivity,
           lastEventAgeMs: Math.max(0, Math.round(now - lastRmsEventRef.current)),
@@ -196,16 +200,17 @@ export const useLipSync = () => {
       queue.length > 0 ||
       (hadRmsRef.current && !noRecentActivity) ||
       fallbackActiveRef.current;
-    if (!shouldDrive && valueRef.current <= 0.001 && targetRef.current === 0) {
+    if (!shouldDrive && output <= 0.001 && targetRef.current === 0 && speechGateRef.current <= 0.001) {
       return null;
     }
-    return valueRef.current;
+    return output;
   }, []);
 
   const reset = useCallback(() => {
     queueRef.current = [];
     targetRef.current = 0;
     valueRef.current = 0;
+    speechGateRef.current = 0;
     lastRmsEventRef.current = 0;
     fallbackActiveRef.current = false;
     fallbackPhaseRef.current = 0;

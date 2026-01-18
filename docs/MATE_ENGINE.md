@@ -2,6 +2,8 @@
 
 这份文档用于后来者**快速浏览**本地参考工程 `example/Mate-Engine-main`（Unity 桌宠项目），并把其中的核心设计映射到 rcat 的实现上，方便持续迭代“头 / 脊椎 / 眼”三路鼠标追踪。
 
+另见（互动/动作接口预留）：`docs/MATE_ENGINE_INTERACTIONS.md`
+
 > 本地路径示例：`F:\\github\\rcat\\example\\Mate-Engine-main`  
 > 仓库内相对路径：`example/Mate-Engine-main`（建议保持 **git ignore**，避免把 Unity 工程提交进来）
 
@@ -73,7 +75,7 @@ rcat 相关文件：
 
 - 追踪核心：`src/components/vrm/AvatarMouseTracking.ts`
 - 行为入口：`src/components/vrm/useVrmBehavior.ts`
-- 调参面板：`src/components/vrm/VrmDebugPanel.tsx`
+- 调参面板：`src/windows/panel/tabs/DebugTab.tsx`
 - 持久化：`src-tauri/src/services/config.rs`（`settings.vrm.mouseTracking`）
 
 ## 基于 Mate-Engine 的改进建议（rcat TODO）
@@ -81,4 +83,3 @@ rcat 相关文件：
 - 追踪权限系统：参考 `trackingPermissions` 的思路，按 motion/idle clip 或“行为状态”禁用 head/spine/eyes。
 - 3D 方向计算：Mate-Engine 是“屏幕点 → 世界点 → bone localDir → yaw/pitch”；rcat 当前是标准化 gaze 值（-1..1），后续可升级为基于 three.js camera 的射线方向计算以更贴近真实观感。
 - VRM LookAt 优先：对 VRM1.0 尝试走 `vrm.lookAt` 的 yaw/pitch 通路（而不是直接旋眼骨），兼容 VRM LookAt 约束。
-

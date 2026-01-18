@@ -120,6 +120,7 @@ pub fn avatar_update_hittest_mask(
                 args.client_h
             );
         } else {
+            mask_store.record_viewport_client_mismatch(cw, ch, vw, vh);
             log::warn!(
                 "HitTest viewport/client mismatch (suspicious): label={}, client={}x{}, viewport={}x{}, impliedScale≈{:.3}x/{:.3}x, dpr={:?}, providedClient={:?}x{:?}",
                 window.label(),
@@ -139,15 +140,5 @@ pub fn avatar_update_hittest_mask(
     Ok(())
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AvatarSetToolModeArgs {
-    pub mode: String,
-}
-
-#[tauri::command]
-pub fn avatar_set_tool_mode(args: AvatarSetToolModeArgs) -> Result<(), String> {
-    let mode = args.mode.trim().to_ascii_lowercase();
-    crate::windows::avatar_window::set_avatar_tool_mode_enabled(mode == "avatar");
-    Ok(())
-}
+// NOTE: Tool-mode is frontend-only. The backend should not care which interaction tool is active;
+// it only provides click-through and global input hooks.

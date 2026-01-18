@@ -1,7 +1,7 @@
 use arc_swap::ArcSwapOption;
 use serde::{Deserialize, Serialize};
 use std::sync::{
-    atomic::{AtomicBool, AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
     Arc,
 };
 
@@ -78,6 +78,43 @@ impl MaskSnapshot {
             viewport_h,
         })
     }
+
+    pub fn hit_test_client_point(&self, client_x: i32, client_y: i32, client_w: i32, client_h: i32) -> bool {
+        if self.rect.is_empty() {
+            return false;
+        }
+
+        if client_x < 0 || client_y < 0 || client_x >= client_w || client_y >= client_h {
+            return false;
+        }
+
+        let client_w = (client_w as i64).max(1);
+        let client_h = (client_h as i64).max(1);
+
+        let mx = ((client_x as i64) * (self.mask_w as i64) / client_w) as i64;
+        let my = ((client_y as i64) * (self.mask_h as i64) / client_h) as i64;
+
+        if mx < 0 || my < 0 {
+            return false;
+        }
+        let mx = mx as u32;
+        let my = my as u32;
+        if mx >= self.mask_w || my >= self.mask_h {
+            return false;
+        }
+        if !self.rect.contains(mx, my) {
+            return false;
+        }
+
+        let mx_usize = mx as usize;
+        let my_usize = my as usize;
+        let idx = my_usize * self.stride + (mx_usize / 8);
+        let Some(byte) = self.bitset.get(idx) else {
+            return false;
+        };
+        let bit = (byte >> (mx_usize % 8)) & 1;
+        bit == 1
+    }
 }
 
 #[derive(Default)]
@@ -85,6 +122,11 @@ pub struct HitTestMaskStore {
     latest_seq: AtomicU64,
     snapshot: ArcSwapOption<MaskSnapshot>,
     force_transparent: AtomicBool,
+    viewport_client_mismatch_count: AtomicU64,
+    viewport_client_last_client_w: AtomicU32,
+    viewport_client_last_client_h: AtomicU32,
+    viewport_client_last_viewport_w: AtomicU32,
+    viewport_client_last_viewport_h: AtomicU32,
 }
 
 impl HitTestMaskStore {
@@ -94,6 +136,42 @@ impl HitTestMaskStore {
 
     pub fn force_transparent(&self) -> bool {
         self.force_transparent.load(Ordering::SeqCst)
+    }
+
+    pub fn record_viewport_client_mismatch(
+        &self,
+        client_w: u32,
+        client_h: u32,
+        viewport_w: u32,
+        viewport_h: u32,
+    ) {
+        let _ = self
+            .viewport_client_mismatch_count
+            .fetch_add(1, Ordering::Relaxed);
+        self.viewport_client_last_client_w
+            .store(client_w, Ordering::Relaxed);
+        self.viewport_client_last_client_h
+            .store(client_h, Ordering::Relaxed);
+        self.viewport_client_last_viewport_w
+            .store(viewport_w, Ordering::Relaxed);
+        self.viewport_client_last_viewport_h
+            .store(viewport_h, Ordering::Relaxed);
+    }
+
+    pub fn viewport_client_mismatch_count(&self) -> u64 {
+        self.viewport_client_mismatch_count.load(Ordering::Relaxed)
+    }
+
+    pub fn viewport_client_last_mismatch(&self) -> Option<(u32, u32, u32, u32)> {
+        if self.viewport_client_mismatch_count() == 0 {
+            return None;
+        }
+        Some((
+            self.viewport_client_last_client_w.load(Ordering::Relaxed),
+            self.viewport_client_last_client_h.load(Ordering::Relaxed),
+            self.viewport_client_last_viewport_w.load(Ordering::Relaxed),
+            self.viewport_client_last_viewport_h.load(Ordering::Relaxed),
+        ))
     }
 
     pub fn update(&self, snapshot: MaskSnapshot) -> bool {

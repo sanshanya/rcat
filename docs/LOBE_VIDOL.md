@@ -65,7 +65,7 @@ Lobe Vidol | rcat
 `Model.update`（含 lipSync/motion） | `src/components/vrm/useVrmBehavior.ts` + `src/components/vrm/motion/MotionController.ts`
 LookAt smoother + saccade | （TODO）目前 rcat 采用 `src/components/vrm/AvatarMouseTracking.ts` 直驱骨骼
 触摸交互（raycaster + bone map） | （TODO）rcat 暂无触摸系统
-工具栏（截图/全屏/网格/交互开关） | （TODO）rcat 目前只有 `VrmDebugPanel`
+工具栏（截图/全屏/网格/交互开关） | 已有：胶囊 Panel 的 VRM/Debug Tabs（Reset/Tool/FPS/Tracking 等）；TODO：截图/全屏/网格
 `chatMode`（chat/camera/call） | `skinMode`（off/vrm）+（TODO）更细粒度的模式/布局
 
 ## 基于 Lobe Vidol 的改进建议（rcat TODO）
@@ -75,4 +75,3 @@ LookAt smoother + saccade | （TODO）目前 rcat 采用 `src/components/vrm/Ava
 - 工具栏/HUD：引入“浮动工具栏 + 可拖拽/记忆位置”，提供截图、全屏、网格、重置视角、交互开关。
 - 资源导入：在 VRM 画布支持 drag&drop（VRM/VRMA/FBX/VMD），加快调试迭代。
 - 舞台/背景：背景图层与 Canvas 解耦（透明舞台 + 背景可替换），并把配置纳入 `savedata/settings.json`。
-

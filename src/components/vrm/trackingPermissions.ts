@@ -67,7 +67,7 @@ export const computeTrackingPermissionsTarget = (
     };
   }
 
-  if (context.toolMode === "avatar") {
+  if (context.toolMode === "model") {
     return {
       allowHead: false,
       allowSpine: false,

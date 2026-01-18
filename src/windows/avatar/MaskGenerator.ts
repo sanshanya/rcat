@@ -9,6 +9,12 @@ import {
 import type { VRM } from "@pixiv/three-vrm";
 
 import type { VrmRendererFrameContext } from "@/components/vrm/useVrmRenderer";
+import {
+  DEFAULT_HITTEST_ALPHA_THRESHOLD,
+  DEFAULT_HITTEST_ASYNC_READBACK,
+  DEFAULT_HITTEST_DILATION,
+  DEFAULT_HITTEST_MASK_MAX_EDGE,
+} from "@/windows/avatar/hittestDebugSettings";
 
 export type MaskRect = {
   minX: number;
@@ -21,20 +27,19 @@ export type HitTestMaskSnapshot = {
   maskW: number;
   maskH: number;
   rect: MaskRect;
+  bitset: Uint8Array;
   bitsetBase64: string;
   viewportW: number;
   viewportH: number;
+  readback: "sync" | "pbo";
 };
 
 type MaskGeneratorOptions = {
   maxEdge?: number;
   alphaThreshold?: number;
   dilation?: number;
+  asyncReadback?: boolean;
 };
-
-const DEFAULT_MAX_EDGE = 160;
-const DEFAULT_ALPHA_THRESHOLD = 32;
-const DEFAULT_DILATION = 1;
 
 const encodeBase64 = (bytes: Uint8Array) => {
   let binary = "";
@@ -54,75 +59,189 @@ export class MaskGenerator {
   private mask = new Uint8Array(0);
   private scratch = new Uint8Array(0);
   private bitset = new Uint8Array(0);
+  private pboDisabled = false;
+  private pboContext: WebGL2RenderingContext | null = null;
+  private pbo: WebGLBuffer | null = null;
+  private pending:
+    | {
+        gl: WebGL2RenderingContext;
+        buffer: WebGLBuffer;
+        sync: WebGLSync;
+        maskW: number;
+        maskH: number;
+        viewportW: number;
+        viewportH: number;
+      }
+    | null = null;
 
   constructor(options: MaskGeneratorOptions = {}) {
     this.options = {
-      maxEdge: options.maxEdge ?? DEFAULT_MAX_EDGE,
-      alphaThreshold: options.alphaThreshold ?? DEFAULT_ALPHA_THRESHOLD,
-      dilation: options.dilation ?? DEFAULT_DILATION,
+      maxEdge: options.maxEdge ?? DEFAULT_HITTEST_MASK_MAX_EDGE,
+      alphaThreshold: options.alphaThreshold ?? DEFAULT_HITTEST_ALPHA_THRESHOLD,
+      dilation: options.dilation ?? DEFAULT_HITTEST_DILATION,
+      asyncReadback: options.asyncReadback ?? DEFAULT_HITTEST_ASYNC_READBACK,
     };
     this.material = new MeshBasicMaterial({ color: 0xffffff });
     this.material.transparent = false;
   }
 
   dispose() {
+    if (this.pending) {
+      try {
+        this.pending.gl.deleteSync(this.pending.sync);
+      } catch {
+        // Ignore sync deletion failures.
+      }
+      this.pending = null;
+    }
+    if (this.pbo && this.pboContext) {
+      try {
+        this.pboContext.deleteBuffer(this.pbo);
+      } catch {
+        // Ignore buffer deletion failures.
+      }
+    }
+    this.pbo = null;
+    this.pboContext = null;
     this.renderTarget?.dispose();
     this.renderTarget = null;
     this.material.dispose();
   }
 
-  generate(ctx: VrmRendererFrameContext, vrm: VRM): HitTestMaskSnapshot | null {
-    const renderer = ctx.renderer;
-    const scene = ctx.scene;
-    const camera = ctx.camera;
+  private disablePbo(gl?: WebGL2RenderingContext) {
+    this.pboDisabled = true;
+    if (this.pending) {
+      try {
+        this.pending.gl.deleteSync(this.pending.sync);
+      } catch {
+        // Ignore.
+      }
+      this.pending = null;
+    }
+    const ctx = gl ?? this.pboContext;
+    if (this.pbo && ctx) {
+      try {
+        ctx.deleteBuffer(this.pbo);
+      } catch {
+        // Ignore.
+      }
+    }
+    this.pbo = null;
+    this.pboContext = null;
+  }
 
-    if (!vrm) return null;
-
-    const gl = renderer.getContext();
-    const viewportW = gl.drawingBufferWidth;
-    const viewportH = gl.drawingBufferHeight;
-    if (!viewportW || !viewportH) return null;
-
-    const maxEdge = Math.max(8, this.options.maxEdge);
-    const scale = maxEdge / Math.max(viewportW, viewportH);
-    const maskW = Math.max(1, Math.round(viewportW * scale));
-    const maskH = Math.max(1, Math.round(viewportH * scale));
-
-    if (!this.renderTarget || this.renderTarget.width !== maskW || this.renderTarget.height !== maskH) {
-      this.renderTarget?.dispose();
-      this.renderTarget = new WebGLRenderTarget(maskW, maskH, {
-        depthBuffer: true,
-        stencilBuffer: false,
-        magFilter: NearestFilter,
-        minFilter: NearestFilter,
-        format: RGBAFormat,
-        type: UnsignedByteType,
-      });
+  private tryConsumePending(gl: WebGL2RenderingContext): HitTestMaskSnapshot | null {
+    const pending = this.pending;
+    if (!pending) return null;
+    if (pending.gl !== gl || pending.buffer !== this.pbo) {
+      this.disablePbo(gl);
+      return null;
     }
 
-    const rt = this.renderTarget;
+    const status = gl.clientWaitSync(pending.sync, 0, 0);
+    if (status === gl.TIMEOUT_EXPIRED) {
+      return null;
+    }
+    if (status === gl.WAIT_FAILED) {
+      this.disablePbo(gl);
+      return null;
+    }
 
+    const expectedLen = pending.maskW * pending.maskH * 4;
+    if (this.pixels.length !== expectedLen) {
+      this.pixels = new Uint8Array(expectedLen);
+    }
+
+    try {
+      gl.bindBuffer(gl.PIXEL_PACK_BUFFER, pending.buffer);
+      gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, this.pixels);
+    } catch {
+      this.disablePbo(gl);
+      return null;
+    } finally {
+      gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+      try {
+        gl.deleteSync(pending.sync);
+      } catch {
+        // Ignore.
+      }
+      this.pending = null;
+    }
+
+    return this.buildSnapshot(pending.maskW, pending.maskH, pending.viewportW, pending.viewportH, "pbo");
+  }
+
+  private schedulePboReadback(
+    gl: WebGL2RenderingContext,
+    maskW: number,
+    maskH: number,
+    viewportW: number,
+    viewportH: number
+  ): boolean {
+    if (this.pending) return true;
+    if (this.pboDisabled) return false;
+
+    if (!this.pbo || this.pboContext !== gl) {
+      this.disablePbo(gl);
+      this.pboDisabled = false;
+      const buffer = gl.createBuffer();
+      if (!buffer) {
+        this.disablePbo(gl);
+        return false;
+      }
+      this.pbo = buffer;
+      this.pboContext = gl;
+    }
+
+    const buffer = this.pbo;
+    if (!buffer) return false;
+
+    const byteLen = maskW * maskH * 4;
+    try {
+      gl.bindBuffer(gl.PIXEL_PACK_BUFFER, buffer);
+      gl.bufferData(gl.PIXEL_PACK_BUFFER, byteLen, gl.STREAM_READ);
+      gl.readPixels(0, 0, maskW, maskH, gl.RGBA, gl.UNSIGNED_BYTE, 0);
+      const sync = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
+      if (!sync) {
+        this.disablePbo(gl);
+        return false;
+      }
+      gl.flush();
+      this.pending = {
+        gl,
+        buffer,
+        sync,
+        maskW,
+        maskH,
+        viewportW,
+        viewportH,
+      };
+      return true;
+    } catch {
+      this.disablePbo(gl);
+      return false;
+    } finally {
+      gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+    }
+  }
+
+  private buildSnapshot(
+    maskW: number,
+    maskH: number,
+    viewportW: number,
+    viewportH: number,
+    readback: "sync" | "pbo"
+  ): HitTestMaskSnapshot | null {
     if (this.pixels.length !== maskW * maskH * 4) {
-      this.pixels = new Uint8Array(maskW * maskH * 4);
+      return null;
     }
+
     if (this.mask.length !== maskW * maskH) {
       this.mask = new Uint8Array(maskW * maskH);
     }
     if (this.scratch.length !== maskW * maskH) {
       this.scratch = new Uint8Array(maskW * maskH);
     }
-
-    const prevRt = renderer.getRenderTarget();
-    const prevOverride: Material | null = scene.overrideMaterial ?? null;
-
-    scene.overrideMaterial = this.material;
-    renderer.setRenderTarget(rt);
-    renderer.clear();
-    renderer.render(scene, camera);
-    renderer.setRenderTarget(prevRt);
-    scene.overrideMaterial = prevOverride;
-
-    renderer.readRenderTargetPixels(rt, 0, 0, maskW, maskH, this.pixels);
 
     const threshold = this.options.alphaThreshold;
     // WebGL readPixels origin is bottom-left; flip Y to get top-left origin mask.
@@ -197,10 +316,82 @@ export class MaskGenerator {
       maskW,
       maskH,
       rect,
+      bitset: this.bitset,
       bitsetBase64: encodeBase64(this.bitset),
       viewportW,
       viewportH,
+      readback,
     };
   }
-}
 
+  generate(ctx: VrmRendererFrameContext, vrm: VRM): HitTestMaskSnapshot | null {
+    const renderer = ctx.renderer;
+    const scene = ctx.scene;
+    const camera = ctx.camera;
+
+    if (!vrm) return null;
+
+    const gl = renderer.getContext();
+    const viewportW = gl.drawingBufferWidth;
+    const viewportH = gl.drawingBufferHeight;
+    if (!viewportW || !viewportH) return null;
+
+    const gl2 =
+      this.options.asyncReadback && !this.pboDisabled && "fenceSync" in gl
+        ? (gl as WebGL2RenderingContext)
+        : null;
+    const pendingSnapshot = gl2 ? this.tryConsumePending(gl2) : null;
+
+    const maxEdge = Math.max(8, this.options.maxEdge);
+    const scale = maxEdge / Math.max(viewportW, viewportH);
+    const maskW = Math.max(1, Math.round(viewportW * scale));
+    const maskH = Math.max(1, Math.round(viewportH * scale));
+
+    if (!this.renderTarget || this.renderTarget.width !== maskW || this.renderTarget.height !== maskH) {
+      this.renderTarget?.dispose();
+      this.renderTarget = new WebGLRenderTarget(maskW, maskH, {
+        depthBuffer: true,
+        stencilBuffer: false,
+        magFilter: NearestFilter,
+        minFilter: NearestFilter,
+        format: RGBAFormat,
+        type: UnsignedByteType,
+      });
+    }
+
+    const rt = this.renderTarget;
+
+    const prevRt = renderer.getRenderTarget();
+    const prevOverride: Material | null = scene.overrideMaterial ?? null;
+
+    scene.overrideMaterial = this.material;
+    renderer.setRenderTarget(rt);
+    renderer.clear();
+    renderer.render(scene, camera);
+
+    let snapshot: HitTestMaskSnapshot | null = null;
+    if (gl2) {
+      const scheduled = this.schedulePboReadback(gl2, maskW, maskH, viewportW, viewportH);
+      if (!scheduled) {
+        // PBO path failed; fall back to sync readback for this frame.
+        this.pboDisabled = true;
+      }
+    }
+
+    if (!gl2 || this.pboDisabled) {
+      const expectedLen = maskW * maskH * 4;
+      if (this.pixels.length !== expectedLen) {
+        this.pixels = new Uint8Array(expectedLen);
+      }
+      renderer.readRenderTargetPixels(rt, 0, 0, maskW, maskH, this.pixels);
+      snapshot = this.buildSnapshot(maskW, maskH, viewportW, viewportH, "sync");
+    } else {
+      snapshot = pendingSnapshot;
+    }
+
+    renderer.setRenderTarget(prevRt);
+    scene.overrideMaterial = prevOverride;
+
+    return snapshot;
+  }
+}

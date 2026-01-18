@@ -9,13 +9,10 @@ import {
   MOUSE,
   Mesh,
   Object3D,
-  Plane,
   PerspectiveCamera,
-  Raycaster,
   Scene,
   SRGBColorSpace,
   Texture,
-  Vector2,
   Vector3,
   WebGLRenderer,
 } from "three";
@@ -31,17 +28,18 @@ import {
   VRMUtils,
 } from "@pixiv/three-vrm";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { getCurrentWindow, PhysicalPosition, PhysicalSize } from "@tauri-apps/api/window";
 
 import type { RenderFps, RenderFpsMode } from "@/components/vrm/renderFpsStore";
 import { setRenderFpsStats } from "@/components/vrm/renderFpsStore";
+import { AvatarWindowTransformController } from "@/components/vrm/avatarWindowTransform";
 import {
   getVrmAvatarState,
   getVrmViewState,
   setVrmAvatarState,
   setVrmViewState,
 } from "@/services/vrmSettings";
-import { getVrmToolMode, subscribeVrmToolMode } from "@/components/vrm/vrmToolModeStore";
+import { setVrmRendererActions } from "@/components/vrm/vrmRendererActions";
+import { VrmCanvasInputController } from "@/components/vrm/vrmCanvasInputController";
 import { isTauriContext, reportError } from "@/utils";
 
 export type VrmRendererHandle = {
@@ -70,10 +68,6 @@ const MAX_DELTA_SECONDS = 1 / 30;
 const FPS_EPSILON_MS = 0.5;
 const VIEW_STATE_STORAGE_PREFIX = "rcat.vrm.viewState";
 const AVATAR_STATE_STORAGE_PREFIX = "rcat.vrm.avatarState";
-const AVATAR_WINDOW_SCALE_MIN_W = 240;
-const AVATAR_WINDOW_SCALE_MIN_H = 360;
-const AVATAR_WINDOW_SCALE_MAX_W = 1400;
-const AVATAR_WINDOW_SCALE_MAX_H = 2100;
 
 type StoredViewState = {
   cameraPosition: [number, number, number];
@@ -438,9 +432,6 @@ export const useVrmRenderer = (
     let isUserInteracting = false;
     let viewStateWriteTimer: number | null = null;
     let avatarStateWriteTimer: number | null = null;
-    let hasAttachedResetListener = false;
-    let toolModeUnsubscribe: (() => void) | null = null;
-    let toolMode = getVrmToolMode();
     const isAvatarWebview = (() => {
       if (!isTauriContext()) return false;
       try {
@@ -450,37 +441,7 @@ export const useVrmRenderer = (
         return false;
       }
     })();
-
-    let windowScalePending = 0;
-    let windowScaleInFlight = false;
-    let windowMetricsCache: {
-      outerX: number;
-      outerY: number;
-      outerW: number;
-      outerH: number;
-      borderW: number;
-      borderH: number;
-    } | null = null;
-    let windowDragState: {
-      pointerId: number;
-      startScreenX: number;
-      startScreenY: number;
-      startOuterX: number;
-      startOuterY: number;
-      scaleFactor: number;
-      ready: boolean;
-    } | null = null;
-    let windowDragPending: { x: number; y: number } | null = null;
-    let windowDragInFlight = false;
-
-    const avatarRaycaster = new Raycaster();
-    const avatarNdc = new Vector2();
-    const avatarDragPlane = new Plane();
-    const avatarDragStart = new Vector3();
-    const avatarStartPos = new Vector3();
-    const avatarDragDelta = new Vector3();
-    let avatarDragging = false;
-    let avatarDraggingPointerId: number | null = null;
+    const avatarWindowTransform = isAvatarWebview ? new AvatarWindowTransformController() : null;
 
     const persistViewState = () => {
       if (!currentVrmUrl) return;
@@ -530,6 +491,16 @@ export const useVrmRenderer = (
       }, 250);
     };
 
+    const inputController = new VrmCanvasInputController({
+      canvas,
+      camera,
+      controls,
+      getVrm: () => currentVrm,
+      avatarWindowTransform,
+      persistAvatarState,
+      schedulePersistAvatarState,
+    });
+
     const fitViewToVrm = (vrm: VRM) => {
       vrm.scene.updateMatrixWorld(true);
       const box = new Box3().setFromObject(vrm.scene);
@@ -552,6 +523,17 @@ export const useVrmRenderer = (
       fitViewToVrm(currentVrm);
       persistViewState();
     };
+
+    const resetAvatarTransform = () => {
+      if (!currentVrm) return;
+      currentVrm.scene.position.set(0, 0, 0);
+      currentVrm.scene.scale.setScalar(1);
+      centerObjectOnFloor(currentVrm.scene);
+      currentVrm.scene.updateMatrixWorld(true);
+      persistAvatarState();
+    };
+
+    setVrmRendererActions({ resetView, resetAvatarTransform });
 
     const applyStoredViewState = (stored: StoredViewState) => {
       camera.position.set(
@@ -587,291 +569,6 @@ export const useVrmRenderer = (
       schedulePersistViewState();
     });
 
-    const updateToolMode = (nextMode: typeof toolMode) => {
-      toolMode = nextMode;
-      controls.enabled = toolMode === "camera";
-      if (toolMode !== "avatar") {
-        avatarDragging = false;
-        avatarDraggingPointerId = null;
-      }
-    };
-
-    updateToolMode(toolMode);
-    toolModeUnsubscribe = subscribeVrmToolMode(() => {
-      updateToolMode(getVrmToolMode());
-    });
-
-    const applyAvatarWindowScale = async (deltaY: number) => {
-      if (!isAvatarWebview) return;
-      if (!Number.isFinite(deltaY) || deltaY === 0) return;
-
-      const win = getCurrentWindow();
-      let metrics = windowMetricsCache;
-      if (!metrics) {
-        const [outerPos, outerSize, innerSize] = await Promise.all([
-          win.outerPosition(),
-          win.outerSize(),
-          win.innerSize(),
-        ]);
-        const borderW = Math.max(0, outerSize.width - innerSize.width);
-        const borderH = Math.max(0, outerSize.height - innerSize.height);
-        metrics = {
-          outerX: outerPos.x,
-          outerY: outerPos.y,
-          outerW: outerSize.width,
-          outerH: outerSize.height,
-          borderW,
-          borderH,
-        };
-      }
-
-      const factor = Math.exp(-deltaY * 0.001);
-      if (!Number.isFinite(factor) || factor <= 0) return;
-
-      const minFactor = Math.max(
-        AVATAR_WINDOW_SCALE_MIN_W / metrics.outerW,
-        AVATAR_WINDOW_SCALE_MIN_H / metrics.outerH
-      );
-      const maxFactor = Math.min(
-        AVATAR_WINDOW_SCALE_MAX_W / metrics.outerW,
-        AVATAR_WINDOW_SCALE_MAX_H / metrics.outerH
-      );
-      const nextFactor = Math.min(maxFactor, Math.max(minFactor, factor));
-
-      const desiredOuterW = Math.round(metrics.outerW * nextFactor);
-      const desiredOuterH = Math.round(metrics.outerH * nextFactor);
-      const desiredInnerW = Math.max(1, desiredOuterW - metrics.borderW);
-      const desiredInnerH = Math.max(1, desiredOuterH - metrics.borderH);
-      const nextOuterW = desiredInnerW + metrics.borderW;
-      const nextOuterH = desiredInnerH + metrics.borderH;
-
-      if (nextOuterW === metrics.outerW && nextOuterH === metrics.outerH) return;
-
-      const centerX = metrics.outerX + metrics.outerW / 2;
-      const centerY = metrics.outerY + metrics.outerH / 2;
-      const nextOuterX = Math.round(centerX - nextOuterW / 2);
-      const nextOuterY = Math.round(centerY - nextOuterH / 2);
-
-      await win.setSize(new PhysicalSize(desiredInnerW, desiredInnerH));
-      await win.setPosition(new PhysicalPosition(nextOuterX, nextOuterY));
-
-      windowMetricsCache = {
-        outerX: nextOuterX,
-        outerY: nextOuterY,
-        outerW: nextOuterW,
-        outerH: nextOuterH,
-        borderW: metrics.borderW,
-        borderH: metrics.borderH,
-      };
-    };
-
-    const queueAvatarWindowScale = (deltaY: number) => {
-      if (!isAvatarWebview) return;
-      if (!Number.isFinite(deltaY) || deltaY === 0) return;
-
-      windowScalePending += deltaY;
-      if (windowScaleInFlight) return;
-      windowScaleInFlight = true;
-
-      void (async () => {
-        try {
-          while (windowScalePending !== 0) {
-            const pending = windowScalePending;
-            windowScalePending = 0;
-            await applyAvatarWindowScale(pending);
-          }
-        } catch (err) {
-          windowMetricsCache = null;
-          reportError(err, "useVrmRenderer.avatarWindowScale", { devOnly: true });
-        } finally {
-          windowScaleInFlight = false;
-        }
-      })();
-    };
-
-    const queueAvatarWindowMove = (x: number, y: number) => {
-      if (!isAvatarWebview) return;
-
-      windowDragPending = { x, y };
-      if (windowDragInFlight) return;
-      windowDragInFlight = true;
-
-      void (async () => {
-        const win = getCurrentWindow();
-        while (windowDragPending) {
-          const next = windowDragPending;
-          windowDragPending = null;
-          if (!next) break;
-          await win.setPosition(new PhysicalPosition(next.x, next.y));
-        }
-      })()
-        .catch((err) => {
-          reportError(err, "useVrmRenderer.avatarWindowMove", { devOnly: true });
-        })
-        .finally(() => {
-          windowDragInFlight = false;
-        });
-    };
-
-    const pointerToNdc = (event: PointerEvent | WheelEvent) => {
-      const rect = canvas.getBoundingClientRect();
-      const width = Math.max(1, rect.width);
-      const height = Math.max(1, rect.height);
-      const x = ((event.clientX - rect.left) / width) * 2 - 1;
-      const y = -((event.clientY - rect.top) / height) * 2 + 1;
-      avatarNdc.set(x, y);
-      return avatarNdc;
-    };
-
-    const onPointerDown = (event: PointerEvent) => {
-      if (toolMode !== "avatar") return;
-      if (event.button !== 0) return;
-
-      // Desktop pet interactions:
-      // - Left-drag: move the avatar window (Alt+Left-drag moves the model).
-      if (!event.altKey) {
-        if (!isAvatarWebview) return;
-        event.preventDefault();
-        windowMetricsCache = null;
-        windowDragState = null;
-        windowDragPending = null;
-        windowDragInFlight = false;
-
-        const pointerId = event.pointerId;
-        windowDragState = {
-          pointerId,
-          startScreenX: event.screenX,
-          startScreenY: event.screenY,
-          startOuterX: 0,
-          startOuterY: 0,
-          scaleFactor: 1,
-          ready: false,
-        };
-
-        try {
-          canvas.setPointerCapture(pointerId);
-        } catch {
-          // Ignore pointer capture failures.
-        }
-
-        void Promise.all([getCurrentWindow().outerPosition(), getCurrentWindow().scaleFactor()])
-          .then(([pos, scaleFactor]) => {
-            const state = windowDragState;
-            if (!state || state.pointerId !== pointerId) return;
-            state.startOuterX = pos.x;
-            state.startOuterY = pos.y;
-            if (Number.isFinite(scaleFactor) && scaleFactor > 0) {
-              state.scaleFactor = scaleFactor;
-            }
-            state.ready = true;
-          })
-          .catch((err) => {
-            windowDragState = null;
-            reportError(err, "useVrmRenderer.avatarWindowDrag.init", { devOnly: true });
-          });
-        return;
-      }
-
-      if (!currentVrm) return;
-
-      const ndc = pointerToNdc(event);
-      const normal = camera.getWorldDirection(avatarDragDelta);
-      const anchor = currentVrm.scene.getWorldPosition(avatarStartPos);
-      avatarDragPlane.setFromNormalAndCoplanarPoint(normal, anchor);
-      avatarRaycaster.setFromCamera(ndc, camera);
-      const hit = avatarRaycaster.ray.intersectPlane(avatarDragPlane, avatarDragStart);
-      if (!hit) return;
-
-      event.preventDefault();
-      avatarDragging = true;
-      avatarDraggingPointerId = event.pointerId;
-      avatarStartPos.copy(currentVrm.scene.position);
-      canvas.setPointerCapture(event.pointerId);
-    };
-
-    const onPointerMove = (event: PointerEvent) => {
-      const windowState = windowDragState;
-      if (windowState && windowState.pointerId === event.pointerId) {
-        if (!windowState.ready) return;
-        const scaleFactor = windowState.scaleFactor;
-        const startX = Math.round(windowState.startScreenX * scaleFactor);
-        const startY = Math.round(windowState.startScreenY * scaleFactor);
-        const x = Math.round(event.screenX * scaleFactor);
-        const y = Math.round(event.screenY * scaleFactor);
-        const nextX = windowState.startOuterX + (x - startX);
-        const nextY = windowState.startOuterY + (y - startY);
-        queueAvatarWindowMove(nextX, nextY);
-        return;
-      }
-
-      if (!avatarDragging) return;
-      if (avatarDraggingPointerId !== event.pointerId) return;
-      if (!currentVrm) return;
-      const ndc = pointerToNdc(event);
-      avatarRaycaster.setFromCamera(ndc, camera);
-      const hit = avatarRaycaster.ray.intersectPlane(avatarDragPlane, avatarDragDelta);
-      if (!hit) return;
-      avatarDragDelta.sub(avatarDragStart);
-      currentVrm.scene.position.copy(avatarStartPos).add(avatarDragDelta);
-      currentVrm.scene.updateMatrixWorld(true);
-    };
-
-    const endPointerDrag = (event: PointerEvent) => {
-      const windowState = windowDragState;
-      if (windowState && windowState.pointerId === event.pointerId) {
-        windowDragState = null;
-        windowDragPending = null;
-        windowDragInFlight = false;
-        windowMetricsCache = null;
-        try {
-          canvas.releasePointerCapture(event.pointerId);
-        } catch {
-          // Ignore capture release failures.
-        }
-        return;
-      }
-
-      if (!avatarDragging) return;
-      if (avatarDraggingPointerId !== event.pointerId) return;
-      avatarDragging = false;
-      avatarDraggingPointerId = null;
-      try {
-        canvas.releasePointerCapture(event.pointerId);
-      } catch {
-        // Ignore capture release failures.
-      }
-      persistAvatarState();
-    };
-
-    const onWheel = (event: WheelEvent) => {
-      if (toolMode !== "avatar") return;
-
-      // Desktop pet interactions:
-      // - Wheel: scale the avatar window around its center (Alt+Wheel scales the model).
-      if (!event.altKey) {
-        if (isAvatarWebview) {
-          event.preventDefault();
-          queueAvatarWindowScale(event.deltaY);
-          return;
-        }
-      }
-
-      if (!currentVrm) return;
-      event.preventDefault();
-      const current = currentVrm.scene.scale.x;
-      const factor = Math.exp(-event.deltaY * 0.001);
-      const next = Math.max(0.05, Math.min(10, current * factor));
-      currentVrm.scene.scale.setScalar(next);
-      currentVrm.scene.updateMatrixWorld(true);
-      schedulePersistAvatarState();
-    };
-
-    canvas.addEventListener("pointerdown", onPointerDown);
-    canvas.addEventListener("pointermove", onPointerMove);
-    canvas.addEventListener("pointerup", endPointerDrag);
-    canvas.addEventListener("pointercancel", endPointerDrag);
-    canvas.addEventListener("wheel", onWheel, { passive: false });
-
     const resize = () => {
       const container = canvas.parentElement ?? canvas;
       const width = Math.max(1, container.clientWidth);
@@ -890,11 +587,6 @@ export const useVrmRenderer = (
     resizeObserver.observe(canvas.parentElement ?? canvas);
     resize();
 
-    if (!hasAttachedResetListener) {
-      canvas.addEventListener("dblclick", resetView);
-      hasAttachedResetListener = true;
-    }
-
     const loader = new GLTFLoader();
     loader.register(
       (parser) =>
@@ -911,8 +603,6 @@ export const useVrmRenderer = (
       currentVrm = null;
       currentVrmUrl = null;
       userAdjustedView = false;
-      avatarDragging = false;
-      avatarDraggingPointerId = null;
     };
 
     const loadVrm = async (url: string, options?: { signal?: AbortSignal }) => {
@@ -1107,19 +797,8 @@ export const useVrmRenderer = (
 
     return () => {
       stopLoop();
-      if (hasAttachedResetListener) {
-        canvas.removeEventListener("dblclick", resetView);
-        hasAttachedResetListener = false;
-      }
-      canvas.removeEventListener("pointerdown", onPointerDown);
-      canvas.removeEventListener("pointermove", onPointerMove);
-      canvas.removeEventListener("pointerup", endPointerDrag);
-      canvas.removeEventListener("pointercancel", endPointerDrag);
-      canvas.removeEventListener("wheel", onWheel);
-      if (toolModeUnsubscribe) {
-        toolModeUnsubscribe();
-        toolModeUnsubscribe = null;
-      }
+      setVrmRendererActions(null);
+      inputController.dispose();
       canvas.removeEventListener("webglcontextlost", handleContextLost);
       canvas.removeEventListener("webglcontextrestored", handleContextRestored);
       resizeObserver.disconnect();

@@ -309,7 +309,6 @@ pub fn run() {
             resize_window,
             set_window_min_size,
             commands::avatar_commands::avatar_update_hittest_mask,
-            commands::avatar_commands::avatar_set_tool_mode,
             commands::panel_commands::open_capsule,
             commands::panel_commands::toggle_capsule,
             commands::panel_commands::dismiss_capsule,
@@ -448,11 +447,8 @@ pub fn run() {
             {
                 let avatar_window = windows::avatar_window::ensure_avatar_window(&app_handle)?;
                 windows::avatar_window::install_avatar_subclass(&avatar_window)?;
-                windows::avatar_window::spawn_avatar_cursor_gate(&app_handle);
-                windows::avatar_window::spawn_avatar_wheel_router(&app_handle);
+                windows::avatar_window::start_avatar_windows_service(&app_handle);
             }
-
-            windows::panel_window::spawn_panel_auto_dismiss(&app_handle);
 
             if let Some(window) = app.get_webview_window("main") {
                 if cfg!(debug_assertions) {

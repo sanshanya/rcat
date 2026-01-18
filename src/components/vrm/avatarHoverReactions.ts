@@ -3,7 +3,7 @@ import type { AvatarZoneId } from "@/components/vrm/avatarInteractionZones";
 
 export type HoverReactionFrame = Partial<Record<ExpressionName, number>>;
 
-type HoverReactionSpec = {
+export type HoverReactionSpec = {
   expressions: HoverReactionFrame;
   fadeInMs: number;
   fadeOutMs: number;
@@ -23,7 +23,9 @@ const step = (options: { current: number; target: number; delta: number; fadeMs:
   return clamp01(moveTowards(current, target, delta / fadeSeconds));
 };
 
-const DEFAULT_REACTIONS: Record<AvatarZoneId, HoverReactionSpec> = {
+export type AvatarHoverReactionProfile = Record<AvatarZoneId, HoverReactionSpec>;
+
+export const DEFAULT_AVATAR_HOVER_REACTIONS: AvatarHoverReactionProfile = {
   head: {
     expressions: { happy: 0.55 },
     fadeInMs: 120,
@@ -45,6 +47,11 @@ const DEFAULT_REACTIONS: Record<AvatarZoneId, HoverReactionSpec> = {
 export class AvatarHoverReactionController {
   private zone: AvatarZoneId | null = null;
   private weights: HoverReactionFrame = {};
+  private readonly profile: AvatarHoverReactionProfile;
+
+  constructor(profile: AvatarHoverReactionProfile = DEFAULT_AVATAR_HOVER_REACTIONS) {
+    this.profile = profile;
+  }
 
   getZone() {
     return this.zone;
@@ -55,8 +62,8 @@ export class AvatarHoverReactionController {
     const prevZone = this.zone;
     this.zone = zone;
 
-    const prevSpec = prevZone ? DEFAULT_REACTIONS[prevZone] : null;
-    const nextSpec = zone ? DEFAULT_REACTIONS[zone] : null;
+    const prevSpec = prevZone ? this.profile[prevZone] : null;
+    const nextSpec = zone ? this.profile[zone] : null;
 
     const allKeys = new Set<ExpressionName>();
     if (prevSpec) Object.keys(prevSpec.expressions).forEach((key) => allKeys.add(key as ExpressionName));

@@ -65,6 +65,23 @@ fn position_capsule_near_anchor(window: &tauri::WebviewWindow, anchor_x: i32, an
 }
 
 #[cfg(target_os = "windows")]
+fn resolve_capsule_anchor(params: &OpenCapsuleParams) -> (i32, i32) {
+    if params.anchor_x >= 0 && params.anchor_y >= 0 {
+        return (params.anchor_x, params.anchor_y);
+    }
+
+    use windows::Win32::Foundation::POINT;
+    use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
+
+    let mut pt = POINT::default();
+    if unsafe { GetCursorPos(&mut pt) }.is_ok() {
+        (pt.x, pt.y)
+    } else {
+        (0, 0)
+    }
+}
+
+#[cfg(target_os = "windows")]
 fn bring_panel_to_top_no_activate(window: &tauri::WebviewWindow) {
     use windows::Win32::UI::WindowsAndMessaging::{
         GetAncestor, SetWindowPos, GA_ROOT, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
@@ -107,7 +124,8 @@ fn show_capsule(app: &AppHandle, window: &tauri::WebviewWindow, params: &OpenCap
             crate::windows::avatar_window::set_panel_root_hwnd(hwnd);
         }
         bring_panel_to_top_no_activate(window);
-        position_capsule_near_anchor(window, params.anchor_x, params.anchor_y);
+        let (anchor_x, anchor_y) = resolve_capsule_anchor(params);
+        position_capsule_near_anchor(window, anchor_x, anchor_y);
     }
 
     let _ = window.emit(
@@ -150,17 +168,5 @@ pub fn toggle_capsule(app: &AppHandle, params: OpenCapsuleParams) -> tauri::Resu
     Ok(())
 }
 
-#[cfg(not(target_os = "windows"))]
-pub fn spawn_panel_auto_dismiss(_app: &tauri::AppHandle) {
-    // no-op
-}
-
-/// Windows-only: hide the panel when the user clicks outside it.
-///
-/// NOTE: This used to be implemented as a 33ms polling loop (checking VK_LBUTTON + WindowFromPoint).
-/// It is now handled by the global `WH_MOUSE_LL` hook in `windows::avatar_window`, so we don't need
-/// a separate ticker here.
-#[cfg(target_os = "windows")]
-pub fn spawn_panel_auto_dismiss(_app: &tauri::AppHandle) {
-    log::info!("Panel auto-dismiss: handled by global mouse hook");
-}
+// Panel auto-dismiss is handled by the global `WH_MOUSE_LL` hook in
+// `windows::avatar_window::service`.

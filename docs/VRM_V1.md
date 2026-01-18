@@ -45,7 +45,7 @@ P0（不做很容易翻车）：
 - **命中坐标系对齐**：后端命中映射必须对齐到前端 WebGL 的“绘制缓冲区像素”（`drawingBufferWidth/Height`），并在 IPC 里传递必要元数据做 sanity check。
 - **AvatarWindow 不抢焦点**：必须处理 `WM_MOUSEACTIVATE`（建议 `MA_NOACTIVATE`），避免用户点角色时 IDE/浏览器失去键盘焦点。
 - **命中用的 HWND 必须正确**：cursor gate 的 `ScreenToClient/GetClientRect` 要对准实际接收输入的子 HWND（可能不是顶层 HWND）；优先 `SetWindowSubclass`，并在销毁时移除。
-- **mask 未就绪的兜底入口**：坚持“缺数据就透明”没问题，但 V1 必须提供至少一个可操作入口（托盘/快捷键/启动期粗命中）。
+- **mask 未就绪的兜底入口**：坚持“缺数据就透明”没问题，但 V1 必须提供至少一个可操作入口（托盘/启动期粗命中；本项目不做快捷键）。
 
 P1（增强稳定性与观感）：
 
@@ -213,7 +213,7 @@ V1 推荐方案：**GPU 轮廓 Mask + 二级判定**（准 + 快 + 工程可控�
 
 缺数据就透明的同时（P0）必须给“可操作兜底入口”：
 
-- 托盘菜单新增“打开胶囊”（或全局快捷键），确保启动初期/异常时用户仍能打开 Panel。
+- 托盘菜单新增“打开胶囊”（本项目不做快捷键），确保启动初期/异常时用户仍能打开 Panel。
 - 或在启动后前 N 秒临时启用“粗 rect 命中”（允许右键打开胶囊），首个 mask 到达后切到像素级判定。
 
 ### 4.3 Hook/Subclass 时机与 HWND 确认（P0）
@@ -329,17 +329,19 @@ V1 最小建议：先做方案 A（只在 Panel 打开时拉一次），避免 U
 - 只有点在模型像素上才会阻挡底层窗口点击
 - 右键模型稳定唤出胶囊，胶囊可正常输入/交互
 - AvatarWindow 点击不抢焦点（`WM_MOUSEACTIVATE` 生效）
-- mask 未就绪时仍有入口（托盘/快捷键/启动期粗命中三选一）
+- mask 未就绪时仍有入口（托盘/启动期粗命中；不做快捷键）
 
 ### v0.2（交互更像桌宠）
 
-- Alt/Shift 等修饰键拖拽（`HTCAPTION`）或前端拖拽移动角色（二选一）
+- Tool 模式分流（不依赖快捷键）：
+  - `Pet`（默认）：左键拖拽移动窗口（角色一起走）；滚轮缩放窗口
+  - `Model`：左键拖拽移动模型（窗口不动）；滚轮缩放模型
 - 动态提高 mask 刷新频率（跳舞/拖拽时 30Hz）
 - 增加 Debug overlay：显示 rect 与 mask 命中点，便于调试
 
 ### v0.3（把 VRM/Debug 面板完整搬进胶囊）
 
-- 将 `VrmDebugPanel` 拆为“UI 配置层（可跨窗口）”+“运行时层（Avatar 专属）”
+- VRM/Debug 控制统一收口到胶囊 Tabs（`VrmTab/DebugTab`）；AvatarWindow 只保留渲染 + hit-test debug overlay（可开关）
 - Panel 通过命令总线控制 Avatar 的运行时行为（播放动作/重置视角/切工具模式）
 
 ---
@@ -397,4 +399,4 @@ windows/
 - 异步 readback：P1 优先推进 WebGL2 PBO 或 OffscreenCanvas/Worker，降低集显上 `readPixels` 抖动风险。
 - WndProc Hook 与 Tauri/winit 冲突：优先 `SetWindowSubclass`；必要时对子窗口也挂；异常时降级为“全透明不可交互”而不是“整窗拦截”。
 - 坐标/DPI 错位：把“WebGL drawingBuffer 像素”写成硬约束并在 IPC 上传 `viewportW/H` 做 sanity check；提供 Debug overlay 快速定位。
-- 启动期无入口：坚持“缺数据就透明”时，必须有托盘/快捷键/启动期粗命中兜底。
+- 启动期无入口：坚持“缺数据就透明”时，必须有托盘/启动期粗命中兜底（本项目不做快捷键）。

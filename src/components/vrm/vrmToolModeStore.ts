@@ -1,8 +1,8 @@
 import { useSyncExternalStore } from "react";
 
-export type VrmToolMode = "camera" | "avatar";
+export type VrmToolMode = "avatar" | "model" | "camera";
 
-let state: VrmToolMode = "camera";
+let state: VrmToolMode = "avatar";
 
 const listeners = new Set<() => void>();
 
@@ -24,4 +24,3 @@ export const subscribeVrmToolMode = (listener: () => void) => {
 
 export const useVrmToolMode = () =>
   useSyncExternalStore(subscribeVrmToolMode, getVrmToolMode, getVrmToolMode);
-

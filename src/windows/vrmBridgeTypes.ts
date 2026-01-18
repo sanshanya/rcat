@@ -23,6 +23,8 @@ export type VrmStateSnapshot = {
 
 export type VrmCommand =
   | { type: "setToolMode"; mode: VrmToolMode }
+  | { type: "resetView" }
+  | { type: "resetAvatarTransform" }
   | { type: "playMotion"; motionId: string; loop?: boolean }
   | { type: "stopMotion" }
   | { type: "setFpsMode"; mode: RenderFpsMode }
@@ -30,4 +32,3 @@ export type VrmCommand =
   | { type: "setHudLayout"; settings: VrmHudLayoutSettings }
   | { type: "setEmotion"; emotion: EmotionId; intensity?: number }
   | { type: "resetEmotion" };
-

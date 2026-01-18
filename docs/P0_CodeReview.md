@@ -9,19 +9,37 @@ P0 之所以“代码看起来很多”，主要不是“补丁堆叠”造成�
 
 ---
 
+## Update（2026-01）
+
+- ✅ 胶囊定位 anchor 坐标源收敛：Avatar 右键召唤改为后端 `GetCursorPos`（规避 WebView2/DPI/多显示器坐标坑）
+- ✅ P1 “可观测/可调参”补齐：DebugTab 增加 alphaThreshold/dilation/maxEdge/rectSmooth + overlay 显示 `gen≈Xms`
+- ✅ 增加 DPI 排查指标：overlay 显示 `viewport/client mismatch` 计数与 last dims（用于验证 150%/200%）
+- ✅ “小红点”可控：支持开关（debug 阶段保留，默认可关）
+- ✅ Win32 glue “减山”：`avatar_window` 收敛为 `subclass` + `service`（cursor gate + `WH_MOUSE_LL` 统一 owner，职责清晰、便于拓展与排障）
+- ✅ VRM 命令总线更稳：Rust 侧引入 `VrmCommandPayload/VrmStateSnapshot` 结构化载荷（保留 forward-compat 的同时避免纯 `Value`）
+- ✅ 修复 AvatarWindow 缩放“跳回原位”：窗口 move/scale 从 `useVrmRenderer` 拆到 `AvatarWindowTransformController`，统一队列与缓存失效策略
+- ✅ P1 异步 readback：WebGL2 PBO + fence（默认启用，可在 DebugTab 关闭；失败自动回退 sync）
+- ✅ cursor gate 失败策略收敛：异常时 fail-open 到 click-through（避免“整窗挡鼠标”）
+- ✅ Win32 坐标映射去重：`screen→client→mask` 逻辑收口为 `map_screen_to_avatar_client`，cursor gate / 全局 hook 共用
+- ✅ 前端 hitTest settings 去重：`hittestDebugSettings.ts` 统一 resolve/apply/storage，DebugTab/AvatarRoot 复用并以 patch 事件同步
+
 ## 1) 对照 `VRM_V1.md`：实现状态与对应代码
 
 | `VRM_V1.md` 关键点 | 现状 | 代码位置（入口） |
 |---|---|---|
 | 两窗口职责：Avatar 渲染 / Panel 承载 UI | ✅ 符合 | `src/windows/WindowRouter.tsx` |
-| 像素级穿透：模型像素可交互，透明区域穿透（cursor gate） | ✅（V1 仅保留 gate） | `src-tauri/src/windows/avatar_window.rs` + `src/windows/avatar/MaskGenerator.ts` |
-| `WM_MOUSEACTIVATE = MA_NOACTIVATE` 不抢焦点 | ✅ | `src-tauri/src/windows/avatar_window.rs` |
+| 像素级穿透：模型像素可交互，透明区域穿透（cursor gate） | ✅（V1 仅保留 gate） | `src-tauri/src/windows/avatar_window/service.rs` + `src-tauri/src/windows/hittest_mask.rs` + `src/windows/avatar/MaskGenerator.ts` |
+| `WM_MOUSEACTIVATE = MA_NOACTIVATE` 不抢焦点 | ✅ | `src-tauri/src/windows/avatar_window/subclass.rs` |
 | mask snapshot：低分辨率 bitset + rect + viewportW/H + seq 丢弃 | ✅ | `src/windows/avatar/useHitTestMask.ts` + `src-tauri/src/commands/avatar_commands.rs` + `src-tauri/src/windows/hittest_mask.rs` |
 | 动态提频：交互/相机动/动作时 ~30Hz | ✅ | `src/windows/avatar/useHitTestMask.ts` |
 | Panel show/hide：右键唤出、点外稳定隐藏 | ✅（Windows 侧做了兜底） | `src-tauri/src/windows/panel_window.rs` + `src-tauri/src/commands/panel_commands.rs` |
 | Panel ↔ Avatar 命令总线/快照 | ✅ | `src-tauri/src/commands/vrm_commands.rs` + `src/windows/avatar/useAvatarVrmBridge.ts` |
 | P0 风险：DPI/坐标系 sanity check | ✅ | `src-tauri/src/commands/avatar_commands.rs`（日志与校验） |
-| “桌宠交互”：Wheel/Drag + Alt 分流 | ✅（已验证） | `src/components/vrm/useVrmRenderer.ts` + `src-tauri/src/windows/avatar_window.rs`（wheel hook） |
+| “桌宠交互”：Wheel/Drag + Tool 模式分流（Pet/Model/Camera） | ✅（已验证） | `src/components/vrm/useVrmRenderer.ts` + `src-tauri/src/windows/avatar_window/service.rs`（wheel hook） |
+| P1：mask 阈值/膨胀/rectSmooth 可调 | ✅ | `src/windows/panel/tabs/DebugTab.tsx` + `src/windows/avatar/useHitTestMask.ts` |
+| P1：DPI mismatch 可观测 | ✅ | `src-tauri/src/commands/avatar_commands.rs` + `src-tauri/src/windows/avatar_window/service.rs` + `src/windows/avatar/HitTestDebugOverlay.tsx` |
+| VRM 命令/快照载荷结构化 | ✅ | `src-tauri/src/commands/vrm_types.rs` + `src-tauri/src/commands/vrm_commands.rs` |
+| Win32 glue 拆分（subclass/gate/hook） | ✅ | `src-tauri/src/windows/avatar_window/` |
 
 ---
 
@@ -87,6 +105,26 @@ cursor gate 的正确性依赖两个前提：
 
 建议：明确 hook 的生命周期策略（例如“只要 avatar window 存在就保持安装”，或“toolMode=avatar 才安装”），并在文档/日志里固定输出。
 
+### 3.4 窗口变换的“单一真源”问题（这次跳位 bug 的根因）
+
+现象：Avatar 模式下把窗口拖到右边后，滚轮缩放会“跳回旧位置/初始位置”。
+
+根因不是缩放公式错，而是 **窗口 transform 有多个来源**：
+
+- JS 侧 `setPosition/setSize`（拖拽/缩放）
+- OS 侧移动（debug 标题栏拖动、系统对齐/吸附）
+- DPI/缩放变化（WebView2/Tauri 触发的 `onScaleChanged/onResized`）
+
+当我们在前端缓存了 `outerX/outerY/outerW/outerH/borderW/borderH`，而窗口被“外部移动”后 cache 仍是旧值，下一次缩放围绕旧中心计算 `nextOuterX/Y`，自然会看起来“跳回原位”。
+
+收敛方式：把 **窗口 move/scale + metrics cache** 收口为单一模块 `src/components/vrm/avatarWindowTransform.ts`：
+
+- 统一序列化（单 runner）：move/scale 不再并发，避免竞态
+- `onMoved/onResized/onScaleChanged` → metrics cache 失效，避免“旧中心”参与计算
+- `useVrmRenderer` 只负责“桌宠交互意图”（Wheel/Drag + Tool 模式分流），不再直接管理 window metrics
+
+这类 bug 的本质是“缺少 WindowTransform 的单一真源”，越早抽离越不容易在后续扩展（更多手势/更多窗口模式）时反复踩坑。
+
 ---
 
 ## 4) 建议的收敛路线（让它不会成为未来阻碍）
@@ -111,7 +149,7 @@ V1 已选择 **方向 B**：主用 gate（`ignore_cursor_events`），只保留�
 ### Step 3：把常量/阈值集中到一个地方
 
 目前分散在 TS/Rust 多处（mask maxEdge、alphaThreshold、interval、scale bounds…）。  
-建议建立：
+建议建立（hitTest 的默认值/调参已部分收口到 `src/windows/avatar/hittestDebugSettings.ts`，`MaskGenerator.ts` 也复用该常量）：
 
 - 前端 `src/windows/avatar/config.ts`
 - 后端 `src-tauri/src/windows/avatar_config.rs`（或常量块）
