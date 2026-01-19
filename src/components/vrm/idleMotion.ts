@@ -25,7 +25,6 @@ export const DEFAULT_IDLE_MOTION: IdleMotionSpec = {
   duration: 4,
   samples: 9,
   bones: [
-    { name: "hips", sway: [0.01, 0.03, 0.008], phase: [0, 1.2, 3.14] },
     { name: "spine", sway: [0.02, 0.02, 0.01], phase: [1.57, 0.3, 2.8] },
     { name: "chest", sway: [0.03, 0.015, 0.012], phase: [0.7, 1.57, 3.2] },
     { name: "upperChest", sway: [0.02, 0.01, 0.008], phase: [1.2, 0.9, 2.1] },
@@ -160,4 +159,3 @@ export const buildIdleClip = (
   if (tracks.length === 0) return null;
   return new AnimationClip("idle", duration, tracks);
 };
-

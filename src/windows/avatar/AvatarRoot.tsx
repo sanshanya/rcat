@@ -10,17 +10,20 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 
 import VrmCanvas from "@/components/vrm/VrmCanvas";
-import type { VrmRendererFrameContext } from "@/components/vrm/useVrmRenderer";
+import type { VrmRendererFrameContext } from "@/components/vrm/vrmRendererTypes";
 import {
   EVT_AVATAR_HITTEST_STATS,
   EVT_AVATAR_INPUT_WHEEL,
   EVT_CAPSULE_DISMISS,
+  EVT_DEBUG_FOOTPLANT_SETTINGS,
   EVT_DEBUG_HITTEST_SETTINGS,
+  EVT_DEBUG_MOTION_LOGS,
 } from "@/constants";
 import { useTauriEvent } from "@/hooks";
 import { useHitTestMask, type HitTestMaskTuning } from "@/windows/avatar/useHitTestMask";
 import HitTestDebugOverlay from "@/windows/avatar/HitTestDebugOverlay";
 import { useAvatarVrmBridge } from "@/windows/avatar/useAvatarVrmBridge";
+import { useVrmState } from "@/components/vrm/vrmStore";
 import { isTauriContext } from "@/utils";
 import {
   type DebugHitTestSettingsPayload,
@@ -28,6 +31,12 @@ import {
   readHitTestDotFromStorage,
   readHitTestMaskTuningFromStorage,
 } from "@/windows/avatar/hittestDebugSettings";
+import {
+  type DebugFootPlantSettingsPayload,
+  readFootPlantEnabledFromStorage,
+  writeFootPlantEnabledToStorage,
+} from "@/windows/avatar/footPlantDebugSettings";
+import { writeMotionDebugLogsToStorage } from "@/components/vrm/motion/motionDebug";
 
 const DEFAULT_VRM_URL = "/vrm/default.vrm";
 
@@ -52,9 +61,11 @@ export default function AvatarRoot() {
   );
   const debugInfo = useHitTestMask(frameContextRef, hitTestTuning);
   useAvatarVrmBridge();
+  const { motionController } = useVrmState();
   const [mouse, setMouse] = useState<{ x: number; y: number } | null>(null);
   const [showHitTestDot, setShowHitTestDot] = useState(() => readHitTestDotFromStorage());
   const [backendStats, setBackendStats] = useState<AvatarHitTestStats | null>(null);
+  const [footPlantEnabled, setFootPlantEnabled] = useState(() => readFootPlantEnabledFromStorage());
 
   const debugEnabled = useMemo(() => {
     if (import.meta.env.DEV) return true;
@@ -130,6 +141,24 @@ export default function AvatarRoot() {
     }
   );
 
+  useTauriEvent<DebugFootPlantSettingsPayload>(EVT_DEBUG_FOOTPLANT_SETTINGS, (event) => {
+    const payload = event.payload;
+    if (!payload) return;
+    if (typeof payload.enabled !== "boolean") return;
+    setFootPlantEnabled(payload.enabled);
+    writeFootPlantEnabledToStorage(payload.enabled);
+  });
+
+  useTauriEvent<{ enabled: boolean }>(EVT_DEBUG_MOTION_LOGS, (event) => {
+    const payload = event.payload;
+    if (!payload || typeof payload.enabled !== "boolean") return;
+    writeMotionDebugLogsToStorage(payload.enabled);
+  });
+
+  useEffect(() => {
+    motionController?.setFootPlantEnabled(footPlantEnabled);
+  }, [motionController, footPlantEnabled]);
+
   useTauriEvent<AvatarHitTestStats>(EVT_AVATAR_HITTEST_STATS, (event) => {
     if (!event.payload) return;
     setBackendStats(event.payload);
@@ -149,6 +178,7 @@ export default function AvatarRoot() {
           mouse={mouse}
           backend={backendStats}
           settings={hitTestTuning}
+          footIk={motionController?.getFootPlantDebugInfo() ?? null}
         />
       ) : null}
     </div>

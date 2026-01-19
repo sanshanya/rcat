@@ -143,7 +143,7 @@
 ### 异步 Readback
 
 - [X] 实现 WebGL2 PBO + fence 的异步 readback（默认开启；可在 DebugTab 关闭；不支持时自动回退 sync）
-- [ ] 评估 OffscreenCanvas + Worker
+- [ ] 评估 OffscreenCanvas + Worker（见 `docs/P1_OffscreenCanvas_Worker.md`）
 - [X] WebGL2 路径替换同步 `readPixels`（fallback 保留用于不支持/异常）
 
 ### 边缘稳定性
@@ -152,12 +152,18 @@
 - [X] rect 时间滤波（指数平滑；expand fast / shrink slow）
 - [X] 膨胀参数可调（Panel/Debug Tab；默认 1）
 
+### 动作/观感（桌宠）
+
+- [X] Root motion 收敛为 in-place（避免动作自带位移把模型带离窗口）
+- [X] FBX 脚底稳定：轻量 foot-plant IK（VMD 轨已自带 IK target）
+
 ### 多显示器 / 高 DPI
 
 - [X] `MonitorFromPoint` 正确选择显示器
 - [X] 胶囊贴边翻转逻辑
 - [X] Avatar 右键召唤用 Win32 `GetCursorPos` 取 anchor（避免 WebView2/DPI 坐标差异）
 - [X] 统计并可视化 viewport/client mismatch（用于高 DPI 排查）
+- [X] overlay 显示 dpr/client/viewport（便于验证 150%/200%）
 - [ ] 高 DPI（150%/200%）验证
 
 ---

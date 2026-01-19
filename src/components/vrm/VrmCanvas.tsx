@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { cn } from "@/lib/utils";
-import { useVrmRenderer, type VrmRendererFrameContext } from "@/components/vrm/useVrmRenderer";
+import { useVrmRenderer } from "@/components/vrm/useVrmRenderer";
+import type { VrmRendererFrameContext } from "@/components/vrm/vrmRendererTypes";
 import { setVrmState } from "@/components/vrm/vrmStore";
 import { useVrmBehavior } from "@/components/vrm/useVrmBehavior";
 import { useRenderFpsState } from "@/components/vrm/renderFpsStore";
@@ -106,7 +107,7 @@ export default function VrmCanvas({
           }
         });
     },
-    [handleRef, ready, setVrm]
+    [getMotionController, handleRef, ready, setVrm]
   );
 
   useEffect(() => {

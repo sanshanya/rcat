@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
-import type { VrmRendererFrameContext } from "@/components/vrm/useVrmRenderer";
+import type { VrmRendererFrameContext } from "@/components/vrm/vrmRendererTypes";
 import { useVrmState } from "@/components/vrm/vrmStore";
 import { setAvatarHitTestMaskRuntime } from "@/components/vrm/avatarHitTestMaskRuntime";
 import { MaskGenerator } from "@/windows/avatar/MaskGenerator";
@@ -24,8 +24,13 @@ export type HitTestMaskDebugInfo = {
   lastUpdateAtMs: number;
   genMs: number;
   readback: "sync" | "pbo";
+  dpr: number;
   maskW: number;
   maskH: number;
+  viewportW: number;
+  viewportH: number;
+  clientW: number;
+  clientH: number;
   rect: { minX: number; minY: number; maxX: number; maxY: number };
 };
 
@@ -47,13 +52,7 @@ export const useHitTestMask = (
 
   const resolvedTuning = useMemo<HitTestMaskTuning>(() => {
     return resolveHitTestMaskTuning(tuning);
-  }, [
-    tuning?.alphaThreshold,
-    tuning?.asyncReadback,
-    tuning?.dilation,
-    tuning?.maxEdge,
-    tuning?.rectSmoothingAlpha,
-  ]);
+  }, [tuning]);
 
   const generator = useMemo(
     () =>
@@ -242,8 +241,13 @@ export const useHitTestMask = (
         lastUpdateAtMs: now,
         genMs,
         readback: snapshot.readback,
+        dpr,
         maskW: snapshot.maskW,
         maskH: snapshot.maskH,
+        viewportW: snapshot.viewportW,
+        viewportH: snapshot.viewportH,
+        clientW,
+        clientH,
         rect,
       });
     };

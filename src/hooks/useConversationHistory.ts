@@ -32,7 +32,9 @@ export function useConversationHistory() {
     activeConversation: null,
   });
   const stateRef = useRef(state);
-  stateRef.current = state;
+  useEffect(() => {
+    stateRef.current = state;
+  }, [state]);
 
   const refreshList = useCallback(async () => {
     if (!isTauriContext()) return [];

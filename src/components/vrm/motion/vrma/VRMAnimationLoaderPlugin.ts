@@ -173,9 +173,13 @@ export class VRMAnimationLoaderPlugin implements GLTFLoaderPlugin {
 
         if (path === "translation") {
           if (!(origTrack instanceof VectorKeyframeTrack)) return;
+          // Translation tracks are vectors in the parent space. We only need the parent's
+          // rest rotation to convert axes; applying the full matrix would also inject its
+          // world translation (and possibly scale), which makes the avatar "drift".
           const hipsParentWorldMatrix = worldMatrixMap.get("hipsParent")!;
+          const hipsParentWorldRotation = quatA.setFromRotationMatrix(hipsParentWorldMatrix).normalize();
           const trackValues = arrayChunk(origTrack.values, 3).flatMap((values) =>
-            vec3A.fromArray(values).applyMatrix4(hipsParentWorldMatrix).toArray()
+            vec3A.fromArray(values).applyQuaternion(hipsParentWorldRotation).toArray()
           );
           const track = origTrack.clone();
           track.values = new Float32Array(trackValues);

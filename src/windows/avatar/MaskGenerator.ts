@@ -8,7 +8,8 @@ import {
 } from "three";
 import type { VRM } from "@pixiv/three-vrm";
 
-import type { VrmRendererFrameContext } from "@/components/vrm/useVrmRenderer";
+import type { VrmRendererFrameContext } from "@/components/vrm/vrmRendererTypes";
+import { isWebGl2, PboMaskReadback } from "@/windows/avatar/maskReadbackPbo";
 import {
   DEFAULT_HITTEST_ALPHA_THRESHOLD,
   DEFAULT_HITTEST_ASYNC_READBACK,
@@ -59,20 +60,7 @@ export class MaskGenerator {
   private mask = new Uint8Array(0);
   private scratch = new Uint8Array(0);
   private bitset = new Uint8Array(0);
-  private pboDisabled = false;
-  private pboContext: WebGL2RenderingContext | null = null;
-  private pbo: WebGLBuffer | null = null;
-  private pending:
-    | {
-        gl: WebGL2RenderingContext;
-        buffer: WebGLBuffer;
-        sync: WebGLSync;
-        maskW: number;
-        maskH: number;
-        viewportW: number;
-        viewportH: number;
-      }
-    | null = null;
+  private readonly pboReadback = new PboMaskReadback();
 
   constructor(options: MaskGeneratorOptions = {}) {
     this.options = {
@@ -86,143 +74,17 @@ export class MaskGenerator {
   }
 
   dispose() {
-    if (this.pending) {
-      try {
-        this.pending.gl.deleteSync(this.pending.sync);
-      } catch {
-        // Ignore sync deletion failures.
-      }
-      this.pending = null;
-    }
-    if (this.pbo && this.pboContext) {
-      try {
-        this.pboContext.deleteBuffer(this.pbo);
-      } catch {
-        // Ignore buffer deletion failures.
-      }
-    }
-    this.pbo = null;
-    this.pboContext = null;
+    this.pboReadback.dispose();
     this.renderTarget?.dispose();
     this.renderTarget = null;
     this.material.dispose();
   }
 
-  private disablePbo(gl?: WebGL2RenderingContext) {
-    this.pboDisabled = true;
-    if (this.pending) {
-      try {
-        this.pending.gl.deleteSync(this.pending.sync);
-      } catch {
-        // Ignore.
-      }
-      this.pending = null;
+  private ensurePixels(byteLen: number) {
+    if (this.pixels.length !== byteLen) {
+      this.pixels = new Uint8Array(byteLen);
     }
-    const ctx = gl ?? this.pboContext;
-    if (this.pbo && ctx) {
-      try {
-        ctx.deleteBuffer(this.pbo);
-      } catch {
-        // Ignore.
-      }
-    }
-    this.pbo = null;
-    this.pboContext = null;
-  }
-
-  private tryConsumePending(gl: WebGL2RenderingContext): HitTestMaskSnapshot | null {
-    const pending = this.pending;
-    if (!pending) return null;
-    if (pending.gl !== gl || pending.buffer !== this.pbo) {
-      this.disablePbo(gl);
-      return null;
-    }
-
-    const status = gl.clientWaitSync(pending.sync, 0, 0);
-    if (status === gl.TIMEOUT_EXPIRED) {
-      return null;
-    }
-    if (status === gl.WAIT_FAILED) {
-      this.disablePbo(gl);
-      return null;
-    }
-
-    const expectedLen = pending.maskW * pending.maskH * 4;
-    if (this.pixels.length !== expectedLen) {
-      this.pixels = new Uint8Array(expectedLen);
-    }
-
-    try {
-      gl.bindBuffer(gl.PIXEL_PACK_BUFFER, pending.buffer);
-      gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, this.pixels);
-    } catch {
-      this.disablePbo(gl);
-      return null;
-    } finally {
-      gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
-      try {
-        gl.deleteSync(pending.sync);
-      } catch {
-        // Ignore.
-      }
-      this.pending = null;
-    }
-
-    return this.buildSnapshot(pending.maskW, pending.maskH, pending.viewportW, pending.viewportH, "pbo");
-  }
-
-  private schedulePboReadback(
-    gl: WebGL2RenderingContext,
-    maskW: number,
-    maskH: number,
-    viewportW: number,
-    viewportH: number
-  ): boolean {
-    if (this.pending) return true;
-    if (this.pboDisabled) return false;
-
-    if (!this.pbo || this.pboContext !== gl) {
-      this.disablePbo(gl);
-      this.pboDisabled = false;
-      const buffer = gl.createBuffer();
-      if (!buffer) {
-        this.disablePbo(gl);
-        return false;
-      }
-      this.pbo = buffer;
-      this.pboContext = gl;
-    }
-
-    const buffer = this.pbo;
-    if (!buffer) return false;
-
-    const byteLen = maskW * maskH * 4;
-    try {
-      gl.bindBuffer(gl.PIXEL_PACK_BUFFER, buffer);
-      gl.bufferData(gl.PIXEL_PACK_BUFFER, byteLen, gl.STREAM_READ);
-      gl.readPixels(0, 0, maskW, maskH, gl.RGBA, gl.UNSIGNED_BYTE, 0);
-      const sync = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
-      if (!sync) {
-        this.disablePbo(gl);
-        return false;
-      }
-      gl.flush();
-      this.pending = {
-        gl,
-        buffer,
-        sync,
-        maskW,
-        maskH,
-        viewportW,
-        viewportH,
-      };
-      return true;
-    } catch {
-      this.disablePbo(gl);
-      return false;
-    } finally {
-      gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
-    }
+    return this.pixels;
   }
 
   private buildSnapshot(
@@ -337,10 +199,22 @@ export class MaskGenerator {
     if (!viewportW || !viewportH) return null;
 
     const gl2 =
-      this.options.asyncReadback && !this.pboDisabled && "fenceSync" in gl
-        ? (gl as WebGL2RenderingContext)
+      this.options.asyncReadback && !this.pboReadback.isDisabled() && isWebGl2(gl)
+        ? gl
         : null;
-    const pendingSnapshot = gl2 ? this.tryConsumePending(gl2) : null;
+    const pending =
+      gl2
+        ? this.pboReadback.tryConsumePending(gl2, (byteLen) => this.ensurePixels(byteLen))
+        : null;
+    const pendingSnapshot = pending
+      ? this.buildSnapshot(
+          pending.meta.maskW,
+          pending.meta.maskH,
+          pending.meta.viewportW,
+          pending.meta.viewportH,
+          "pbo"
+        )
+      : null;
 
     const maxEdge = Math.max(8, this.options.maxEdge);
     const scale = maxEdge / Math.max(viewportW, viewportH);
@@ -371,18 +245,21 @@ export class MaskGenerator {
 
     let snapshot: HitTestMaskSnapshot | null = null;
     if (gl2) {
-      const scheduled = this.schedulePboReadback(gl2, maskW, maskH, viewportW, viewportH);
+      const scheduled = this.pboReadback.scheduleReadback(gl2, {
+        maskW,
+        maskH,
+        viewportW,
+        viewportH,
+      });
       if (!scheduled) {
         // PBO path failed; fall back to sync readback for this frame.
-        this.pboDisabled = true;
+        this.pboReadback.disable(gl2);
       }
     }
 
-    if (!gl2 || this.pboDisabled) {
+    if (!gl2 || this.pboReadback.isDisabled()) {
       const expectedLen = maskW * maskH * 4;
-      if (this.pixels.length !== expectedLen) {
-        this.pixels = new Uint8Array(expectedLen);
-      }
+      this.ensurePixels(expectedLen);
       renderer.readRenderTargetPixels(rt, 0, 0, maskW, maskH, this.pixels);
       snapshot = this.buildSnapshot(maskW, maskH, viewportW, viewportH, "sync");
     } else {

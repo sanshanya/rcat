@@ -31,34 +31,20 @@ const scaleValues = (values: ExpressionValues, factor: number): ExpressionValues
   return out;
 };
 
-const clickValuesForZone = (zone: AvatarZoneId | null): ExpressionValues => {
-  switch (zone) {
-    case "head":
-      return { happy: 0.7 };
-    case "chest":
-      return { blush: 1, shy: 0.45, happy: 0.25 };
-    case "abdomen":
-      return { surprised: 0.35, happy: 0.2 };
-    default:
-      return { happy: 0.35 };
-  }
+const CLICK_VALUES_BY_ZONE: Record<AvatarZoneId, ExpressionValues> = {
+  head: { happy: 0.7 },
+  chest: { blush: 1, shy: 0.45, happy: 0.25 },
+  abdomen: { surprised: 0.35, happy: 0.2 },
 };
+const DEFAULT_CLICK_VALUES: ExpressionValues = { happy: 0.35 };
 
-const bubbleMessageFor = (event: AvatarInteractionEvent): string | null => {
-  if (event.type === "pat") {
-    switch (event.zone) {
-      case "head":
-        return "pat(head)";
-      case "chest":
-        return "pat(chest)";
-      case "abdomen":
-        return "pat(abdomen)";
-      default:
-        return "pat";
-    }
-  }
-  return null;
+const PAT_BUBBLE_BY_ZONE: Record<AvatarZoneId, string> = {
+  head: "pat(head)",
+  chest: "pat(chest)",
+  abdomen: "pat(abdomen)",
 };
+const bubbleMessageFor = (event: AvatarInteractionEvent): string | null =>
+  event.type === "pat" ? (event.zone ? PAT_BUBBLE_BY_ZONE[event.zone] : "pat") : null;
 
 export class InteractionRuleEngine {
   private clickPulse: Pulse | null = null;
@@ -111,11 +97,19 @@ export class InteractionRuleEngine {
     switch (event.type) {
       case "click":
         playAvatarSfx("click");
-        this.clickPulse = this.makePulse(nowMs, 220, clickValuesForZone(event.zone));
+        this.clickPulse = this.makePulse(
+          nowMs,
+          220,
+          event.zone ? CLICK_VALUES_BY_ZONE[event.zone] : DEFAULT_CLICK_VALUES
+        );
         return;
       case "pat":
         playAvatarSfx("pat");
-        this.clickPulse = this.makePulse(nowMs, 260, clickValuesForZone(event.zone));
+        this.clickPulse = this.makePulse(
+          nowMs,
+          260,
+          event.zone ? CLICK_VALUES_BY_ZONE[event.zone] : DEFAULT_CLICK_VALUES
+        );
         {
           const message = bubbleMessageFor(event);
           if (message) {

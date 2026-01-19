@@ -49,6 +49,12 @@ export const EVT_VRM_STATE_SNAPSHOT = 'vrm-state-snapshot' as const;
 /** Debug: hit-test overlay settings changed */
 export const EVT_DEBUG_HITTEST_SETTINGS = 'debug-hittest-settings' as const;
 
+/** Debug: foot-plant IK settings changed */
+export const EVT_DEBUG_FOOTPLANT_SETTINGS = 'debug-footplant-settings' as const;
+
+/** Debug: motion log toggle changed */
+export const EVT_DEBUG_MOTION_LOGS = 'debug-motion-logs' as const;
+
 /** Windows-only: global wheel captured while hovering avatar (supports non-focusable window). */
 export const EVT_AVATAR_INPUT_WHEEL = 'avatar-input-wheel' as const;
 

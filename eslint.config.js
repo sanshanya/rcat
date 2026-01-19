@@ -6,7 +6,7 @@ import tseslint from "typescript-eslint";
 import unusedImports from "eslint-plugin-unused-imports";
 
 export default tseslint.config(
-  { ignores: ["dist", "src-tauri/target"] },
+  { ignores: ["dist", "src-tauri/target", "rcat-voice/target", "example/**"] },
   {
     extends: [js.configs.recommended, ...tseslint.configs.recommended],
     files: ["**/*.{ts,tsx}"],

@@ -1,5 +1,6 @@
-import { memo, useMemo } from "react";
+import { memo, useEffect, useMemo, useState } from "react";
 
+import type { FootPlantIkDebugInfo } from "@/components/vrm/motion/footPlantIk";
 import type { HitTestMaskDebugInfo } from "@/windows/avatar/useHitTestMask";
 import type { HitTestMaskTuning } from "@/windows/avatar/useHitTestMask";
 
@@ -20,9 +21,31 @@ type HitTestDebugOverlayProps = {
     } | null;
   } | null;
   settings: HitTestMaskTuning;
+  footIk: FootPlantIkDebugInfo | null;
 };
 
-function HitTestDebugOverlay({ debug, mouse, backend, settings }: HitTestDebugOverlayProps) {
+function HitTestDebugOverlay({ debug, mouse, backend, settings, footIk }: HitTestDebugOverlayProps) {
+  const [nowMs, setNowMs] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    let timer: number | null = null;
+
+    const tick = () => {
+      if (cancelled) return;
+      setNowMs(performance.now());
+      timer = window.setTimeout(tick, 250);
+    };
+
+    tick();
+    return () => {
+      cancelled = true;
+      if (timer !== null) {
+        window.clearTimeout(timer);
+      }
+    };
+  }, []);
+
   const rectStyle = useMemo(() => {
     const { rect, maskW, maskH } = debug;
     const left = (rect.minX / maskW) * 100;
@@ -38,11 +61,11 @@ function HitTestDebugOverlay({ debug, mouse, backend, settings }: HitTestDebugOv
   }, [debug]);
 
   const infoText = useMemo(() => {
-    const ageMs = Math.max(0, performance.now() - debug.lastUpdateAtMs);
+    const ageMs = nowMs > 0 ? Math.max(0, nowMs - debug.lastUpdateAtMs) : 0;
     return `hitTest: ${debug.mode} (${debug.intervalMs}ms) seq=${debug.seq} age≈${ageMs.toFixed(
       0
-    )}ms gen≈${debug.genMs.toFixed(1)}ms readback=${debug.readback} mask=${debug.maskW}x${debug.maskH}`;
-  }, [debug]);
+    )}ms gen≈${debug.genMs.toFixed(1)}ms readback=${debug.readback} mask=${debug.maskW}x${debug.maskH} dpr≈${debug.dpr.toFixed(2)} client=${debug.clientW}x${debug.clientH} viewport=${debug.viewportW}x${debug.viewportH}`;
+  }, [debug, nowMs]);
 
   const backendText = useMemo(() => {
     if (!backend) return null;
@@ -62,6 +85,20 @@ function HitTestDebugOverlay({ debug, mouse, backend, settings }: HitTestDebugOv
     )}`;
   }, [settings]);
 
+  const footIkText = useMemo(() => {
+    if (!footIk) return null;
+    const floor = footIk.floorY === null ? "?" : footIk.floorY.toFixed(3);
+    const leftH = footIk.left.height === null ? "?" : footIk.left.height.toFixed(3);
+    const rightH = footIk.right.height === null ? "?" : footIk.right.height.toFixed(3);
+    const leftV =
+      footIk.left.verticalSpeed === null ? "?" : footIk.left.verticalSpeed.toFixed(2);
+    const rightV =
+      footIk.right.verticalSpeed === null ? "?" : footIk.right.verticalSpeed.toFixed(2);
+    return `footIK: enabled=${footIk.enabled ? "1" : "0"} floorY=${floor} L(lock=${
+      footIk.left.locked ? "1" : "0"
+    } h=${leftH} v=${leftV}) R(lock=${footIk.right.locked ? "1" : "0"} h=${rightH} v=${rightV})`;
+  }, [footIk]);
+
   return (
     <div className="pointer-events-none absolute inset-0 z-50">
       <div
@@ -78,6 +115,7 @@ function HitTestDebugOverlay({ debug, mouse, backend, settings }: HitTestDebugOv
         <div>{infoText}</div>
         <div className="text-white/70">{settingsText}</div>
         {backendText ? <div className="text-white/70">{backendText}</div> : null}
+        {footIkText ? <div className="text-white/70">{footIkText}</div> : null}
       </div>
     </div>
   );

@@ -14,9 +14,9 @@ export function isTruely<T>(x: T): x is Exclude<T, false | '' | 0 | null | undef
 // Hot patch Charset Encoder in MMD-Parser to forgive invalid charcodes.
 {
   const { s2u } = CharsetEncoder.prototype;
-  CharsetEncoder.prototype.s2u = function (array: any) {
+  CharsetEncoder.prototype.s2u = function (array: unknown) {
     try {
-      return s2u.call(this, array);
+      return s2u.call(this, array as never);
     } catch (e) {
       if (typeof e === 'string') {
         console.warn(`Charset encoder: ${e}`);

@@ -4,12 +4,12 @@ import {
   type KeyframeTrack,
   Quaternion,
   QuaternionKeyframeTrack,
-  Vector3,
   VectorKeyframeTrack,
 } from "three";
 import { FBXLoader } from "three/examples/jsm/loaders/FBXLoader.js";
 
 import { mixamoVrmRigMap } from "@/components/vrm/motion/mixamo/mixamoVrmRigMap";
+import { readMotionDebugLogsFromStorage } from "@/components/vrm/motion/motionDebug";
 
 /**
  * Load Mixamo FBX animation, retarget it for three-vrm normalized bones, and return it.
@@ -30,14 +30,30 @@ export async function loadMixamoAnimation(
   const restRotationInverse = new Quaternion();
   const parentRestWorldRotation = new Quaternion();
   const quat = new Quaternion();
-  const vec3 = new Vector3();
 
   const motionHips = asset.getObjectByName("mixamorigHips");
   const motionHipsHeight = motionHips?.position.y ?? 1;
-  const vrmHipsY = vrm.humanoid?.getNormalizedBoneNode("hips")?.getWorldPosition(vec3).y ?? 0;
-  const vrmRootY = vrm.scene.getWorldPosition(vec3).y;
-  const vrmHipsHeight = Math.abs(vrmHipsY - vrmRootY);
+  // Use a deterministic rest-pose measurement.
+  // Reading world positions here makes retargeting depend on the current animation pose / scene scale,
+  // which creates motion-order dependent drift when clips are loaded asynchronously.
+  const restPose = vrm.humanoid?.normalizedRestPose as
+    | Record<string, { position?: number[] } | undefined>
+    | undefined;
+  const restHipsY = restPose?.hips?.position?.[1];
+  const vrmHipsHeight =
+    typeof restHipsY === "number" && Number.isFinite(restHipsY) && restHipsY !== 0
+      ? Math.abs(restHipsY)
+      : Math.abs(vrm.humanoid?.getNormalizedBoneNode("hips")?.position.y ?? 1);
   const hipsPositionScale = motionHipsHeight !== 0 ? vrmHipsHeight / motionHipsHeight : 1;
+  if (readMotionDebugLogsFromStorage()) {
+    console.debug("[mixamo] retarget scale", {
+      url,
+      motionHipsHeight,
+      restHipsY,
+      vrmHipsHeight,
+      hipsPositionScale,
+    });
+  }
 
   clip.tracks.forEach((track) => {
     const [mixamoRigName, propertyName] = track.name.split(".");
@@ -94,4 +110,3 @@ export async function loadMixamoAnimation(
 
   return new AnimationClip("mixamo", clip.duration, tracks);
 }
-

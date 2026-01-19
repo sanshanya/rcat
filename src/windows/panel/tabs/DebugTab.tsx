@@ -10,7 +10,11 @@ import {
 import type { RenderFpsMode } from "@/components/vrm/renderFpsStore";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { isTauriContext, reportPromiseError } from "@/utils";
-import { EVT_DEBUG_HITTEST_SETTINGS } from "@/constants";
+import {
+  EVT_DEBUG_FOOTPLANT_SETTINGS,
+  EVT_DEBUG_HITTEST_SETTINGS,
+  EVT_DEBUG_MOTION_LOGS,
+} from "@/constants";
 import type { VrmCommand, VrmStateSnapshot } from "@/windows/vrmBridgeTypes";
 import {
   HITTEST_ALPHA_THRESHOLD_MAX,
@@ -35,6 +39,15 @@ import {
   writeStorageFlag,
   writeStorageNumber,
 } from "@/windows/avatar/hittestDebugSettings";
+import {
+  readMotionDebugLogsFromStorage,
+  writeMotionDebugLogsToStorage,
+} from "@/components/vrm/motion/motionDebug";
+import {
+  readFootPlantEnabledFromStorage,
+  writeFootPlantEnabledToStorage,
+  type DebugFootPlantSettingsPayload,
+} from "@/windows/avatar/footPlantDebugSettings";
 
 type DebugTabProps = {
   snapshot: VrmStateSnapshot | null;
@@ -52,6 +65,10 @@ export default function DebugTab({ snapshot, sendCommand }: DebugTabProps) {
   const mouse = snapshot?.mouseTracking ?? null;
   const hud = snapshot?.hudLayout ?? null;
   const [showHitTestDot, setShowHitTestDot] = useState(() => readHitTestDotFromStorage());
+  const [motionLogsEnabled, setMotionLogsEnabled] = useState(() =>
+    readMotionDebugLogsFromStorage()
+  );
+  const [footPlantEnabled, setFootPlantEnabled] = useState(() => readFootPlantEnabledFromStorage());
   const [hitTestTuning, setHitTestTuning] = useState<HitTestMaskTuning>(() =>
     readHitTestMaskTuningFromStorage()
   );
@@ -67,6 +84,30 @@ export default function DebugTab({ snapshot, sendCommand }: DebugTabProps) {
         reportPromiseError("DebugTab.emitTo:debug-hittest-settings", {
           devOnly: true,
           onceKey: "DebugTab.emitTo:debug-hittest-settings",
+        })
+      );
+  }, []);
+
+  const emitFootPlantSettings = useCallback((payload: DebugFootPlantSettingsPayload) => {
+    if (!isTauriContext()) return;
+    void getCurrentWebviewWindow()
+      .emitTo("avatar", EVT_DEBUG_FOOTPLANT_SETTINGS, payload)
+      .catch(
+        reportPromiseError("DebugTab.emitTo:debug-footplant-settings", {
+          devOnly: true,
+          onceKey: "DebugTab.emitTo:debug-footplant-settings",
+        })
+      );
+  }, []);
+
+  const emitMotionLogsSettings = useCallback((payload: { enabled: boolean }) => {
+    if (!isTauriContext()) return;
+    void getCurrentWebviewWindow()
+      .emitTo("avatar", EVT_DEBUG_MOTION_LOGS, payload)
+      .catch(
+        reportPromiseError("DebugTab.emitTo:debug-motion-logs", {
+          devOnly: true,
+          onceKey: "DebugTab.emitTo:debug-motion-logs",
         })
       );
   }, []);
@@ -96,12 +137,48 @@ export default function DebugTab({ snapshot, sendCommand }: DebugTabProps) {
     };
   }, []);
 
+  useEffect(() => {
+    emitMotionLogsSettings({ enabled: motionLogsEnabled });
+  }, [emitMotionLogsSettings, motionLogsEnabled]);
+
   return (
     <div className="flex w-[min(520px,calc(100vw-24px))] flex-col gap-3 rounded-lg bg-background/60 p-3 text-sm backdrop-blur">
       <div className="text-xs font-semibold text-foreground/70">Debug</div>
 
       {import.meta.env.DEV ? (
         <>
+          <div className="flex items-center gap-2">
+            <div className="w-24 text-xs text-foreground/60">Foot IK</div>
+            <Button
+              size="sm"
+              variant={footPlantEnabled ? "default" : "secondary"}
+              onClick={() => {
+                const next = !footPlantEnabled;
+                setFootPlantEnabled(next);
+                writeFootPlantEnabledToStorage(next);
+                emitFootPlantSettings({ enabled: next });
+              }}
+            >
+              {footPlantEnabled ? "Enabled" : "Disabled"}
+            </Button>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <div className="w-24 text-xs text-foreground/60">Motion Logs</div>
+            <Button
+              size="sm"
+              variant={motionLogsEnabled ? "default" : "secondary"}
+              onClick={() => {
+                const next = !motionLogsEnabled;
+                setMotionLogsEnabled(next);
+                writeMotionDebugLogsToStorage(next);
+                emitMotionLogsSettings({ enabled: next });
+              }}
+            >
+              {motionLogsEnabled ? "Enabled" : "Disabled"}
+            </Button>
+          </div>
+
           <div className="flex items-center gap-2">
             <div className="w-24 text-xs text-foreground/60">HitTest Dot</div>
             <Button

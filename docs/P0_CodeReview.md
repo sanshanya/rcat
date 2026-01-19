@@ -15,6 +15,12 @@ P0 之所以“代码看起来很多”，主要不是“补丁堆叠”造成�
 - ✅ P1 “可观测/可调参”补齐：DebugTab 增加 alphaThreshold/dilation/maxEdge/rectSmooth + overlay 显示 `gen≈Xms`
 - ✅ 增加 DPI 排查指标：overlay 显示 `viewport/client mismatch` 计数与 last dims（用于验证 150%/200%）
 - ✅ “小红点”可控：支持开关（debug 阶段保留，默认可关）
+- ✅ TS “减山”：`useVrmBehavior` 拆为一组 controller（`IdleMotionController/EmotionMotionCoordinator/AvatarGazeController/BlinkController`），hook 只做装配与调度
+- ✅ TS “减山”：`useVrmRenderer` 进一步拆分为 `vrmLoaderRuntime/vrmRenderLoop/vrmSceneUtils/vrmRendererTypes`，减少“上帝 hook”耦合
+- ✅ 修复动作播放“模型飘走/跳位”：明确 root motion policy（in-place）——播放前以当前 hips 为基准重写 `Hips.position` 轨（锁 X/Z、保留 Y 相对变化），避免动作自带位移把模型带离窗口（V2 可把 delta 提取出来驱动窗口/locomotion）。见 `src/components/vrm/motion/desktopRootMotion.ts`
+- ✅ 修复 VRMA translation 转换：不再对 translation 应用完整 world matrix（会注入 parent translation 导致漂移），只应用 rest rotation。见 `src/components/vrm/motion/vrma/VRMAnimationLoaderPlugin.ts`
+- ✅ FBX（Mixamo）脚滑治理：VMD 轨自带 IK target + `VRMIKHandler`，而 FBX 是纯 FK retarget，新增轻量 foot-plant IK（仅在 `type=fbx` 时启用）以减少“站不稳/腿飘”。见 `src/components/vrm/motion/footPlantIk.ts`
+- ✅ 修复 FBX↔VMD 切换顺序依赖：跨 motion type 切换时 `stopAllAction + uncacheRoot + resetNormalizedPose`，并补全 sparse clip 的 humanoid tracks（含 `hips.position`），避免 “先播谁” 导致脚漂/错位。见 `src/components/vrm/motion/MotionController.ts`
 - ✅ Win32 glue “减山”：`avatar_window` 收敛为 `subclass` + `service`（cursor gate + `WH_MOUSE_LL` 统一 owner，职责清晰、便于拓展与排障）
 - ✅ VRM 命令总线更稳：Rust 侧引入 `VrmCommandPayload/VrmStateSnapshot` 结构化载荷（保留 forward-compat 的同时避免纯 `Value`）
 - ✅ 修复 AvatarWindow 缩放“跳回原位”：窗口 move/scale 从 `useVrmRenderer` 拆到 `AvatarWindowTransformController`，统一队列与缓存失效策略
@@ -35,7 +41,7 @@ P0 之所以“代码看起来很多”，主要不是“补丁堆叠”造成�
 | Panel show/hide：右键唤出、点外稳定隐藏 | ✅（Windows 侧做了兜底） | `src-tauri/src/windows/panel_window.rs` + `src-tauri/src/commands/panel_commands.rs` |
 | Panel ↔ Avatar 命令总线/快照 | ✅ | `src-tauri/src/commands/vrm_commands.rs` + `src/windows/avatar/useAvatarVrmBridge.ts` |
 | P0 风险：DPI/坐标系 sanity check | ✅ | `src-tauri/src/commands/avatar_commands.rs`（日志与校验） |
-| “桌宠交互”：Wheel/Drag + Tool 模式分流（Pet/Model/Camera） | ✅（已验证） | `src/components/vrm/useVrmRenderer.ts` + `src-tauri/src/windows/avatar_window/service.rs`（wheel hook） |
+| “桌宠交互”：Wheel/Drag + Tool 模式分流（Pet/Model/Camera） | ✅（已验证） | `src/components/vrm/useVrmRenderer.ts` + `src/components/vrm/vrmLoaderRuntime.ts` + `src/components/vrm/vrmRenderLoop.ts` + `src-tauri/src/windows/avatar_window/service.rs`（wheel hook） |
 | P1：mask 阈值/膨胀/rectSmooth 可调 | ✅ | `src/windows/panel/tabs/DebugTab.tsx` + `src/windows/avatar/useHitTestMask.ts` |
 | P1：DPI mismatch 可观测 | ✅ | `src-tauri/src/commands/avatar_commands.rs` + `src-tauri/src/windows/avatar_window/service.rs` + `src/windows/avatar/HitTestDebugOverlay.tsx` |
 | VRM 命令/快照载荷结构化 | ✅ | `src-tauri/src/commands/vrm_types.rs` + `src-tauri/src/commands/vrm_commands.rs` |
@@ -125,6 +131,55 @@ cursor gate 的正确性依赖两个前提：
 
 这类 bug 的本质是“缺少 WindowTransform 的单一真源”，越早抽离越不容易在后续扩展（更多手势/更多窗口模式）时反复踩坑。
 
+### 3.5 动作播放时“模型漂移/下沉/上跳”：根因不是 hitTest，而是 root motion
+
+现象（用户截图）：播放某些动作时，模型会慢慢“走丢”，甚至只剩脚在角落，mask red rect 也跟着跑偏。
+
+根因：在 three-vrm 的 normalized rig 上，`Hips` 是 humanoid 的“根”。  
+当动画 clip 含有 `Hips.position`（translation）轨时，它在语义上属于 **root motion（位移）**：本来用于走路/移动角色。  
+但桌宠 AvatarWindow 的坐标系是“窗口内固定”，不允许动画直接把根骨带着整体位移，否则：
+
+- 角色会跑出窗口视野（你看到的下沉/上跳/漂移）
+- hit-test mask 的矩形与模型不再同步，造成交互错位
+
+V1 的收敛方式是把它显式变成一个策略：**in-place root motion**。  ![1768841712846](image/P0_CodeReview/1768841712846.png)
+在每次 `play()` 时，以当前 `Hips.position` 为基准，把 `Hips.position` 轨重写为：
+
+- `x/z` 固定为 baseline（防漂移）
+- `y` 保留相对变化（动作中的蹲起/跳跃仍能表现）
+
+这样我们不是“防下沉补丁”，而是把“能不能动、轴心在哪、坐标系谁说了算”明确下来：  
+**桌宠坐标系（窗口）为真源，root motion 不能直接驱动角色根位移**；未来 V2 可以把被剥离的 delta 用来驱动窗口移动或 locomotion。
+
+### 3.6 FBX↔VMD 切换后脚漂移/错位：根因是 AnimationMixer 绑定基线 + sparse tracks
+
+现象（你描述的复现序列）：
+
+- 初始化后直接播 `female_happy`（FBX）脚很稳
+- 切到 `female_stand`（VMD）脚位置不对/整体下沉或上跳
+- 再切回 `female_happy`（FBX）脚开始漂
+- 再切 VMD 又变回“正常/稳定”
+
+这类“顺序依赖”的根因通常不是 foot-plant 或某个阈值，而是 **Three.js AnimationMixer 的 binding/originalState 捕获时机** 与 **clip 缺失 tracks 导致的状态泄漏**：
+
+- `mixer.clipAction(clip)` 在第一次绑定某个 property（比如 `hips.position`、`leftToes.quaternion`、以及 VMD 用的 `leftFootIK.position`）时，会把当时的值记为“original state”
+- 如果你在 **另一个动作正在播放（甚至 IK target 正在被驱动）** 的时候创建/绑定新 action，就可能把一个“非静止态”的值当成 original state
+- sparse clip（缺少某些 bone/IK target 的 track）会依赖这个 original state，于是出现“先播谁就变成谁的基线”的漂移/错位
+
+V1 的收敛策略：
+
+- 跨 motion type（FBX/VRMA/VMD/embedded）切换：**先清空 mixer cache（stopAllAction + uncacheRoot）并 resetNormalizedPose，再创建 action**
+- 同时把 sparse clip 缺的 humanoid tracks 用 rest pose 补齐（含 `hips.position`），让“没有 track 就沿用旧值”的路径彻底消失
+
+#### Debug 方法（把问题变成可验证）
+
+1. 打开 panel → Debug → **Motion Logs = Enabled**
+2. 复现：`female_happy(fbx) → female_stand(vmd) → female_happy(fbx) → female_stand(vmd)`
+3. 打开 WebView DevTools Console，贴出这些日志块：
+   - `[motion] play ...`（看 `didHardReset`、`trackCoverage(normalized)`、`hips.position(track)`）
+   - `[motion] snapshot ...`（看 normalized/raw/targets 的 world position 是否出现突变）
+   - `[mixamo] retarget scale ...`、`[vmd] offsets(from normalizedRestPose) ...`（验证加载阶段是否依赖当前 pose）
+
 ---
 
 ## 4) 建议的收敛路线（让它不会成为未来阻碍）
@@ -175,3 +230,4 @@ V1 已选择 **方向 B**：主用 gate（`ignore_cursor_events`），只保留�
 1. ✅ 把 panel outside-dismiss 从轮询改为 hook（复用 `WH_MOUSE_LL`）。  
 2. 回归验证 gate：150%/200% DPI、多显示器（不同 DPI）、以及“有标题栏 debug 模式”。  
 3. 继续完善日志节流：只在“异常/变化”时输出，避免 hot-reload 后刷屏。  
+![1768801061110](image/P0_CodeReview/1768801061110.png)

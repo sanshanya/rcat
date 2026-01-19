@@ -112,7 +112,7 @@ export default class VRMIKHandler {
     this.iks.set(leftFootId, {
       effector: leftFootId,
       target: leftFootId,
-      iteration: 20,
+      iteration: 40,
       maxAngle: 0.5,
       links: [
         {
@@ -131,7 +131,7 @@ export default class VRMIKHandler {
     this.iks.set(rightFootId, {
       effector: rightFootId,
       target: rightFootId,
-      iteration: 20,
+      iteration: 40,
       maxAngle: 0.5,
       links: [
         {
@@ -176,6 +176,12 @@ export default class VRMIKHandler {
 
   getAndEnableIK(boneName: VRMHumanBoneName) {
     return this.getTarget(boneName, true);
+  }
+
+  getExistingTarget(boneName: VRMHumanBoneName) {
+    const boneIndex = boneMap.get(boneName);
+    if (boneIndex == null) return;
+    return this.targets.get(boneIndex);
   }
 
   getTarget(boneName: VRMHumanBoneName, enable?: boolean) {

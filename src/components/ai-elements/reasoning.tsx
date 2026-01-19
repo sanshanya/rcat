@@ -13,9 +13,16 @@ import {
   useEffect,
   useState,
   type ComponentProps,
+  type HTMLAttributes,
   type ReactNode,
 } from "react";
 import { Streamdown } from "streamdown";
+
+type StreamdownParagraphProps = HTMLAttributes<HTMLParagraphElement> & { node?: unknown };
+
+const StreamdownParagraph = ({ node: _node, ...props }: StreamdownParagraphProps) => (
+  <div {...props} />
+);
 
 // Context for sharing streaming state
 type ReasoningContextType = {
@@ -161,6 +168,9 @@ export const ReasoningContent = ({
         <Streamdown
           isAnimating={isStreaming}
           shikiTheme={["github-dark", "github-dark"]}
+          components={{
+            p: StreamdownParagraph,
+          }}
         >
           {children || ""}
         </Streamdown>

@@ -11,6 +11,7 @@ import {
 
 import { convert as convertSync } from './vmd2vrmanim';
 import VRMIKHandler from './vrmIkHandler';
+import { readMotionDebugLogsFromStorage } from '@/components/vrm/motion/motionDebug';
 
 export interface AnimationData {
   duration: number;
@@ -42,39 +43,71 @@ export type BindVmdOptions = {
 
 const tempV3 = new Vector3();
 
-function calculatePosition(from?: Object3D | null, to?: Object3D | null) {
-  if (!from || !to) return;
-  let current: Object3D | null = to;
-  const chain: Object3D[] = [to];
-  while (current.parent && current !== from) {
-    chain.push(current.parent);
-    current = current.parent;
-  }
-  if (current === null) return;
-  chain.reverse();
-  const position = tempV3.set(0, 0, 0);
-  for (const node of chain) position.add(node.position);
-  return position.toArray();
-}
-
 export function toOffset(vrm: VRM): VRMOffsets {
   const { humanoid } = vrm;
   if (!humanoid) throw new Error('VRM does not have humanoid');
-  const currentPose = humanoid.getNormalizedPose();
-  humanoid.resetNormalizedPose();
+  // IMPORTANT:
+  // Do not call `resetNormalizedPose()` here.
+  // VMD clips are often loaded while another motion is already playing.
+  // Mutating the humanoid pose during async load can desync Three.js AnimationMixer property
+  // mixers (order-dependent foot drift / offset when switching FBX↔VMD).
+  //
+  // Instead, compute offsets from the normalized *rest pose* snapshot.
+  const restPose = humanoid.normalizedRestPose as Record<
+    string,
+    { position?: number[]; rotation?: number[] } | undefined
+  >;
+  const nodeToBoneName = new WeakMap<Object3D, VRMHumanBoneName>();
+  (Object.values(VRMHumanBoneName) as VRMHumanBoneName[]).forEach((boneName) => {
+    const node = humanoid.getNormalizedBoneNode(boneName);
+    if (node) nodeToBoneName.set(node, boneName);
+  });
+
+  const getRestLocalPosition = (node: Object3D) => {
+    const boneName = nodeToBoneName.get(node);
+    if (boneName) {
+      const rest = restPose[boneName];
+      const pos = rest?.position;
+      if (Array.isArray(pos) && pos.length === 3) {
+        return tempV3.fromArray(pos);
+      }
+    }
+    return node.position;
+  };
+
+  const calculatePositionFromRest = (from?: Object3D | null, to?: Object3D | null) => {
+    if (!from || !to) return;
+    let current: Object3D | null = to;
+    const chain: Object3D[] = [to];
+    while (current.parent && current !== from) {
+      chain.push(current.parent);
+      current = current.parent;
+    }
+    if (current === null) return;
+    chain.reverse();
+    const position = new Vector3(0, 0, 0);
+    for (const node of chain) {
+      position.add(getRestLocalPosition(node));
+    }
+    return position.toArray();
+  };
+
   const hips = humanoid.getNormalizedBoneNode(VRMHumanBoneName.Hips);
   const leftFoot = humanoid.getNormalizedBoneNode(VRMHumanBoneName.LeftFoot);
   const leftToe = humanoid.getNormalizedBoneNode(VRMHumanBoneName.LeftToes);
   const rightFoot = humanoid.getNormalizedBoneNode(VRMHumanBoneName.RightFoot);
   const rightToe = humanoid.getNormalizedBoneNode(VRMHumanBoneName.RightToes);
-  humanoid.setNormalizedPose(currentPose);
-  return {
-    hipsOffset: calculatePosition(hips, hips),
-    leftFootOffset: calculatePosition(hips, leftFoot),
-    leftToeOffset: calculatePosition(leftFoot, leftToe),
-    rightFootOffset: calculatePosition(hips, rightFoot),
-    rightToeOffset: calculatePosition(rightFoot, rightToe),
+  const offsets = {
+    hipsOffset: calculatePositionFromRest(hips, hips),
+    leftFootOffset: calculatePositionFromRest(hips, leftFoot),
+    leftToeOffset: calculatePositionFromRest(leftFoot, leftToe),
+    rightFootOffset: calculatePositionFromRest(hips, rightFoot),
+    rightToeOffset: calculatePositionFromRest(rightFoot, rightToe),
   };
+  if (readMotionDebugLogsFromStorage()) {
+    console.debug("[vmd] offsets(from normalizedRestPose)", offsets);
+  }
+  return offsets;
 }
 
 export function convert(buffer: ArrayBufferLike, vrm?: VRM) {

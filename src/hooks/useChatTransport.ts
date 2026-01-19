@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useMemo } from "react";
 import type { ChatTransport, UIMessage } from "ai";
 
 import { createTauriChatTransport } from "@/services";
@@ -14,44 +14,22 @@ type UseChatTransportOptions = {
 export const useChatTransport = (
   options: UseChatTransportOptions
 ): ChatTransport<UIMessage> => {
-  const modelRef = useRef<string | undefined>(options.model ?? undefined);
-  const toolModeRef = useRef<boolean>(options.toolMode ?? false);
-  const voiceModeRef = useRef<boolean>(options.voiceMode ?? false);
-  const conversationIdRef = useRef<string | undefined>(options.conversationId);
-  const onRequestCreatedRef = useRef<UseChatTransportOptions["onRequestCreated"]>(
-    options.onRequestCreated
+  const model = options.model ?? "";
+  const toolMode = options.toolMode ?? false;
+  const voiceMode = options.voiceMode ?? false;
+  const conversationId = options.conversationId;
+  const onRequestCreated = options.onRequestCreated;
+
+  return useMemo(
+    () =>
+    createTauriChatTransport({
+      getModel: () => model,
+      getToolMode: () => toolMode,
+      getVoiceMode: () => voiceMode,
+      getConversationId: () => conversationId,
+      onRequestCreated,
+    })
+    ,
+    [conversationId, model, onRequestCreated, toolMode, voiceMode]
   );
-
-  useEffect(() => {
-    modelRef.current = options.model ?? undefined;
-  }, [options.model]);
-
-  useEffect(() => {
-    toolModeRef.current = options.toolMode ?? false;
-  }, [options.toolMode]);
-
-  useEffect(() => {
-    voiceModeRef.current = options.voiceMode ?? false;
-  }, [options.voiceMode]);
-
-  useEffect(() => {
-    conversationIdRef.current = options.conversationId;
-  }, [options.conversationId]);
-
-  useEffect(() => {
-    onRequestCreatedRef.current = options.onRequestCreated;
-  }, [options.onRequestCreated]);
-
-  const transportRef = useRef<ChatTransport<UIMessage> | null>(null);
-  if (!transportRef.current) {
-    transportRef.current = createTauriChatTransport({
-      getModel: () => modelRef.current ?? "",
-      getToolMode: () => toolModeRef.current ?? false,
-      getVoiceMode: () => voiceModeRef.current ?? false,
-      getConversationId: () => conversationIdRef.current,
-      onRequestCreated: (meta) => onRequestCreatedRef.current?.(meta),
-    });
-  }
-
-  return transportRef.current;
 };

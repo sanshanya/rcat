@@ -12,6 +12,7 @@
 - **输入兜底收口**：Windows `WH_MOUSE_LL` 统一处理 wheel 转发 + panel 点外隐藏；cursor gate 轮询也收口为单一 service。
 - **互动系统打底**：已落地 Events → Reactions 的单入口（InteractionRuleEngine），具备 click/dragStart/dragEnd/pat 等事件与扩展出口（Expression/Motion/SFX/Bubble）。
 - **观感增强**：说话状态有更平滑的 gate/衰减；拖拽有“整体晃动 + springbone 风”两层物理反馈。
+- **TS “减山”已开始**：`useVrmBehavior` / `useVrmRenderer` 从“上帝 hook”拆为 controller/runtime 模块（便于 V2 继续扩展而不堆补丁）。
 
 ---
 
@@ -34,6 +35,14 @@
 
 - 高 DPI（150%/200%）与多显示器（不同 DPI）的回归矩阵需要补齐（尤其是 mask 映射与 panel 定位）。
 - Panel 点外隐藏偶发误判仍是高风险区：需要更可观测的日志与更明确的“inside 判定”策略（popups/resize border/overlap）。
+
+---
+
+## 1.1) 在做 V2 之前，建议先把 V1 再“减山”的清单
+
+- TS：继续把 `useVrmRenderer/useVrmBehavior` 保持为“装配层”，把复杂度压到 `*Controller/*Runtime`（已完成第一刀）。
+- TS：把“说话 ↔ 待机”的混合策略从零散 if-else 收口为一个 BehaviorFSM（先做 `idle ↔ speech` 两态即可）。
+- Rust：继续把 Win32 glue 维持单 owner（`AvatarWindowsService`），避免新增第二套 hook/ticker（只在 service 内扩展）。
 
 ---
 
@@ -84,4 +93,3 @@
 1. 先把 Bubble HUD 做出来（哪怕最简），让 Events → Reactions 的链路可视化（更容易调互动规则）。
 2. 定义一份最小 `InteractionPack` 配置（zones + 3 条 rules：click/pat/drag），把默认规则迁移到配置文件。
 3. 把“说话/待机切换”收口为 BehaviorFSM：先只处理 `idle ↔ speech` 的权重 blend，再逐步接入 motion/drag。
-
